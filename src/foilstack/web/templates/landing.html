@@ -101,7 +101,10 @@
       <span class="num">market</span>
     </div>
     <div class="proof-row">
-      <span>Base Set · Holofoil</span>
+      <span class="proof-card">
+        {% if proof_ids[0] %}<span class="thumb-xs ref"><img src="/card/{{ proof_ids[0] }}/image" alt="" loading="lazy"></span>{% endif %}
+        Base Set · Holofoil
+      </span>
       <span class="conf">
         <span class="track"><i style="width: 93%"></i></span>
         <span class="lbl">93% match</span>
@@ -109,7 +112,10 @@
       <span class="num">$855.52</span>
     </div>
     <div class="proof-row alt">
-      <span>Base Set (Shadowless) · 1st Edition Holofoil</span>
+      <span class="proof-card">
+        {% if proof_ids[1] %}<span class="thumb-xs ref"><img src="/card/{{ proof_ids[1] }}/image" alt="" loading="lazy"></span>{% endif %}
+        Base Set (Shadowless) · 1st Edition Holofoil
+      </span>
       <span class="conf">
         <span class="track"><i style="width: 91%"></i></span>
         <span class="lbl">91% match</span>

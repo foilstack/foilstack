@@ -12,12 +12,13 @@ from __future__ import annotations
 import logging
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from foilstack import db, images
 from foilstack.config import get_settings
 from foilstack.importing import scan_path
+from foilstack.web import auth, proof
 from foilstack.web.deps import db_session, owner
 
 logger = logging.getLogger(__name__)
@@ -79,9 +80,9 @@ def _reference_urls(url: str) -> list[str]:
 
 @router.get("/card/{card_id}/image")
 async def card_image(
+    request: Request,
     card_id: int,
     session=Depends(db_session),
-    user: db.User = Depends(owner),
 ):
     """The catalogue's reference image, fetched once and cached on disk.
 
@@ -90,10 +91,19 @@ async def card_image(
     direct `<img src>` would tell that CDN which cards this seller is looking
     at, every time a page loads.
 
-    The catalogue is shared, so there is nothing here that belongs to one
-    account — but it still requires a session, because an open image proxy on
-    a public host is a free bandwidth donation to whoever finds it.
+    The catalogue is shared, so nothing here belongs to one account — but it
+    still wants a session, because this fetches from upstream on a miss and
+    caches to disk. Open to anyone, it is a stranger's ability to walk a
+    hundred thousand ids and have this server pull every one of them from
+    somebody else's CDN.
+
+    The exception is the pair the landing page argues with, which a signed-out
+    visitor has to be able to see. Two known ids is not an open proxy.
     """
+    settings = get_settings()
+    viewer = auth.current_user(request, session, settings)
+    if viewer is None and not proof.is_proof_card(session, card_id):
+        raise HTTPException(404, "no reference image")
     card = session.get(db.Card, card_id)
     url = card.image_url if card else None
     if not url:

@@ -1038,6 +1038,11 @@ body.site { background: var(--paper); }
   font-family: var(--mono); font-size: 10.5px; color: var(--muted);
 }
 .proof-head .pill { margin-left: 6px; }
+/* The card beside its own name, the way the inventory table shows it. Reuses
+   `.thumb-xs` so the frame is the product's, not a second opinion about how a
+   card thumbnail should look. */
+.proof-card { display: flex; align-items: center; gap: 10px; }
+.proof-card .thumb-xs { flex: 0 0 auto; }
 .proof-row:last-child { border-bottom: none; }
 .proof-head { background: var(--surface-3); font-size: 10.5px; text-transform: uppercase;
   letter-spacing: 0.06em; color: var(--faint); font-weight: 650; }

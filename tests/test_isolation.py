@@ -949,3 +949,70 @@ def test_the_landing_page_offers_no_signup_when_registration_is_closed(app_and_d
 
     assert "Create an account" not in body
     assert "Sign in" in body
+
+
+def test_the_landing_proof_images_are_visible_signed_out(app_and_data):
+    """The front door argues with two card images, so a signed-out visitor has
+    to be able to load them."""
+    from fastapi.testclient import TestClient
+
+    from foilstack import db
+    from foilstack.web import proof
+
+    app, _ = app_and_data
+    session = db.session()
+    name, set_name = proof.PROOF_CARDS[0]
+    card = db.Card(
+        source="t",
+        source_id="t:proof",
+        name=name,
+        set_name=set_name,
+        game="pokemon",
+        image_url="https://example.invalid/charizard.jpg",
+    )
+    # An ordinary catalogue card, with an image, that is *not* one of the two.
+    # A card that simply does not exist would 404 whether the allowlist works or
+    # not, which is a test that cannot fail.
+    ordinary = db.Card(
+        source="t",
+        source_id="t:ordinary",
+        name="Some Other Card",
+        set_name="Some Other Set",
+        game="pokemon",
+        image_url="https://example.invalid/other.jpg",
+    )
+    session.add_all([card, ordinary])
+    session.commit()
+    card_id, ordinary_id = card.id, ordinary.id
+    session.close()
+
+    try:
+        with TestClient(app) as anon:
+            # Not bounced to the login screen: it gets as far as trying to
+            # fetch, which is all this half is about.
+            assert anon.get(f"/card/{card_id}/image", follow_redirects=False).status_code != 303
+
+            # And the exception is those two cards, not the catalogue.
+            assert anon.get(f"/card/{ordinary_id}/image", follow_redirects=False).status_code == 404
+    finally:
+        session = db.session()
+        for cid in (card_id, ordinary_id):
+            row = session.get(db.Card, cid)
+            if row is not None:
+                session.delete(row)
+        session.commit()
+        session.close()
+
+
+def test_an_uningested_catalogue_shows_no_proof_thumbnails(app_and_data):
+    """A fresh install has no Charizard, and the table renders without images
+    rather than with two broken ones."""
+    from fastapi.testclient import TestClient
+
+    app, _ = app_and_data
+    with TestClient(app) as anon:
+        body = anon.get("/").text
+
+    # The proof rows are there; the thumbnails are not, because nothing matched.
+    assert "Base Set · Holofoil" in body
+    assert "/card/None/image" not in body
