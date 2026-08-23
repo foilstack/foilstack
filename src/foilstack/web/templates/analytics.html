@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Analytics · foilstack{% endblock %}
+{% block status %}{{ totals.distinct }} skus · {{ totals.count }} cards · {{ totals.market|money }} at market{% endblock %}
+
+{% block screen %}
+<div class="bar">
+  <h1>Analytics</h1>
+  <span class="bar-note">position from your inventory · performance needs sales data</span>
+</div>
+
+<div class="stats-pad">
+  <div class="tile-grid">
+    <div class="tile">
+      <div class="k">Inventory value</div>
+      <div class="v">{{ totals.market|money }}</div>
+      <div class="s">{{ totals.count }} cards · {{ totals.distinct }} skus</div>
+    </div>
+    <div class="tile">
+      <div class="k">Listed value</div>
+      <div class="v">{{ listed_value|money }}</div>
+      <div class="s">{{ unlisted_value|money }} not yet listed</div>
+    </div>
+    <div class="tile">
+      <div class="k">Cost basis</div>
+      <div class="v">{{ totals.cost|money if totals.cost else '—' }}</div>
+      <div class="s">{% if totals.cost %}across {{ totals.distinct }} skus{% else %}no cost recorded on any row{% endif %}</div>
+    </div>
+    <div class="tile">
+      <div class="k">Unrealised gain</div>
+      <div class="v">{{ (totals.market - totals.cost)|money if totals.cost else '—' }}</div>
+      <div class="s">{% if totals.cost %}at market, before fees{% else %}needs a cost basis{% endif %}</div>
+    </div>
+  </div>
+
+  <div class="chart-grid">
+    <div class="panel">
+      <div class="panel-title"><span>Inventory value by game</span></div>
+      {% for b in by_game %}
+      <div class="brow">
+        <div class="lbl">{{ b.label }}</div>
+        <div class="bartrack"><i style="width: {{ b.pct }}"></i></div>
+        <div class="val">{{ b.value|money }}</div>
+      </div>
+      {% else %}
+      <div class="empty">nothing in inventory yet</div>
+      {% endfor %}
+    </div>
+
+    <div class="panel">
+      <div class="panel-title"><span>Position</span></div>
+      <table class="kv">
+        <tr><td>Cards on hand</td><td>{{ totals.count }}</td></tr>
+        <tr><td>Distinct skus</td><td>{{ totals.distinct }}</td></tr>
+        <tr><td>Market value</td><td>{{ totals.market|money }}</td></tr>
+        <tr><td>Suggested list value</td><td>{{ totals.listed|money }}</td></tr>
+        <tr><td>Cost basis on hand</td><td>{{ totals.cost|money if totals.cost else '—' }}</td></tr>
+        <tr><td>Unrealised gain</td><td>{{ (totals.market - totals.cost)|money if totals.cost else '—' }}</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="chart-grid">
+    <div class="panel">
+      <div class="panel-title">
+        <span>Sell-through by channel</span>
+        <span class="pill demo">demo data</span>
+      </div>
+      <div class="brow">
+        <div class="lbl">TCGplayer</div>
+        <div class="bartrack"><i style="width: 74%"></i></div>
+        <div class="val">$3,910</div>
+      </div>
+      <div class="brow">
+        <div class="lbl">eBay</div>
+        <div class="bartrack"><i style="width: 41%"></i></div>
+        <div class="val">$1,640</div>
+      </div>
+      <div class="brow">
+        <div class="lbl">In person</div>
+        <div class="bartrack"><i style="width: 9%"></i></div>
+        <div class="val">$205</div>
+      </div>
+      <p class="note">
+        Placeholder. foilstack never sees a sale — the CSV leaves here and what
+        happens next happens on a marketplace. Real numbers need order data read
+        back in, which nothing does yet.
+      </p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">
+        <span>Realised</span>
+        {% if not sales.sold_all %}<span class="pill">no sales recorded</span>{% endif %}
+      </div>
+      {% if sales.sold_all %}
+      <table class="kv">
+        <tr><td>Cards sold</td><td>{{ sales.sold_all }}{% if sales.sold_30d %} ({{ sales.sold_30d }} in 30d){% endif %}</td></tr>
+        <tr><td>Gross realised</td><td>{{ sales.gross_all|money }}</td></tr>
+        <tr><td>Gross 30d</td><td>{{ sales.gross_30d|money }}</td></tr>
+        <tr><td>Realised profit</td><td>{{ sales.profit_all|money if sales.profit_all is not none else '—' }}</td></tr>
+        <tr><td>Sell-through</td><td>{{ sales.sell_through ~ '%' if sales.sell_through is not none else '—' }}</td></tr>
+        <tr><td>Avg days to sell</td><td>{{ sales.avg_days if sales.avg_days is not none else '—' }}</td></tr>
+      </table>
+      <p class="note">
+        {% if sales.costed < sales.sold_all %}
+        {{ sales.sold_all - sales.costed }} of {{ sales.sold_all }} sold cards
+        have no cost recorded, so realised profit covers only part of them.
+        {% endif %}
+        Marketplace fees and shipping are not counted — foilstack never sees
+        them, so this is gross of both rather than a net figure dressed up as
+        one.
+      </p>
+      {% else %}
+      <div class="empty">
+        Mark a card sold from its page and these become real numbers.
+      </div>
+      <p class="note">
+        Sell-through, gross and days-to-sell are computed from your own sales.
+        Marketplace fees and shipping never reach foilstack, so they are absent
+        rather than estimated.
+      </p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

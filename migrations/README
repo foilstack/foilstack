@@ -1,0 +1,11 @@
+Alembic migrations for foilstack.
+
+The database URL is read from the environment via `foilstack.config`, not from
+alembic.ini — see env.py.
+
+    uv run alembic upgrade head                 # apply
+    uv run alembic revision --autogenerate -m "what changed"
+    uv run alembic downgrade -1                 # step back
+
+The container runs `alembic upgrade head` before starting the web process, so a
+deploy applies its own migrations.

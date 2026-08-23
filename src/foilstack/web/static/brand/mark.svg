@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="foilstack">
+  <!-- A card off the top of a stack, catching the light.
+       Ordered by what has to survive being 16 pixels wide:
+         1. the card   — one bold portrait rectangle, still a card at 16px
+         2. the stack  — one card behind it, reduced to an edge at 16px
+         3. the foil   — a bright sweep across the face, the only light thing
+       Solid shapes throughout: a 1px stroke at 16px is a grey smudge. -->
+  <rect x="5" y="8" width="16" height="21" rx="2.5" fill="#2f6b4f" opacity="0.45"/>
+  <rect x="10" y="3" width="17" height="22" rx="2.5" fill="#1f4a36"/>
+  <rect x="11.2" y="4.2" width="14.6" height="19.6" rx="1.8" fill="#eef3ef"/>
+  <clipPath id="fs-face"><rect x="11.2" y="4.2" width="14.6" height="19.6" rx="1.8"/></clipPath>
+  <g clip-path="url(#fs-face)">
+    <path d="M9 22.5 L21.5 3 L26 3 L13.5 25 Z" fill="#2f6b4f" opacity="0.9"/>
+    <path d="M22.8 3 L26 3 L18 18 L15.6 18 Z" fill="#6fbf95"/>
+  </g>
+</svg>

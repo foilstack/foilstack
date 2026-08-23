@@ -1,0 +1,360 @@
+{% extends "base.html" %}
+{% block title %}Import scans · foilstack{% endblock %}
+{% block status %}{% if active %}import running · {{ active.processed }}/{{ active.total }}{% elif counts.all %}{{ counts.all }} scans waiting · {{ counts.nomatch }} with no match{% else %}queue clear · drop a .zip to begin{% endif %}{% endblock %}
+
+{% block screen %}
+<div class="split">
+
+  <div class="pane-import">
+    <div class="pane-head">
+      <b>Import scans</b>
+      <span class="bar-note">.zip · jpg, png, tif</span>
+    </div>
+
+    <form id="form">
+      <input type="file" id="file" name="archive" accept=".zip" hidden>
+      <div class="drop" id="drop" {% if active %}hidden{% endif %}>
+        <div class="drop-card"></div>
+        <div class="drop-title">Drop a .zip of card scans</div>
+        <div class="drop-sub">one image per card, any filename<br>
+          up to {{ "{:,}".format(max_images) }} scans per archive · {{ max_mb }} MB</div>
+        <button class="btn-choose" type="button" id="choose">Choose file</button>
+      </div>
+    </form>
+
+    <div class="filechip" id="filechip" {% if not active %}hidden{% endif %}>
+      <div class="filechip-row">
+        <div class="filechip-thumb"></div>
+        <div class="filechip-body">
+          <div class="filechip-name" id="fname">{{ active.filename if active }}</div>
+          <div class="filechip-meta" id="fmeta">{{ 'matching…' if active }}</div>
+        </div>
+        <button class="btn-quiet" type="button" id="clear">remove</button>
+      </div>
+      <div class="track"><i id="bar"></i></div>
+      <div class="track-labels">
+        <span id="stage">{{ 'queued' if active else 'ready' }}</span>
+        <span id="pct">0%</span>
+      </div>
+    </div>
+
+    <div class="tiles-3" id="stats" {% if not active %}hidden{% endif %}>
+      <div class="tile-sm"><div class="k">scans</div><div class="v" id="t-scans">{{ active.total if active else 0 }}</div></div>
+      <div class="tile-sm"><div class="k">matched</div><div class="v" id="t-matched">{{ active.processed if active else 0 }}</div></div>
+      <div class="tile-sm"><div class="k">waiting</div><div class="v" id="t-review">{{ counts.all }}</div></div>
+    </div>
+
+    <div style="display: flex; gap: 8px;" id="actions" {% if not active %}hidden{% endif %}>
+      <button class="btn btn-primary btn-tall btn-block" type="button" id="go">Start import</button>
+      <button class="btn btn-tall" type="button" id="cancel">Cancel</button>
+    </div>
+
+    <div class="settings">
+      <div class="sec-label">Match settings</div>
+      <div class="settings-row">
+        <div>
+          <div class="field-label">Default condition</div>
+          <div class="chip-set" id="cond-set">
+            {% for c in conditions %}
+            <button class="chip {{ 'on' if c == 'NM' }}" type="button" data-cond="{{ c }}">{{ c }}</button>
+            {% endfor %}
+          </div>
+        </div>
+        <div>
+          <div class="field-label">Default finish</div>
+          <div class="chip-set" id="finish-set">
+            <button class="chip on" type="button" data-finish="nonfoil">Non-foil</button>
+            <button class="chip" type="button" data-finish="foil">Foil</button>
+          </div>
+        </div>
+        <div>
+          <div class="field-label">Auto-accept above</div>
+          <div class="chip-set" id="thr-set">
+            {% for t in thresholds %}
+            <button class="chip {{ 'on' if t == auto_accept }}" type="button" data-thr="{{ t }}">{{ "%.0f"|format(t * 100) }}%</button>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      <p class="setting-note">
+        Finish is yours to set, not the matcher's: a foil and a non-foil
+        printing share artwork exactly and differ under the light, so the scan
+        cannot settle it — and the price gap is routinely a multiple.
+      </p>
+      <p class="setting-note">
+        A match is accepted without review only if it clears that score, beats
+        the runner-up by a margin, <em>and</em> — where the runner-up is the same
+        card in another printing — their prices are close. Reprints share
+        artwork, so a high score alone is not evidence. The threshold is stored
+        with the import, so it stays clear later why a scan went through.
+      </p>
+      <div class="matcher">
+        <div>matcher: dinov3 image embeddings · nearest neighbour</div>
+        <div class="strong">scans kept on disk · never uploaded off-host</div>
+      </div>
+    </div>
+
+    {% if jobs %}
+    <div class="settings">
+      <div class="sec-label">Recent imports</div>
+      <div class="matcher" style="margin-top: 0">
+        {% for job in jobs %}
+        <div>{{ job.created_at.strftime('%b %d %H:%M') }} &nbsp;
+          {{ job.filename[:22] }} &nbsp;
+          <span class="{{ 'strong' if job.status == 'done' }}">{{ job.status }}</span>
+          {{ job.processed }}/{{ job.total }}</div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="pane-queue">
+    <div class="bar">
+      <h1>Matches</h1>
+      <div class="chip-set">
+        <a class="chip chip-filter {{ 'on' if filter not in ('matched', 'nomatch') }}" href="/app">All {{ counts.all }}</a>
+        <a class="chip chip-filter {{ 'on' if filter == 'matched' }}" href="/app?filter=matched">Matched {{ counts.matched }}</a>
+        <a class="chip chip-filter {{ 'on' if filter == 'nomatch' }}" href="/app?filter=nomatch">No match {{ counts.nomatch }}</a>
+      </div>
+      <div class="spacer"></div>
+      <span class="bar-note wide-only">{% if queue_value %}{{ queue_value|money }} market value{% endif %}</span>
+      <button class="btn" type="button" id="discard-all">Discard all</button>
+      <button class="btn btn-primary" type="button" id="commit">Commit {{ counts.all }} to inventory</button>
+    </div>
+
+    <div class="screen-scroll" id="queue">
+      {% for r in rows %}
+      <div class="qrow {{ 'review' if r.needs_review }}" id="scan-{{ r.scan_id }}"
+           data-scan="{{ r.scan_id }}" data-card="{{ r.card_id or '' }}"
+           data-cond="NM" data-finish="nonfoil" data-review="{{ 1 if r.needs_review else 0 }}"
+           data-prices='{{ r.prices|tojson }}'>
+        <div class="thumb">
+          <img src="/scan/{{ r.scan_id }}/image" alt="" loading="lazy">
+          <span class="thumb-tag">scan</span>
+        </div>
+        <div class="qfile" title="{{ r.filename }}">{{ r.filename }}</div>
+        <div class="qarrow">→</div>
+        <div class="thumb ref">
+          {% if r.card_id %}<img src="/card/{{ r.card_id }}/image" alt="" loading="lazy">{% endif %}
+          <span class="thumb-tag">catalogue</span>
+        </div>
+        <div class="qmain">
+          <div class="qname {{ 'faint' if not r.card_id }}">{{ r.name }}</div>
+          <div class="qmeta"><span class="qprice"></span>{{ r.meta }}</div>
+          <div class="qalt">
+            {% if r.needs_review and r.alternates %}
+            <button type="button" data-alt="{{ r.alternates[0].card_id }}">
+              also matched: {{ r.alternates[0].name }}{% if r.alternates[0].variant %} ({{ r.alternates[0].variant }}){% endif %} {{ r.alternates[0].pct }}
+            </button>
+            {% else %}{{ r.alt }}{% endif %}
+          </div>
+        </div>
+        <div class="qconf">
+          <div class="track"><i class="{{ '' if r.score >= 0.9 else 'low' }}" style="width: {{ r.pct }}"></i></div>
+          <div class="lbl">{{ r.pct }} match</div>
+        </div>
+        <div class="qcond">
+          {% for c in conditions[:4] %}
+          <button class="chip chip-sm {{ 'on' if c == 'NM' }}" type="button" data-cond="{{ c }}">{{ c }}</button>
+          {% endfor %}
+        </div>
+        <div class="qfoil">
+          <button class="chip chip-sm foil-toggle" type="button" title="Foil or non-foil">Non-foil</button>
+          {% if r.ambiguous %}
+          <span class="pill warn qambig" title="This card has several foil printings at different prices. Commit, then name the printing on the card page.">?</span>
+          {% endif %}
+        </div>
+        <div class="qactions">
+          {% if r.needs_review and r.card_id %}
+          <button class="btn btn-dark" type="button" data-confirm>Confirm</button>
+          {% endif %}
+          <button class="qdrop" type="button" data-drop title="Discard this scan" aria-label="Discard this scan">×</button>
+        </div>
+      </div>
+      {% endfor %}
+      {% if not rows %}
+      <div class="queue-empty">
+        {% if filter == 'matched' %}nothing matched is waiting
+        {% elif filter == 'nomatch' %}everything waiting has a match
+        {% else %}queue is clear — drop a .zip of scans to start{% endif %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+</div>
+
+<script>
+const $ = (s, r) => (r || document).querySelector(s);
+const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
+
+/* ---------- import pane ---------- */
+const drop = $('#drop'), fileInput = $('#file'), chip = $('#filechip');
+let chosen = null, settings = { cond: 'NM', thr: {{ auto_accept }}, finish: 'nonfoil' };
+
+function show(el, on) { el.hidden = !on; }
+function pick(f) {
+  if (!f) return;
+  chosen = f;
+  $('#fname').textContent = f.name;
+  $('#fmeta').textContent = (f.size / 1048576).toFixed(1) + ' MB';
+  $('#pct').textContent = '0%';
+  $('#stage').textContent = 'ready';
+  $('#bar').style.width = '0%';
+  $('#t-scans').textContent = '—';
+  $('#t-matched').textContent = '0';
+  show(chip, true); show($('#stats'), true); show($('#actions'), true); show(drop, false);
+}
+function reset() {
+  chosen = null; fileInput.value = '';
+  show(chip, false); show($('#stats'), false); show($('#actions'), false); show(drop, true);
+}
+$('#choose').addEventListener('click', e => { e.stopPropagation(); fileInput.click(); });
+drop.addEventListener('click', () => fileInput.click());
+$('#clear').addEventListener('click', reset);
+$('#cancel').addEventListener('click', reset);
+fileInput.addEventListener('change', () => pick(fileInput.files[0]));
+['dragenter', 'dragover'].forEach(e => drop.addEventListener(e, ev => {
+  ev.preventDefault(); drop.classList.add('over');
+}));
+['dragleave', 'drop'].forEach(e => drop.addEventListener(e, ev => {
+  ev.preventDefault(); drop.classList.remove('over');
+}));
+drop.addEventListener('drop', ev => pick(ev.dataTransfer.files[0]));
+
+function chipSet(root, key, cast) {
+  $$('button', root).forEach(b => b.addEventListener('click', () => {
+    $$('button', root).forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    settings[key] = cast(b.dataset[key]);
+  }));
+}
+chipSet($('#cond-set'), 'cond', String);
+chipSet($('#thr-set'), 'thr', parseFloat);
+chipSet($('#finish-set'), 'finish', String);
+
+$('#go').addEventListener('click', async () => {
+  if (!chosen) return;
+  $('#go').disabled = true;
+  $('#go').textContent = 'Importing…';
+  const body = new FormData();
+  body.append('archive', chosen);
+  body.append('auto_accept', settings.thr);
+  body.append('default_condition', settings.cond);
+  body.append('default_finish', settings.finish);
+  const res = await fetch('/api/import', { method: 'POST', body });
+  if (!res.ok) {
+    $('#stage').textContent = 'upload failed — ' + (await res.text()).slice(0, 60);
+    $('#go').disabled = false; $('#go').textContent = 'Start import';
+    return;
+  }
+  poll((await res.json()).job_id);
+});
+
+const STAGES = { pending: 'unzipping archive', matching: 'matching against catalogue', done: 'done', failed: 'failed' };
+async function poll(id) {
+  const job = await (await fetch('/api/jobs/' + id)).json();
+  const pct = job.total ? Math.round(100 * job.processed / job.total) : 0;
+  $('#bar').style.width = pct + '%';
+  $('#pct').textContent = pct + '%';
+  $('#stage').textContent = job.status === 'failed'
+    ? 'failed — ' + (job.message || '') : (STAGES[job.status] || job.status);
+  $('#t-scans').textContent = job.total;
+  $('#t-matched').textContent = job.processed;
+  if (job.status === 'done') { location.href = '/app?filter=review'; return; }
+  if (job.status === 'failed') { $('#go').disabled = false; $('#go').textContent = 'Start import'; return; }
+  setTimeout(() => poll(id), 700);
+}
+{% if active %}poll({{ active.id }});{% endif %}
+
+/* ---------- queue rows ---------- */
+$$('.qrow').forEach(row => {
+  $$('.qcond button', row).forEach(b => b.addEventListener('click', () => {
+    $$('.qcond button', row).forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    row.dataset.cond = b.dataset.cond;
+  }));
+  const foil = $('.foil-toggle', row);
+  // Seeded from the import default, so setting it once above covers the batch
+  // and the per-row control is only for the exceptions.
+  const priceEl = $('.qprice', row);
+  let prices = {};
+  try { prices = JSON.parse(row.dataset.prices || '{}'); } catch (e) { prices = {}; }
+
+  function setFoil(v) {
+    row.dataset.finish = v;
+    foil.textContent = v === 'foil' ? 'Foil' : 'Non-foil';
+    foil.classList.toggle('on', v === 'foil');
+    // The price for the printing this finish resolves to — dearest match, the
+    // same rule pricing uses — so the number on screen is the number the card
+    // will be worth if committed as it stands.
+    const names = Object.keys(prices);
+    const matching = names.filter(n => /foil/i.test(n) === (v === 'foil'));
+    const use = (matching.length ? matching : names)
+      .sort((a, b) => prices[b] - prices[a])[0];
+    priceEl.textContent = use === undefined ? '' :
+      '$' + Number(prices[use]).toFixed(2) + ' · ';
+  }
+  setFoil(settings.finish);
+  foil.addEventListener('click', () => setFoil(row.dataset.finish === 'foil' ? 'nonfoil' : 'foil'));
+
+  const alt = $('.qalt button', row);
+  if (alt) alt.addEventListener('click', () => {
+    row.dataset.card = alt.dataset.alt;
+    confirmRow(row);
+  });
+  const ok = $('[data-confirm]', row);
+  if (ok) ok.addEventListener('click', () => confirmRow(row));
+  $('[data-drop]', row).addEventListener('click', () => discardRow(row));
+});
+
+async function confirmRow(row) {
+  if (!row.dataset.card) return;
+  const body = new URLSearchParams({
+    card_id: row.dataset.card,
+    condition: row.dataset.cond,
+    finish: row.dataset.finish,
+  });
+  const res = await fetch('/api/scans/' + row.dataset.scan + '/confirm', { method: 'POST', body });
+  if (res.ok) fade(row);
+}
+async function discardRow(row) {
+  const res = await fetch('/api/scans/' + row.dataset.scan + '/discard', { method: 'POST' });
+  if (res.ok) fade(row);
+}
+function fade(row) {
+  row.style.transition = 'opacity .15s';
+  row.style.opacity = 0;
+  setTimeout(() => { row.remove(); if (!$('.qrow')) location.reload(); }, 160);
+}
+
+$('#commit').addEventListener('click', async () => {
+  const rows = $$('.qrow').filter(r => r.dataset.review === '1' && r.dataset.card).map(r => ({
+    scan_id: +r.dataset.scan, card_id: +r.dataset.card,
+    condition: r.dataset.cond, finish: r.dataset.finish,
+  }));
+  if (!rows.length) return;
+  const res = await fetch('/api/scans/commit', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows }),
+  });
+  if (!res.ok) return;
+  // Land on the cards that still need a printing chosen, when there are any:
+  // they are priced on a guess, and a guess that nobody is shown is a price
+  // nobody checks.
+  const out = await res.json();
+  location.href = out.needs_printing ? '/inventory?show=printing' : '/inventory';
+});
+
+$('#discard-all').addEventListener('click', async () => {
+  const ids = $$('.qrow').filter(r => r.dataset.review === '1').map(r => +r.dataset.scan);
+  if (!ids.length) return;
+  const res = await fetch('/api/scans/discard-all', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scan_ids: ids }),
+  });
+  if (res.ok) location.reload();
+});
+</script>
+{% endblock %}

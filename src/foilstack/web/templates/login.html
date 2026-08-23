@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ 'Create an account' if mode == 'register' else 'Sign in' }} · foilstack</title>
+<link rel="icon" href="/static/brand/favicon.svg?v={{ asset_v }}" type="image/svg+xml">
+<link rel="alternate icon" href="/static/brand/favicon-32.png?v={{ asset_v }}" sizes="32x32">
+<link rel="apple-touch-icon" href="/static/brand/apple-touch-icon.png?v={{ asset_v }}">
+<link rel="stylesheet" href="/static/app.css?v={{ asset_v }}">
+</head>
+<body class="auth">
+
+<div class="auth-card">
+  <a class="brand" href="/">
+    <img class="brand-mark" src="/static/brand/mark.svg?v={{ asset_v }}" alt="" width="20" height="20">
+    <b>foilstack</b>
+    <span class="ver">v{{ version }}</span>
+  </a>
+
+  <h1>{{ 'Create an account' if mode == 'register' else 'Sign in' }}</h1>
+  <p class="auth-lede">
+    {% if mode == 'register' %}
+      Your scans, inventory and exports are yours alone — nobody else using
+      this deployment can see them.
+    {% else %}
+      Your cards, your inventory, your exports.
+    {% endif %}
+  </p>
+
+  {% if error %}<div class="auth-error">{{ error }}</div>{% endif %}
+
+  <form method="post" action="{{ '/register' if mode == 'register' else '/login' }}">
+    {% if mode != 'register' %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+    <label class="field">
+      <span class="field-label">Email</span>
+      <input class="input" type="email" name="email" value="{{ email }}"
+             autocomplete="email" required autofocus>
+    </label>
+    <label class="field">
+      <span class="field-label">Password</span>
+      <input class="input" type="password" name="password"
+             autocomplete="{{ 'new-password' if mode == 'register' else 'current-password' }}"
+             {% if mode == 'register' %}minlength="10"{% endif %} required>
+      {% if mode == 'register' %}
+      <span class="field-hint">At least 10 characters. Length beats punctuation.</span>
+      {% endif %}
+    </label>
+    <button class="btn btn-primary btn-tall btn-block" type="submit">
+      {{ 'Create account' if mode == 'register' else 'Sign in' }}
+    </button>
+  </form>
+
+  <p class="auth-alt">
+    {% if mode == 'register' %}
+      Already have an account? <a href="/login">Sign in</a>
+    {% else %}
+      No account yet? <a href="/register">Create one</a>
+    {% endif %}
+  </p>
+
+  <div class="auth-foot">
+    <span>AGPL-3.0 · <a href="https://github.com/foilstack/foilstack">source</a></span>
+    <span>Run it yourself and no account is needed at all.</span>
+  </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Plugins · foilstack{% endblock %}
+{% block status %}{{ "{:,}".format(catalog_cards) }} catalogue cards · {{ "{:,}".format(vector_count) }} vectors · encoder {{ 'ready' if encoder else 'unreachable' }}{% endblock %}
+
+{% block screen %}
+<div class="bar">
+  <h1>Plugins</h1>
+  <span class="bar-note">sources supply the catalogue · exporters write the file a marketplace accepts</span>
+</div>
+
+<div class="plug-pad">
+  <div class="panel">
+    <div class="panel-title"><span>Sources</span></div>
+    <table class="dtable">
+      <thead><tr><th>PLUGIN</th><th>GAMES</th><th>INGEST</th></tr></thead>
+      <tbody>
+        {% for p in sources %}
+        <tr>
+          <td class="name"><b>{{ p.name }}</b></td>
+          <td class="muted">{{ p.games | join(', ') }}</td>
+          <td><code>foilstack ingest --source {{ p.name }} --game pokemon</code></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="note">
+      A source plugin runs code and reaches the network. Nothing is installed
+      automatically and there is no registry — you add one deliberately, the same
+      way you would any other dependency.
+    </p>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title"><span>Exporters</span></div>
+    <table class="dtable">
+      <thead><tr><th>PLUGIN</th><th class="r">COLUMNS</th><th>FILE</th><th></th></tr></thead>
+      <tbody>
+        {% for spec in exporters %}
+        <tr>
+          <td class="name"><b>{{ spec.label }}</b><div class="s" style="font-family: var(--mono); font-size: 10px; color: var(--muted)">{{ spec.description }}</div></td>
+          <td class="r">{{ spec.columns | length }}</td>
+          <td class="muted">{{ spec.filename }}</td>
+          <td><a class="btn" href="/export/{{ spec.name }}">Export</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="note">
+      Exporters are TOML column mappings, not code. Adding a marketplace means
+      writing a file anyone can read in ten seconds and be sure it does nothing else.
+    </p>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title"><span>Image encoder</span></div>
+    {% if encoder %}
+    <div class="tile-grid">
+      <div class="tile">
+        <div class="k">status</div>
+        <div class="v" style="font-size: 20px; color: var(--green)">ready</div>
+        <div class="s">{{ encoder_url }}</div>
+      </div>
+      <div class="tile">
+        <div class="k">model</div>
+        <div class="v" style="font-size: 13px; font-weight: 500; margin-top: 10px">{{ encoder.get('model', 'unknown') }}</div>
+      </div>
+      <div class="tile">
+        <div class="k">catalogue</div>
+        <div class="v">{{ "{:,}".format(catalog_cards) }}</div>
+        <div class="s">cards ingested</div>
+      </div>
+      <div class="tile">
+        <div class="k">vectors</div>
+        <div class="v">{{ "{:,}".format(vector_count) }}</div>
+        <div class="s">reference images encoded</div>
+      </div>
+    </div>
+    {% else %}
+    <div class="empty">
+      no encoder reachable at <code>{{ encoder_url }}</code> — matching will fail until it is running
+    </div>
+    {% endif %}
+    <p class="note">
+      Vectors from two different encoders are not comparable, and the failure is
+      silent — plausible matches that are simply wrong. If you change the model,
+      re-encode the catalogue.
+    </p>
+  </div>
+</div>
+{% endblock %}

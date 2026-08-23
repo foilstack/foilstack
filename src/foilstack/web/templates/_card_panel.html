@@ -1,0 +1,115 @@
+{# The edit panel for one inventory row. Served as a fragment into the drawer. #}
+<div class="panel-head-row">
+  <div>
+    <div class="panel-name">{{ r.name }}</div>
+    <div class="panel-sub">{{ r.game }}{% if r.set_name %} · {{ r.set_name }}{% endif %}{% if r.number %} · #{{ r.number }}{% endif %}</div>
+  </div>
+  <button class="btn-quiet" type="button" data-close aria-label="Close">×</button>
+</div>
+
+<div class="panel-imgs">
+  {% if r.scan_id %}
+  <div class="thumb panel-thumb"><img src="/scan/{{ r.scan_id }}/image" alt="your scan"><span class="thumb-tag">scan</span></div>
+  {% else %}
+  <div class="thumb panel-thumb none"><span class="thumb-tag">no scan</span></div>
+  {% endif %}
+  <div class="thumb ref panel-thumb"><img src="/card/{{ r.card_id }}/image" alt="catalogue reference"><span class="thumb-tag">catalogue</span></div>
+</div>
+
+<form id="card-form" data-id="{{ r.id }}">
+  <div class="panel-grid">
+    <div>
+      <div class="field-label">Condition</div>
+      <div class="chip-set" data-field="condition">
+        {% for c in conditions %}
+        <button class="chip {{ 'on' if c == r.condition }}" type="button" data-value="{{ c }}">{{ c }}</button>
+        {% endfor %}
+      </div>
+    </div>
+    <div>
+      <div class="field-label">Finish</div>
+      <div class="chip-set" data-field="finish">
+        {% for f in finishes %}
+        <button class="chip {{ 'on' if f == r.finish }}" type="button" data-value="{{ f }}">{{ finish_label[f] }}</button>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="field">
+    <span class="field-label">Printing</span>
+    {% if r.printings %}
+    <div class="printings" data-field="sub_type">
+      {% for pr in r.printings %}
+      <button class="printing {{ 'on' if pr.on }}" type="button" data-value="{{ pr.sub_type }}">
+        <span class="printing-name">{{ pr.sub_type }}</span>
+        <span class="printing-price">{{ pr.market|money if pr.market is not none else '—' }}</span>
+      </button>
+      {% endfor %}
+    </div>
+    {% if r.printing_guessed %}
+    <span class="field-hint warn">
+      Not chosen — priced as the dearest printing that matches “{{ r.finish_label }}”.
+      Pick the one you hold.
+    </span>
+    {% elif r.printing_declared %}
+    <span class="field-hint">Chosen by you. Pricing uses this printing exactly.</span>
+    {% endif %}
+    {% else %}
+    <span class="field-hint">
+      No printing prices for this card yet — run <code>foilstack sync-prices</code>.
+    </span>
+    {% endif %}
+  </div>
+
+  <label class="field">
+    <span class="field-label">Cost</span>
+    <input class="input" type="number" name="cost" min="0" step="0.01"
+           value="{{ '%.2f'|format(r.cost) if r.cost is not none else '' }}" placeholder="—">
+    <span class="field-hint">What this copy cost you. Per card, not per line.</span>
+  </label>
+
+  <label class="field">
+    <span class="field-label">Notes</span>
+    <textarea class="input" name="notes" rows="2" placeholder="signed, edge wear, sleeve…">{{ r.notes }}</textarea>
+  </label>
+
+  <div class="panel-facts">
+    <div><span>SKU</span><b>{{ r.sku }}</b></div>
+    <div><span>Market</span><b>{{ r.market|money if r.market is not none else '—' }}</b></div>
+    <div><span>Suggested list</span><b>{{ r.list_price|money if r.list_price is not none else '—' }}</b></div>
+    <div><span>Listed on</span><b>{{ r.listed_label }}</b></div>
+  </div>
+
+  <div class="panel-sold {{ 'on' if r.sold }}">
+    <div class="field-label">
+      {% if r.sold %}Sold{% if r.sold_at %} {{ r.sold_at.strftime('%b %d %Y') }}{% endif %}{% else %}Mark as sold{% endif %}
+    </div>
+    <div class="panel-grid">
+      <label class="field">
+        <span class="field-label">Sale price</span>
+        <input class="input" type="number" name="sold_price" min="0" step="0.01"
+               value="{{ '%.2f'|format(r.sold_price) if r.sold_price is not none else '' }}" placeholder="—">
+      </label>
+      <div class="field">
+        <span class="field-label">&nbsp;</span>
+        {% if r.sold %}
+        <button class="btn" type="button" data-status="stock">Return to stock</button>
+        {% else %}
+        <button class="btn btn-primary" type="button" data-status="sold">Mark sold</button>
+        {% endif %}
+      </div>
+    </div>
+    <p class="panel-note">
+      Sold rows leave your stock and stop being exported, but stay in the
+      table — they are what makes realised profit answerable. Deleting a card
+      you sold takes its cost basis with it.
+    </p>
+  </div>
+
+  <div class="panel-actions">
+    <button class="btn btn-primary btn-tall btn-block" type="submit">Save changes</button>
+    <button class="btn btn-tall btn-danger" type="button" data-delete>Delete</button>
+  </div>
+  <p class="panel-note">Delete is for a card that should never have been here — a scan matched to the wrong printing. It cannot be undone.</p>
+</form>

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="foilstack">
+  <!-- The mark on its own ground, for a browser tab. Same shapes, inset and
+       sitting on ink so it holds against a light or dark tab strip. -->
+  <rect width="32" height="32" rx="7" fill="#17171a"/>
+  <g transform="translate(4.2 4.2) scale(0.74)">
+    <rect x="5" y="8" width="16" height="21" rx="2.5" fill="#2f6b4f" opacity="0.55"/>
+    <rect x="10" y="3" width="17" height="22" rx="2.5" fill="#2f6b4f"/>
+    <rect x="11.2" y="4.2" width="14.6" height="19.6" rx="1.8" fill="#eef3ef"/>
+    <clipPath id="fv-face"><rect x="11.2" y="4.2" width="14.6" height="19.6" rx="1.8"/></clipPath>
+    <g clip-path="url(#fv-face)">
+      <path d="M9 22.5 L21.5 3 L26 3 L13.5 25 Z" fill="#2f6b4f" opacity="0.9"/>
+      <path d="M22.8 3 L26 3 L18 18 L15.6 18 Z" fill="#6fbf95"/>
+    </g>
+  </g>
+</svg>

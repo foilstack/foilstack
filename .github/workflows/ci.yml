@@ -1,0 +1,57 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  test:
+    runs-on: ubuntu-latest
+
+    # Postgres is not optional here. `tests/test_isolation.py` builds its own
+    # database and drives the real application against it; without a server it
+    # *skips*, and skipping is exactly what it must not do — those are the
+    # tests that prove one account cannot read, edit or delete another's cards.
+    # Run without this, the suite reported 65 passed / 30 skipped and called it
+    # green.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: foilstack
+          # Named so it reads as disposable and so the repository's own
+          # gitleaks rule does not flag it — a literal password assignment is
+          # exactly what that rule is for, and it should keep firing on real
+          # ones rather than being allowlisted away for this file.
+          POSTGRES_PASSWORD: ci-placeholder
+          POSTGRES_DB: foilstack
+        ports: ["5434:5432"]
+        options: >-
+          --health-cmd "pg_isready -U foilstack -d foilstack"
+          --health-interval 10s --health-timeout 5s --health-retries 10
+
+    env:
+      FOILSTACK_TEST_DATABASE_URL: postgresql+psycopg://foilstack:ci-placeholder@localhost:5434/foilstack
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra dev
+      - run: uv run pytest -q
+
+      # A skip is a test that did not run, and the ones that skip here are the
+      # security ones. Fail the build rather than let a green tick mean "we
+      # didn't check".
+      - name: no tests were skipped
+        run: |
+          uv run pytest -q --no-header -rs 2>&1 | tee /tmp/out
+          if grep -qE '[0-9]+ skipped' /tmp/out; then
+            echo "::error::tests were skipped — see the SKIPPED lines above"
+            exit 1
+          fi

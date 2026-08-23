@@ -1,0 +1,221 @@
+# Deliberately no `container_name:` anywhere.
+#
+# Fixed container names are global to the Docker daemon, so a hardcoded
+# `foilstack-web` collides with any other foilstack stack on the same machine
+# and refuses to start — or worse, attaches you to the wrong database. Letting
+# compose namespace names by project directory is what makes it safe to run
+# this alongside anything else.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    # Docker's default is 64 MB. A *parallel* HNSW build maps the whole of
+    # maintenance_work_mem into shared memory, so the rule is shm >= that
+    # setting, not merely "more than the default" — the index build fails with
+    # "could not resize shared memory segment" rather than falling back. The
+    # build budget in the index migration is set under this number. tmpfs
+    # allocates on demand, so this reserves nothing until a build runs.
+    shm_size: 1gb
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-foilstack}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-foilstack}
+      POSTGRES_DB: ${POSTGRES_DB:-foilstack}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      # Bound to loopback: this is for `psql` and `pg_dump` on the host, not
+      # for anything off the machine.
+      - "127.0.0.1:${POSTGRES_PORT:-5434}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-foilstack} -d ${POSTGRES_DB:-foilstack}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    restart: unless-stopped
+    environment:
+      FOILSTACK_DATA_DIR: /data
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-foilstack}:${POSTGRES_PASSWORD:-foilstack}@postgres:5432/${POSTGRES_DB:-foilstack}
+      EMBEDDER_URL: http://embedder:8100
+      FOILSTACK_AUTO_ACCEPT: ${FOILSTACK_AUTO_ACCEPT:-0.92}
+      FOILSTACK_MAX_ARCHIVE_MB: ${FOILSTACK_MAX_ARCHIVE_MB:-512}
+      # Off by default: one person running this for their own shop should not
+      # have to invent a password to reach their own inventory. Turn it on for
+      # a deployment other people can reach, and set a real secret key.
+      FOILSTACK_MULTI_USER: ${FOILSTACK_MULTI_USER:-false}
+      FOILSTACK_SECRET_KEY: ${FOILSTACK_SECRET_KEY:-dev-insecure-change-me}
+      FOILSTACK_SUPPORT_URL: ${FOILSTACK_SUPPORT_URL:-https://buymeacoffee.com/foilstack}
+    volumes:
+      # Your scans. A bind mount rather than a named volume so you can see
+      # them, back them up, and delete them. The database is a separate volume;
+      # the `backup` service is what protects that.
+      - ${FOILSTACK_DATA_DIR:-./data}:/data
+    # --proxy-headers so the app sees the scheme the *browser* used, not the
+    # plain HTTP hop from a TLS-terminating proxy. Without it every session
+    # cookie is issued without `Secure` behind HTTPS, and issued *with* it
+    # would be worse: the browser would refuse to send it back over HTTP and
+    # login would silently loop.
+    command: ["uvicorn", "foilstack.web.app:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+    ports:
+      - "${FOILSTACK_PORT:-8090}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      embedder:
+        condition: service_started
+
+  # Dumps the database on a schedule, as a service rather than a cron job on the
+  # host. A backup that depends on someone remembering to install a crontab is a
+  # backup that exists on the machine it was set up on and nowhere else — this
+  # one starts with `docker compose up` wherever the stack runs.
+  backup:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Write as the human who owns the backup directory. The image runs as root
+    # otherwise, and the dumps land root-owned in a user directory — readable,
+    # but not something you can tidy up or rsync out without sudo.
+    user: "${FOILSTACK_BACKUP_UID:-1000}:${FOILSTACK_BACKUP_GID:-1000}"
+    environment:
+      # Filenames are timestamps in local time. Without this the container
+      # stamps UTC, so a dump taken at 21:27 lands as `20260822-0127` and sorts
+      # *before* files taken earlier the same evening. Rotation reads mtime and
+      # is unaffected; a person reading the directory is not.
+      TZ: ${TZ:-UTC}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-foilstack}
+      PG_USER: ${POSTGRES_USER:-foilstack}
+      PG_DB: ${POSTGRES_DB:-foilstack}
+      BACKUP_INTERVAL: ${FOILSTACK_BACKUP_INTERVAL:-86400}
+      BACKUP_CHECK_EVERY: ${FOILSTACK_BACKUP_CHECK_EVERY:-3600}
+      # Count, not days: the disk cost stays bounded and predictable no matter
+      # how often the interval fires.
+      BACKUP_KEEP: ${FOILSTACK_BACKUP_KEEP:-14}
+      # A floor that catches a truncated or empty dump, not a size target.
+      # Deliberately small: a fresh install with no catalogue ingested yet dumps
+      # to a few kilobytes, and rejecting that as "too small" would report a
+      # failure on the one install where nothing is wrong.
+      BACKUP_MIN_BYTES: ${FOILSTACK_BACKUP_MIN_BYTES:-4096}
+    volumes:
+      # A host bind mount, not a named volume: a backup that
+      # `docker compose down -v` can destroy is not a backup.
+      - ${FOILSTACK_BACKUP_DIR:-./backups}:/backups
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        echo "backup sidecar: dump when the newest is older than $${BACKUP_INTERVAL}s, keep $${BACKUP_KEEP}"
+        while true; do
+          newest=$$(ls -1t /backups/foilstack-20*.sql.gz 2>/dev/null | head -1)
+          age=$${BACKUP_INTERVAL}
+          if [ -n "$${newest}" ]; then
+            age=$$(( $$(date +%s) - $$(stat -c %Y "$${newest}") ))
+          fi
+          if [ "$${age}" -lt "$${BACKUP_INTERVAL}" ]; then
+            sleep "$${BACKUP_CHECK_EVERY}"
+            continue
+          fi
+
+          ts=$$(date +%Y%m%d-%H%M%S)
+          f=/backups/foilstack-$${ts}.sql.gz
+          ok=0
+          # Every failure mode is checked and named. A dump that cannot be read
+          # is not a backup, and finding that out at restore time is finding it
+          # out too late.
+          if ! pg_isready -h postgres -U "$${PG_USER}" -d "$${PG_DB}" -q; then
+            echo "backup SKIPPED at $${ts}: database not reachable"
+          elif ! pg_dump -h postgres -U "$${PG_USER}" -d "$${PG_DB}" --clean --if-exists -Z 9 -f "$${f}"; then
+            echo "backup FAILED at $${ts}: pg_dump error"; rm -f "$${f}"
+          elif ! gzip -t "$${f}" 2>/dev/null; then
+            echo "backup FAILED at $${ts}: corrupt gzip"; rm -f "$${f}"
+          elif [ "$$(stat -c %s "$${f}")" -lt "$${BACKUP_MIN_BYTES}" ]; then
+            echo "backup FAILED at $${ts}: $$(stat -c %s "$${f}") bytes is too small"; rm -f "$${f}"
+          else
+            ok=1
+          fi
+
+          if [ "$${ok}" = 1 ]; then
+            echo "backed up foilstack-$${ts}.sql.gz ($$(stat -c %s "$${f}") bytes)"
+            cp "$${f}" /backups/foilstack-latest.sql.gz
+            rm -f /backups/BACKUP_FAILING
+            # Only ever after a good dump, and never matching `-latest` — the
+            # glob starts at the timestamp's century digits on purpose.
+            ls -1t /backups/foilstack-20*.sql.gz 2>/dev/null \
+              | tail -n +$$(( $${BACKUP_KEEP} + 1 )) | xargs -r rm -f
+          else
+            # The one file to monitor. Its presence means the last run produced
+            # nothing usable; a good run removes it.
+            echo "$${ts} no usable dump produced" >> /backups/BACKUP_FAILING
+          fi
+          sleep "$${BACKUP_CHECK_EVERY}"
+        done
+
+  # Refreshes card prices and records the ones that moved.
+  #
+  # TCGCSV rebuilds exactly once a day and publishes the build timestamp, so
+  # this checks that first and exits after a single request when nothing has
+  # changed. The interval below is how often it *looks*, not how often it
+  # pulls — see their usage guidelines at https://tcgcsv.com/docs.
+  #
+  # This is the one job here whose output cannot be recreated. Upstream mirrors
+  # the current day only, so a day this does not run is a day of price history
+  # gone for good.
+  prices:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      FOILSTACK_DATA_DIR: /data
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-foilstack}:${POSTGRES_PASSWORD:-foilstack}@postgres:5432/${POSTGRES_DB:-foilstack}
+      TZ: ${TZ:-UTC}
+      SYNC_GAMES: ${FOILSTACK_SYNC_GAMES:-magic pokemon}
+      SYNC_CHECK_EVERY: ${FOILSTACK_SYNC_CHECK_EVERY:-21600}
+    volumes:
+      - ${FOILSTACK_DATA_DIR:-./data}:/data
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        echo "price sync: checking every $${SYNC_CHECK_EVERY}s for $${SYNC_GAMES}"
+        while true; do
+          for game in $${SYNC_GAMES}; do
+            python -m foilstack.cli sync-prices --game "$${game}" || \
+              echo "price sync FAILED for $${game}"
+          done
+          sleep "$${SYNC_CHECK_EVERY}"
+        done
+
+  embedder:
+    build:
+      context: .
+      dockerfile: Dockerfile.embedder
+    restart: unless-stopped
+    environment:
+      EMBED_MODEL: ${EMBED_MODEL:-facebook/dinov3-vitl16-pretrain-lvd1689m}
+      # The default model is a *gated* repo: you must accept its terms on
+      # Hugging Face and supply a token the first time, or the download fails
+      # with a 401 that reads like a network error. Once the weights are in
+      # your cache the token is no longer needed.
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: /tmp/hf
+      HF_HUB_CACHE: /models/hub
+    volumes:
+      # Model weights come from the host cache, read-only: this container
+      # cannot corrupt what other tools on your machine are using.
+      - ${HF_CACHE_DIR:-~/.cache/huggingface}/hub:/models/hub:ro
+    tmpfs:
+      - /tmp
+    # No published port. The encoder is reachable from the web service and
+    # nothing else, because it is the one process here holding a GPU and a
+    # model, and it authenticates nobody.
+
+volumes:
+  postgres-data:

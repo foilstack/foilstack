@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}foilstack{% endblock %}</title>
+<link rel="icon" href="/static/brand/favicon.svg?v={{ asset_v }}" type="image/svg+xml">
+<link rel="alternate icon" href="/static/brand/favicon-32.png?v={{ asset_v }}" sizes="32x32">
+<link rel="apple-touch-icon" href="/static/brand/apple-touch-icon.png?v={{ asset_v }}">
+<link rel="stylesheet" href="/static/app.css?v={{ asset_v }}">
+</head>
+<body class="app">
+
+{% set items = [
+  ('import',    'Import',    '/app',       pending or ''),
+  ('inventory', 'Inventory', '/inventory', inventory_rows or ''),
+  ('listings',  'Listings',  '/listings',  listed_count or ''),
+  ('analytics', 'Analytics', '/analytics', ''),
+  ('plugins',   'Plugins',   '/plugins',   '')
+] %}
+
+<div class="topbar">
+  <a class="brand" href="/">
+    <img class="brand-mark" src="/static/brand/mark.svg?v={{ asset_v }}" alt="" width="20" height="20">
+    <b>foilstack</b>
+    <span class="ver">v{{ version }}</span>
+  </a>
+  <div class="tabs">
+    {% for id, label, href, badge in items %}
+    <a class="tab {{ 'on' if nav == id }}" href="{{ href }}">{{ label }}</a>
+    {% endfor %}
+  </div>
+  <div class="spacer"></div>
+  <div class="topbar-meta">
+    <span class="wide">{{ inventory_count }} cards · {{ inventory_value }} at market</span>
+    <span class="host wide"><span class="host-dot"></span>{{ host_label }}</span>
+    {% if multi_user %}
+    <span class="account wide" title="{{ user.email }}">{{ user.email }}</span>
+    <form method="post" action="/logout" class="inline-form">
+      <button class="linkish" type="submit">sign out</button>
+    </form>
+    {% endif %}
+    <a href="https://github.com/foilstack/foilstack">github</a>
+  </div>
+</div>
+
+<div class="shell">
+
+  <div class="rail">
+    <div class="rail-sec">Workflow</div>
+    {% for id, label, href, badge in items %}
+    <a class="nav-item {{ 'on' if nav == id }}" href="{{ href }}">
+      <span>{{ label }}</span>
+      <span class="nav-badge">{{ badge }}</span>
+    </a>
+    {% endfor %}
+    <div class="rail-spacer"></div>
+    <a class="coffee" href="{{ support_url }}" target="_blank" rel="noopener noreferrer">
+      <span class="coffee-cup" aria-hidden="true"></span>
+      <span>
+        <b>Buy me a coffee</b>
+        <span class="coffee-sub">foilstack is free and always will be</span>
+      </span>
+    </a>
+  </div>
+
+  <div class="screen">
+    {% block screen %}{% endblock %}
+  </div>
+
+</div>
+
+<!-- Moved and re-pointed by static/zoom.js. One element for the whole page:
+     see the note in app.css for why this cannot live inside the thumbnail. -->
+<div class="zoom" id="zoom" aria-hidden="true">
+  <img alt="" id="zoom-img">
+  <div class="zoom-cap" id="zoom-cap"></div>
+</div>
+
+<div class="statusbar">
+  <span>{% block status %}ready{% endblock %}</span>
+  <div class="spacer"></div>
+  <span>price data: {{ price_source }} · synced {{ synced_ago }}</span>
+  <span>AGPL-3.0</span>
+</div>
+
+<script src="/static/zoom.js?v={{ asset_v }}"></script>
+</body>
+</html>

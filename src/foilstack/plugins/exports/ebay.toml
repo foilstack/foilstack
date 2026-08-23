@@ -1,0 +1,31 @@
+name = "ebay"
+label = "eBay"
+description = "A minimal eBay bulk-listing sheet. Category and shipping are left blank on purpose — they are account-specific and guessing them creates bad listings."
+filename = "ebay-listings.csv"
+
+[[columns]]
+header = "Action"
+const = "Add"
+
+[[columns]]
+header = "CustomLabel"
+field = "source_ref"
+
+[[columns]]
+header = "Title"
+field = "ebay_title"
+
+[[columns]]
+header = "Quantity"
+field = "quantity"
+transform = "int"
+
+[[columns]]
+header = "StartPrice"
+field = "list_price"
+transform = "money2"
+
+[[columns]]
+header = "ConditionID"
+field = "condition"
+transform = "upper"

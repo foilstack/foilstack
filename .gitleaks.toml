@@ -1,0 +1,31 @@
+# Secret scanning config. Runs in pre-commit and CI.
+#
+# This repo is public. A credential pushed here is compromised the moment it
+# lands — GitHub is scraped continuously and deleting the commit does not
+# recall it. Rotation is the only remedy, so the scan runs before the push.
+title = "foilstack"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "foilstack-env-assignment"
+description = "A secret-shaped environment variable assigned a literal value"
+# No lookahead: gitleaks uses Go's RE2, which has none. Placeholders are
+# excluded by the allowlist below rather than by the pattern.
+regex = '''(?i)\b(CLOUDFLARE_TUNNEL_TOKEN|ADMIN_PASSWORD|POSTGRES_PASSWORD|HF_TOKEN|POSTHOG_API_KEY|TURNSTILE_SECRET_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY)\s*[:=]\s*['"]?[A-Za-z0-9_\-\.]{8,}'''
+tags = ["key", "env"]
+
+  [rules.allowlist]
+  regexTarget = "line"
+  regexes = [
+    '''\$\{''',            # ${VAR} indirection
+    '''(?i)your[-_]''',
+    '''(?i)changeme''',
+    '''(?i)placeholder''',
+    '''(?i)example''',
+    '''(?i)xxx+''',
+  ]
+
+[allowlist]
+paths = ['''\.env\.example$''', '''\.gitleaks\.toml$''']

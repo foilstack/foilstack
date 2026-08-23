@@ -1,0 +1,252 @@
+{% extends "base.html" %}
+{% block title %}{{ line.name }} · foilstack{% endblock %}
+{% block status %}{{ line.quantity }} × {{ line.name }}{% if line.sold_quantity %} · {{ line.sold_quantity }} sold{% endif %}{% endblock %}
+
+{% block screen %}
+<div class="bar">
+  <a class="btn" href="/inventory">← Inventory</a>
+  <h1>{{ line.name }}</h1>
+  <span class="bar-note">{{ line.game }}{% if line.set_name %} · {{ line.set_name }}{% endif %}{% if line.number %} · #{{ line.number }}{% endif %}</span>
+  <div class="spacer"></div>
+  <span class="bar-note">{{ line.quantity }} in inventory across {{ batches|length }} import{{ '' if batches|length == 1 else 's' }}</span>
+</div>
+
+<div class="split">
+  <div class="run-side">
+    <div class="thumb ref card-hero">
+      <img src="/card/{{ line.card_id }}/image" alt="{{ line.name }}">
+      <span class="thumb-tag">catalogue</span>
+    </div>
+
+    <div class="panel-facts" style="margin-top: 12px">
+      <div><span>Quantity</span><b>{{ line.quantity }}</b></div>
+      <div><span>In stock</span><b>{{ line.stock_quantity }}</b></div>
+      {% if line.sold_quantity %}<div><span>Sold</span><b>{{ line.sold_quantity }}</b></div>{% endif %}
+      <div><span>Condition</span><b>{{ line.conditions }}</b></div>
+      <div><span>Printing</span><b>{{ line.printing_label }}</b></div>
+      <div><span>Market each</span><b>{{ line.market|money if line.market is not none else '—' }}</b></div>
+      <div><span>Cost each (avg)</span><b>{{ line.cost|money if line.cost is not none else '—' }}</b></div>
+      <div><span>Listed on</span><b>{{ line.listed_label }}</b></div>
+    </div>
+
+    {% for ch in charts %}
+    <div class="trend">
+      <div class="trend-head">
+        <span class="trend-title">Market price</span>
+        {% if charts|length > 1 %}<span class="trend-sub">{{ ch.sub_type }}</span>{% endif %}
+      </div>
+
+      {% if ch.spark.points %}
+        <svg class="spark" viewBox="0 0 {{ ch.spark.width }} {{ ch.spark.height }}"
+             width="100%" height="{{ ch.spark.height }}" role="img"
+             aria-label="market price, {{ ch.summary.points }} recorded reading(s)">
+          {% if ch.spark.points > 1 %}
+          <path d="{{ ch.spark.area }}" fill="var(--green)" opacity="0.14"/>
+          <path d="{{ ch.spark.path }}" fill="none" stroke="var(--green)"
+                stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+          {% endif %}
+          <circle cx="{{ ch.spark.dot.x }}" cy="{{ ch.spark.dot.y }}" r="2.75" fill="var(--green)"/>
+        </svg>
+
+        <div class="trend-figures">
+          <div class="trend-now">{{ ch.summary.latest|money }}</div>
+          <div class="trend-deltas">
+            {% for label, key in [('7d', 'd7'), ('30d', 'd30')] %}
+            {% set d = ch.summary[key] %}
+            <span class="delta{{ ' up' if d and d.abs > 0 }}{{ ' down' if d and d.abs < 0 }}">
+              {{ label }} {% if d %}{{ '+' if d.abs > 0 }}{{ d.pct }}%{% else %}—{% endif %}
+            </span>
+            {% endfor %}
+          </div>
+        </div>
+
+        {% if ch.summary.points == 1 %}
+        <p class="panel-note">
+          One reading, taken {{ ch.summary.last_on.strftime('%d %b') }}. Prices are
+          recorded daily from here; the shape appears as they move.
+        </p>
+        {% else %}
+        <p class="panel-note">
+          {{ ch.summary.points }} changes since {{ ch.summary.first_on.strftime('%d %b') }} ·
+          low {{ ch.summary.low|money }} · high {{ ch.summary.high|money }}
+        </p>
+        {% endif %}
+      {% else %}
+        <p class="panel-note">
+          Nothing recorded for this printing yet — the <code>prices</code> service
+          writes a reading on its next run.
+        </p>
+      {% endif %}
+    </div>
+    {% else %}
+    <div class="trend">
+      <div class="trend-head"><span class="trend-title">Market price</span></div>
+      <p class="panel-note">
+        No price history for this card. Run
+        <code>foilstack sync-prices</code>, or wait for the scheduled sync.
+      </p>
+    </div>
+    {% endfor %}
+
+    {% if line.guessed %}
+    <p class="panel-note warn">
+      {{ line.guessed }} of {{ line.quantity }}
+      cop{{ 'y has' if line.guessed == 1 else 'ies have' }} no printing chosen,
+      so {{ 'it is' if line.guessed == 1 else 'they are' }} priced as the dearest
+      printing matching the finish. Open a copy and pick the one you hold.
+    </p>
+    {% endif %}
+
+    {% if line.costed < line.quantity %}
+    <p class="panel-note">
+      {{ line.quantity - line.costed }} of {{ line.quantity }} copies have no
+      cost recorded, so the average above covers only part of the line.
+    </p>
+    {% endif %}
+    {% if line.mixed %}
+    <p class="panel-note">
+      These copies are not all the same condition or finish. A marketplace
+      export splits them into separate listings, because condition sets the
+      price — this screen keeps them together because you own one card.
+    </p>
+    {% endif %}
+  </div>
+
+  <div class="run-body">
+    <div class="screen-scroll">
+      {% for b in batches %}
+      <div class="batch">
+        <div class="batch-head">
+          <span class="batch-name">{{ b.filename }}</span>
+          {% if b.created_at %}<span class="batch-when">{{ b.created_at.strftime('%b %d %Y, %H:%M') }}</span>{% endif %}
+          <div class="spacer"></div>
+          <span class="batch-count">{{ b.copies|length }} card{{ '' if b.copies|length == 1 else 's' }}</span>
+        </div>
+        <table class="dtable">
+          <thead>
+            <tr>
+              <th>SCAN</th>
+              <th>FILE</th>
+              <th>CND</th>
+              <th>FINISH</th>
+              <th class="r">COST</th>
+              <th>STATUS</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for c in b.copies %}
+            <tr class="{{ 'is-sold' if c.sold }}">
+              <td class="refcol">
+                {% if c.scan_id %}
+                <span class="thumb-xs" title="{{ c.scan_filename }}"><img src="/scan/{{ c.scan_id }}/image" alt="" loading="lazy"></span>
+                {% else %}
+                <span class="thumb-xs none" title="no scan on file"></span>
+                {% endif %}
+              </td>
+              <td class="muted">
+                {{ c.scan_filename or '—' }}
+                {% if c.auto_accepted %}<span class="pill" title="accepted without review">auto</span>{% endif %}
+              </td>
+              <td>{{ c.condition }}</td>
+              <td class="{{ 'foil-yes' if c.is_foil else 'muted' }}">
+                {{ c.sub_type or c.finish_label }}
+                {% if c.printing_guessed %}<span class="pill warn" title="No printing chosen — priced as the dearest match">guessed</span>{% endif %}
+              </td>
+              <td class="r muted">{{ c.cost|money if c.cost is not none else '—' }}</td>
+              <td>
+                {% if c.sold %}
+                  <span class="pill ok">sold {{ c.sold_price|money if c.sold_price is not none else '' }}</span>
+                {% else %}
+                  <span class="pill">in stock</span>
+                {% endif %}
+              </td>
+              <td class="r"><button class="btn" type="button" data-open="{{ c.id }}">Edit</button></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<aside class="drawer" id="drawer" hidden>
+  <div class="drawer-body" id="drawer-body"></div>
+</aside>
+
+<script>
+/* The per-copy editor. Consolidation stops here: everything editable below
+   belongs to one physical card rather than to the line. */
+const drawer = document.getElementById('drawer');
+const drawerBody = document.getElementById('drawer-body');
+
+async function openCard(id) {
+  const res = await fetch('/api/inventory/' + id);
+  if (!res.ok) return;
+  drawerBody.innerHTML = await res.text();
+  drawer.hidden = false;
+  wireCard(id);
+}
+function closeCard() { drawer.hidden = true; drawerBody.innerHTML = ''; }
+
+document.querySelectorAll('[data-open]').forEach(b =>
+  b.addEventListener('click', () => openCard(b.dataset.open)));
+document.addEventListener('keydown', ev => ev.key === 'Escape' && closeCard());
+
+function wireCard(id) {
+  const form = document.getElementById('card-form');
+  const pick = {};
+
+  drawerBody.querySelectorAll('.chip-set[data-field], .printings[data-field]').forEach(set => {
+    const field = set.dataset.field;
+    const opts = set.querySelectorAll('.chip, .printing');
+    pick[field] = set.querySelector('.chip.on, .printing.on')?.dataset.value;
+    opts.forEach(b => b.addEventListener('click', () => {
+      opts.forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      pick[field] = b.dataset.value;
+      // Naming the printing settles the finish, so the coarse control follows
+      // rather than sitting there contradicting it.
+      if (field === 'sub_type') {
+        const foil = /foil/i.test(b.dataset.value) ? 'foil' : 'nonfoil';
+        pick.finish = foil;
+        drawerBody.querySelectorAll('.chip-set[data-field=finish] .chip').forEach(c =>
+          c.classList.toggle('on', c.dataset.value === foil));
+      }
+    }));
+  });
+
+  function payload(extra) {
+    const f = new FormData(form);
+    return Object.assign({
+      condition: pick.condition,
+      finish: pick.finish,
+      sub_type: pick.sub_type || '',
+      cost: f.get('cost'),
+      sold_price: f.get('sold_price'),
+      notes: f.get('notes'),
+    }, extra || {});
+  }
+  async function save(extra) {
+    const res = await fetch('/api/inventory/' + id, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload(extra)),
+    });
+    if (res.ok) location.reload();
+    else alert((await res.json()).detail || 'could not save');
+  }
+
+  form.addEventListener('submit', ev => { ev.preventDefault(); save(); });
+  drawerBody.querySelector('[data-close]').addEventListener('click', closeCard);
+  drawerBody.querySelectorAll('[data-status]').forEach(b =>
+    b.addEventListener('click', () => save({ status: b.dataset.status })));
+  drawerBody.querySelector('[data-delete]').addEventListener('click', async () => {
+    if (!confirm('Delete this copy permanently? To record a sale, use Mark sold instead.')) return;
+    const res = await fetch('/api/inventory/' + id, { method: 'DELETE' });
+    if (res.ok) location.href = '/inventory';
+  });
+}
+</script>
+{% endblock %}

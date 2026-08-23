@@ -1,0 +1,18 @@
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+        args: ["--maxkb=2048"]
+      # Licences are shipped verbatim. The whitespace hooks are right about
+      # every other file and wrong about these: the OFL asks that the licence
+      # travel with the fonts, and quietly reformatting somebody else's licence
+      # text — even a trailing space — is not our edit to make.
+      - id: end-of-file-fixer
+        exclude: ^(LICENSE|.*/OFL\.txt)$
+      - id: trailing-whitespace
+        exclude: ^(LICENSE|.*/OFL\.txt)$

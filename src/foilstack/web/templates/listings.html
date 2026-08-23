@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}Listing run · foilstack{% endblock %}
+{% block status %}{{ rows|length }} cards · {{ rule_obj.name }} · {{ run_value|money }} at list{% endblock %}
+
+{% block screen %}
+<div class="bar">
+  <h1>Listing run</h1>
+  <span class="bar-note">
+    {{ rows|length }} card{{ '' if rows|length == 1 else 's' }}
+    {% if selected_ids %}selected{% else %}· whole inventory{% endif %}
+  </span>
+  <div class="spacer"></div>
+  <a class="btn" href="/inventory">Back to inventory</a>
+  <button class="btn btn-primary" type="button" id="mark">Mark {{ rows|length }} as listed</button>
+</div>
+
+<div class="split">
+  <div class="run-side">
+    <div class="sec-label">Channels</div>
+    {% for c in channels %}
+    <a class="opt {{ 'on' if c.on }}" href="{{ c.href }}">
+      <input type="checkbox" {{ 'checked' if c.on }} tabindex="-1" aria-hidden="true">
+      <div class="opt-body">
+        <div class="t">{{ c.name }}</div>
+        <div class="s">{{ c.note }}</div>
+        {% if c.exporter %}<div class="s">{{ c.exporter.columns|length }} columns · {{ c.exporter.filename }}</div>{% endif %}
+      </div>
+    </a>
+    {% endfor %}
+    <div class="s" style="font-family: var(--mono); font-size: 10px; color: var(--faint); line-height: 1.6; margin: 6px 0 0;">
+      A channel here is a CSV format, not a connection. Nothing is sent to a
+      marketplace on your behalf — you download the file and upload it yourself.
+    </div>
+
+    <div class="sec-label" style="margin-top: 16px">Pricing rule</div>
+    {% for r in rules %}
+    <a class="opt {{ 'on' if r.on }}" href="{{ r.href }}">
+      <div class="opt-body">
+        <div class="t">{{ r.name }}</div>
+        <div class="s">{{ r.formula }}</div>
+      </div>
+    </a>
+    {% endfor %}
+    <div class="s" style="font-family: var(--mono); font-size: 10px; color: var(--faint); line-height: 1.6; margin: 6px 0 0;">
+      Applied on top of the condition discount. “Low + $0.01” is an
+      approximation: the catalogue gives a market price, not the current lowest
+      listing.
+    </div>
+
+    <div class="run-summary">
+      <div>floor &nbsp; {{ floor|money }}</div>
+      <div>listed value &nbsp; <b>{{ run_value|money }}</b></div>
+      <div>vs market &nbsp; <b>{{ '+' if delta >= 0 }}{{ delta|money }}</b></div>
+    </div>
+
+    <div class="sec-label" style="margin-top: 16px">Download</div>
+    {% for c in channels %}
+    {% if c.on and c.exporter %}
+    <a class="btn" style="width: 100%; margin-bottom: 4px" href="{{ c.csv_href }}">{{ c.exporter.label }} CSV</a>
+    {% endif %}
+    {% endfor %}
+  </div>
+
+  <div class="run-body">
+    <div class="screen-scroll">
+      <table class="dtable">
+        <thead>
+          <tr>
+            <th>CARD</th>
+            <th>SKU</th>
+            <th>CND</th>
+            <th class="r">QTY</th>
+            <th class="r">MARKET</th>
+            <th class="r">LIST PRICE</th>
+            <th>STATUS</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr>
+            <td class="name">{{ r.name }}</td>
+            <td class="faint">{{ r.sku }}</td>
+            <td>{{ r.condition }}</td>
+            <td class="r {{ 'strong' if r.quantity > 1 }}">{{ r.quantity }}</td>
+            <td class="r muted">{{ r.market|money if r.market is not none else '—' }}</td>
+            <td class="r strong">{{ r.list_price|money if r.list_price is not none else '—' }}</td>
+            <td>
+              {% if r.listed %}<span class="pill ok">listed · {{ r.listed_channels }}</span>
+              {% else %}<span class="pill">ready</span>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if not rows %}
+      <div class="empty">nothing selected — pick rows on the inventory screen</div>
+      {% endif %}
+    </div>
+
+    <div class="joblog">
+      <div class="sec-label" style="margin-bottom: 6px">Job log</div>
+      {% for l in log %}
+      <div class="line"><span class="t">{{ l.t }}</span> &nbsp;{{ l.msg }}</div>
+      {% else %}
+      <div class="line">nothing yet this session</div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<script>
+document.getElementById('mark').addEventListener('click', async ev => {
+  const ids = {{ rows | map(attribute='ids') | sum(start=[]) | list | tojson }};
+  const channels = {{ picked | tojson }};
+  if (!ids.length) return;
+  ev.target.disabled = true;
+  const res = await fetch('/api/listings/mark', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids, channels }),
+  });
+  if (res.ok) location.reload(); else ev.target.disabled = false;
+});
+</script>
+{% endblock %}

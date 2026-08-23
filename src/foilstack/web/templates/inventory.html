@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% block title %}Inventory · foilstack{% endblock %}
+{% block status %}<span id="status">{{ totals.count }} in stock · {{ totals.market|money }} at market{% if totals.sold_rows %} · {{ totals.sold_rows }} sold, {{ totals.realised|money }} realised{% endif %}</span>{% endblock %}
+
+{% block screen %}
+<div class="bar">
+  <h1>Inventory</h1>
+  <form method="get" action="/inventory">
+    <input class="search" type="search" name="q" value="{{ q }}" placeholder="filter name, set, sku…">
+    {% if rule != 'market' %}<input type="hidden" name="rule" value="{{ rule }}">{% endif %}
+  </form>
+  <div class="chip-set">
+    <a class="chip chip-filter {{ 'on' if show == 'stock' }}" href="/inventory?show=stock{% if q %}&q={{ q }}{% endif %}">In stock {{ counts.stock }}</a>
+    <a class="chip chip-filter {{ 'on' if show == 'sold' }}" href="/inventory?show=sold{% if q %}&q={{ q }}{% endif %}">Sold {{ counts.sold }}</a>
+    <a class="chip chip-filter {{ 'on' if show == 'all' }}" href="/inventory?show=all{% if q %}&q={{ q }}{% endif %}">All {{ counts.all }}</a>
+    {% if counts.printing %}
+    <a class="chip chip-filter {{ 'on' if show == 'printing' }}" href="/inventory?show=printing">Needs printing {{ counts.printing }}</a>
+    {% endif %}
+  </div>
+  <span class="bar-note" id="rowlabel">{{ rows|length }} lines</span>
+  <div class="spacer"></div>
+  {% for spec in exporters %}
+  <button class="btn" type="submit" form="sel" formaction="/export/{{ spec.name }}" formmethod="get">{{ spec.label }} CSV</button>
+  {% endfor %}
+  <button class="btn btn-danger" type="button" id="delbtn" hidden>Delete</button>
+  <button class="btn btn-primary" type="submit" form="sel" formaction="/listings" formmethod="get" id="listbtn">List selected →</button>
+</div>
+
+<div class="screen-scroll">
+  <form id="sel" method="get" action="/listings">
+    <input type="hidden" name="rule" value="{{ rule }}">
+    <input type="hidden" name="show" value="{{ show }}">
+    <table class="dtable">
+      <thead>
+        <tr>
+          <th class="cbcol"><input type="checkbox" id="all"></th>
+          <th>CARD</th>
+          <th></th>
+          <th>GAME / SET</th>
+          <th class="r">QTY</th>
+          <th>CONDITION</th>
+          <th>PRINTING</th>
+          <th class="r">COST</th>
+          <th class="r">MARKET</th>
+          <th class="r">MARGIN</th>
+          <th>LISTED</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr data-row class="{{ 'is-sold' if r.sold }}"
+            data-value="{{ '%.2f'|format((r.market or 0) * r.quantity) }}"
+            data-sold="{{ 1 if r.sold else 0 }}"
+            data-name="{{ r.name }}">
+          <td>
+            <input type="checkbox" class="groupbox" data-ids="{{ r.ids|join(',') }}">
+            {# One hidden input per copy, so the server contract stays "a list
+               of inventory ids" no matter how the UI groups them. #}
+            {% for i in r.ids %}<input type="hidden" name="id" value="{{ i }}" disabled>{% endfor %}
+          </td>
+          <td class="refcol">
+            {# The catalogue image, not a scan: with several copies behind this
+               line, picking one of their scans to represent it is arbitrary. #}
+            <span class="thumb-xs ref" title="catalogue reference"><img src="/card/{{ r.card_id }}/image" alt="" loading="lazy"></span>
+          </td>
+          <td class="name">
+            <a class="rowname" href="/inventory/{{ r.card_id }}">{{ r.name }}</a>
+            {% if r.sold %}<span class="pill">sold</span>
+            {% elif r.sold_quantity %}<span class="pill">{{ r.sold_quantity }} sold</span>{% endif %}
+          </td>
+          <td class="muted">{{ r.game }}{% if r.set_name %} / {{ r.set_name }}{% endif %}</td>
+          <td class="r {{ 'strong' if r.quantity > 1 }}">{{ r.quantity }}</td>
+          <td class="{{ 'muted' if not r.mixed }}">{{ r.conditions }}</td>
+          <td class="{{ 'foil-yes' if r.any_foil else 'muted' }}">
+            {{ r.printing_label }}
+            {% if r.guessed %}<span class="pill warn" title="printing not chosen — priced as the dearest match">?</span>{% endif %}
+          </td>
+          <td class="r muted">{{ r.cost|money if r.cost is not none else '—' }}</td>
+          <td class="r">{{ r.market|money if r.market is not none else '—' }}</td>
+          <td class="r pos">{{ r.margin_pct ~ '%' if r.margin_pct is not none else '—' }}</td>
+          <td class="muted">{{ r.listed_label }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if not rows %}
+    <div class="empty">
+      {% if show == 'printing' %}every card is priced on a printing you chose
+      {% elif q %}nothing matches “{{ q }}”
+      {% else %}nothing confirmed yet — import an archive to get started{% endif %}
+    </div>
+    {% endif %}
+  </form>
+</div>
+
+<script>
+const rows = Array.from(document.querySelectorAll('tr[data-row]'));
+const boxes = rows.map(r => r.querySelector('.groupbox'));
+const all = document.getElementById('all');
+const listbtn = document.getElementById('listbtn');
+const delbtn = document.getElementById('delbtn');
+const label = document.getElementById('rowlabel');
+
+/* A checked line submits one hidden input per copy it holds. Disabled inputs
+   are not submitted, so enabling them is the whole of "select this line" — and
+   the server keeps receiving a flat list of inventory ids however the UI
+   chooses to group them. */
+function syncHidden(row, on) {
+  row.querySelectorAll('input[type=hidden][name=id]').forEach(h => { h.disabled = !on; });
+}
+
+function sync() {
+  const n = boxes.filter(b => b.checked).length;
+  rows.forEach((r, i) => {
+    r.classList.toggle('sel', boxes[i].checked);
+    syncHidden(r, boxes[i].checked);
+  });
+  all.checked = n > 0 && n === boxes.length;
+  all.indeterminate = n > 0 && n < boxes.length;
+  // Counted in cards, not lines: "List 3 selected" for three lines holding
+  // five cards would be a lie about what is going to the marketplace.
+  const cards = rows.reduce((a, r, i) =>
+    a + (boxes[i].checked ? r.querySelectorAll('input[type=hidden][name=id]').length : 0), 0);
+  listbtn.textContent = cards ? 'List ' + cards + ' selected →' : 'List selected →';
+  label.textContent = '{{ rows|length }} lines' + (cards ? ' · ' + cards + ' cards selected' : '');
+
+  // Destructive, so it is absent rather than merely disabled until there is
+  // something to destroy — nothing to mis-click at rest.
+  delbtn.hidden = cards === 0;
+  delbtn.textContent = 'Delete ' + cards;
+}
+
+function selectedIds() {
+  return rows.flatMap((r, i) => boxes[i].checked
+    ? Array.from(r.querySelectorAll('input[type=hidden][name=id]')).map(h => +h.value)
+    : []);
+}
+
+delbtn.addEventListener('click', async () => {
+  const chosen = rows.filter((r, i) => boxes[i].checked);
+  const ids = selectedIds();
+  if (!ids.length) return;
+
+  const value = chosen.reduce((a, r) => a + parseFloat(r.dataset.value || 0), 0);
+  const names = chosen.slice(0, 3).map(r => r.dataset.name);
+  const rest = chosen.length - names.length;
+
+  // The count and the money, both, because the mistake this guards against is
+  // "select all" followed by a reflex — and a bare row count does not make
+  // that land.
+  const ok = confirm(
+    'Delete ' + ids.length + ' card' + (ids.length === 1 ? '' : 's') +
+    ' worth $' + value.toFixed(2) + ' at market?\n\n' +
+    names.join(', ') + (rest > 0 ? ' and ' + rest + ' more' : '') +
+    '\n\nThis cannot be undone. Their scans stay on disk, so re-importing the ' +
+    'archive would bring them back.'
+  );
+  if (!ok) return;
+
+  const res = await fetch('/api/inventory/delete', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  });
+  if (res.ok) { location.reload(); return; }
+  alert((await res.json()).detail || 'could not delete');
+});
+
+boxes.forEach(b => b.addEventListener('change', sync));
+all.addEventListener('change', () => { boxes.forEach(b => { b.checked = all.checked; }); sync(); });
+rows.forEach((r, i) => r.addEventListener('click', ev => {
+  if (ev.target.closest('input, a, button')) return;
+  boxes[i].checked = !boxes[i].checked;
+  sync();
+}));
+sync();
+</script>
+{% endblock %}

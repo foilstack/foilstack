@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>foilstack — open-source card scanning and listing</title>
+<meta name="description" content="Drop in a zip of card scans. Get an identified, priced inventory and a marketplace CSV. Open source, self-hostable, your scans never leave your machine.">
+<link rel="icon" href="/static/brand/favicon.svg?v={{ asset_v }}" type="image/svg+xml">
+<link rel="alternate icon" href="/static/brand/favicon-32.png?v={{ asset_v }}" sizes="32x32">
+<link rel="apple-touch-icon" href="/static/brand/apple-touch-icon.png?v={{ asset_v }}">
+<link rel="stylesheet" href="/static/app.css?v={{ asset_v }}">
+</head>
+<body class="site">
+
+<header class="site-nav">
+  <a class="brand" href="/"><img class="brand-mark" src="/static/brand/mark.svg?v={{ asset_v }}" alt="" width="20" height="20"><b>foilstack</b><span class="ver">v{{ version }}</span></a>
+  <nav>
+    <a href="#how">How it works</a>
+    <a href="#printings">Why printings matter</a>
+    <a href="#selfhost">Self-host</a>
+    <a class="btn btn-primary" href="/app">Open the app</a>
+  </nav>
+</header>
+
+<section class="hero">
+  <p class="eyebrow">AGPL-3.0 · SELF-HOSTABLE{% if not multi_user %} · NO ACCOUNT{% endif %}</p>
+  <h1>Stop paying to list your cards.</h1>
+  <p class="lede">
+    Drop in a <code>.zip</code> of card scans. Get back an identified, priced
+    inventory and a CSV your marketplace already accepts.
+  </p>
+  <div class="hero-actions">
+    <a class="btn btn-primary btn-lg" href="/app">{{ 'Sign in' if multi_user else 'Open the app' }}</a>
+    <a class="btn btn-lg" href="https://github.com/foilstack/foilstack">View source</a>
+  </div>
+  <p class="hero-note">
+    {% if multi_user %}Your scans, inventory and exports are yours alone — no other account can see them.
+    {% else %}Your scans are processed on the host running this and are never sent anywhere else.{% endif %}
+  </p>
+</section>
+
+<section class="band" id="how">
+  <h2 class="band-h">Four steps, one archive</h2>
+  <div class="steps">
+    <div class="step"><div class="step-n">01</div><h3>Import</h3>
+      <p>A <code>.zip</code> of images, one card per file. Filenames don't matter.</p></div>
+    <div class="step"><div class="step-n">02</div><h3>Match</h3>
+      <p>Every image is encoded and searched against a catalogue of reference card
+         images. Confident matches go straight through.</p></div>
+    <div class="step"><div class="step-n">03</div><h3>Review</h3>
+      <p>Everything else waits in a queue with its runners-up and their scores, so
+         you decide the close calls.</p></div>
+    <div class="step"><div class="step-n">04</div><h3>Export</h3>
+      <p>A TCGplayer or eBay CSV you upload yourself. Nothing here touches a
+         marketplace on your behalf.</p></div>
+  </div>
+</section>
+
+<section class="band band-tint" id="printings">
+  <h2 class="band-h">Why there is a review queue</h2>
+  <p class="band-lede">
+    Reprints share artwork. Image search gives you a name you can trust and a
+    printing you cannot — the same illustration appears in set after set,
+    separated on the card by a symbol a few pixels wide.
+  </p>
+  <div class="proof">
+    <div class="proof-row proof-head"><span>Same scan, Base Set Charizard</span><span class="num">score</span><span class="num">price</span></div>
+    <div class="proof-row"><span>Charizard 004/102 · Holofoil</span><span class="num">0.932</span><span class="num">$855.52</span></div>
+    <div class="proof-row alt"><span>Charizard 004/102 · 1st Edition Holofoil</span><span class="num">0.913</span><span class="num">$10,000.00</span></div>
+  </div>
+  <p class="band-note">
+    Nineteen thousandths of a point apart, and twelve times the money. A tool
+    that shows you only the winner will eventually sell that card for $855.
+    So auto-accept requires a high score, a clear margin over the runner-up,
+    <em>and</em> — when the runner-up is the same card in another printing —
+    prices close enough that being wrong doesn't matter.
+  </p>
+</section>
+
+<section class="band" id="selfhost">
+  <h2 class="band-h">Run it yourself</h2>
+  <p class="band-lede">
+    Three containers and a Postgres volume. No telemetry, no upload of your
+    images to anyone, and — running it yourself — no account to create: one
+    implicit owner holds everything, and the login screen never appears.
+  </p>
+  <pre class="code-block"><code>git clone https://github.com/foilstack/foilstack.git
+cd foilstack &amp;&amp; cp .env.example .env
+docker compose up -d          # migrations run on start
+
+docker compose exec web python -m foilstack.cli ingest --source tcgcsv --game pokemon
+docker compose exec web python -m foilstack.cli embed</code></pre>
+  <div class="two-up">
+    <div>
+      <h3>Bring your own catalogue</h3>
+      <p>Source plugins fetch card data from upstream on <em>your</em> machine —
+         this project redistributes no prices and no images. Adding a game or a
+         sport means writing one plugin.</p>
+    </div>
+    <div>
+      <h3>Exporters are just files</h3>
+      <p>A marketplace exporter is a TOML column mapping, not code. Anyone can
+         read one in ten seconds and be certain it does nothing else.</p>
+    </div>
+  </div>
+</section>
+
+<footer class="site-foot">
+  <span>foilstack · AGPL-3.0</span>
+  <span><a href="https://github.com/foilstack/foilstack">github.com/foilstack/foilstack</a></span>
+  <span><a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">Buy me a coffee</a></span>
+  <span class="dim">Running this for yourself or your own shop triggers no licence obligations.</span>
+</footer>
+
+</body>
+</html>

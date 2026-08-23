@@ -1,0 +1,44 @@
+name = "tcgplayer"
+label = "TCGplayer"
+description = "Columns accepted by the TCGplayer bulk listing uploader."
+filename = "tcgplayer-listings.csv"
+
+[[columns]]
+header = "TCGplayer Id"
+field = "source_ref"
+
+[[columns]]
+header = "Product Line"
+field = "game"
+
+[[columns]]
+header = "Set Name"
+field = "set_name"
+
+[[columns]]
+header = "Product Name"
+field = "name"
+
+[[columns]]
+header = "Number"
+field = "number"
+
+[[columns]]
+header = "Condition"
+field = "condition"
+transform = "upper"
+
+[[columns]]
+header = "TCG Market Price"
+field = "market"
+transform = "money2"
+
+[[columns]]
+header = "Total Quantity"
+field = "quantity"
+transform = "int"
+
+[[columns]]
+header = "TCG Marketplace Price"
+field = "list_price"
+transform = "money2"
