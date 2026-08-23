@@ -1,0 +1,31 @@
+# GPU for the encoder. An overlay rather than part of the base file, because a
+# device reservation on a machine with no GPU is a hard failure at `up`, and
+# the default has to be a stack that starts anywhere:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#
+# Or set it once, and every plain `docker compose` command picks it up:
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml
+#
+# Needs the NVIDIA Container Toolkit on the host. Check with:
+#
+#   docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu24.04 nvidia-smi
+#
+# The encoder falls back to CPU on its own if the GPU is not visible, so a
+# misconfiguration here is slow rather than broken — check the startup line,
+# which names the device it loaded on.
+services:
+  embedder:
+    build:
+      args:
+        # Must match the host driver. `nvidia-smi` prints the CUDA version it
+        # supports in the top right; cu130 wants 580 or newer.
+        TORCH_INDEX: ${FOILSTACK_TORCH_INDEX:-https://download.pytorch.org/whl/cu130}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
