@@ -1,13 +1,17 @@
 repos:
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.21.2
+    rev: v8.30.0
     hooks:
       - id: gitleaks
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: check-added-large-files
         args: ["--maxkb=2048"]
+      # Overlaps with gitleaks and costs a line. A stray id_rsa or .pem is the
+      # one secret that arrives as a whole file rather than a value on a line,
+      # and a check aimed squarely at it is cheap insurance.
+      - id: detect-private-key
       # Licences are shipped verbatim. The whitespace hooks are right about
       # every other file and wrong about these: the OFL asks that the licence
       # travel with the fonts, and quietly reformatting somebody else's licence
