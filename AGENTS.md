@@ -44,6 +44,29 @@ Then actually open the PNGs. A screenshot you did not look at is worth nothing.
 Playwright is a dev dependency; `uv run playwright install chromium` is enough,
 and the `--with-deps` step that wants sudo is not needed.
 
+## Formatting and types
+
+`ruff` formats and lints; `mypy` type-checks `src/`. All three run in
+pre-commit and in CI, and the settings live in `pyproject.toml` so a local run
+and the hook cannot disagree.
+
+```bash
+uv run ruff check --fix .   &&  uv run ruff format .  &&  uv run mypy
+```
+
+Two settings that look like laziness and are not:
+
+* **B008 is exempted for FastAPI's `Depends`/`Query`/`Form`**, by name rather
+  than by switching the rule off. Those are function calls in argument
+  defaults on purpose; B006 still catches a real mutable default.
+* **mypy is not `--strict`.** Strict reports 126 errors, nearly all "annotate
+  this". A number that size gets ignored wholesale rather than fixed, and then
+  the check means nothing. Tighten a module at a time as annotations arrive.
+
+`6c12bdd` reformatted the whole codebase and is listed in
+`.git-blame-ignore-revs`. Add a revision there only when the commit is
+genuinely mechanical.
+
 ## Tests
 
 ```bash

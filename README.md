@@ -228,6 +228,13 @@ useless. No card data ships in any form the application reads.
 [AGENTS.md](AGENTS.md) has the working notes: how the pieces fit, the
 conventions, and the handful of mistakes this codebase has already made once.
 
+Formatting, linting and type checking run in pre-commit:
+
+```bash
+uv run pre-commit install     # before your first commit
+uv run pre-commit run --all-files
+```
+
 Run the tests:
 
 ```bash
