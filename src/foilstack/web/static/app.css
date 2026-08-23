@@ -1023,13 +1023,37 @@ body.site { background: var(--paper); }
   overflow: hidden; background: var(--surface-2);
 }
 .proof-row {
-  display: grid; grid-template-columns: 1fr 90px 130px; gap: 10px;
-  padding: 11px 15px; border-bottom: 1px solid var(--rule-soft); font-size: 13.5px;
+  display: grid; grid-template-columns: 1fr 96px 120px; gap: 14px;
+  padding: 12px 15px; border-bottom: 1px solid var(--rule-soft); font-size: 13.5px;
+  align-items: center;
 }
+/* The bar itself is `.track`, shared with the review queue, so the geometry
+   and the fill colour cannot drift from the product. The label beneath it is
+   restated because the queue's copy is scoped to `.qconf`; it is four
+   declarations, and hoisting them would touch a screen this change has no
+   business touching. */
+.proof .conf .track { margin-top: 0; }
+.proof .conf .lbl {
+  display: block; margin-top: 4px;
+  font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+}
+.proof-head .pill { margin-left: 6px; }
 .proof-row:last-child { border-bottom: none; }
 .proof-head { background: var(--surface-3); font-size: 10.5px; text-transform: uppercase;
   letter-spacing: 0.06em; color: var(--faint); font-weight: 650; }
 .proof-row.alt { background: #fdf7f2; color: var(--warn); }
+/* The costly row is tinted, but its bar stays green: both of these *are*
+   confident matches, and that is the whole point — confidence does not tell
+   the printings apart. A red bar here would argue the opposite. */
+.proof-row.alt .lbl { color: var(--warn); }
+
+@media (max-width: 620px) {
+  /* Three columns will not fit a phone. The name gets the full width and the
+     bar sits beside the price underneath it. */
+  .proof-row { grid-template-columns: 1fr 110px; gap: 8px 14px; }
+  .proof-row > span:first-child { grid-column: 1 / -1; }
+  .proof-head > span:not(:first-child) { display: none; }
+}
 .proof-row .num { font-family: var(--mono); text-align: right; }
 
 .code-block {

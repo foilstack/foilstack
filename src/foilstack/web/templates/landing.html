@@ -88,14 +88,39 @@
     printing you cannot — the same illustration appears in set after set,
     separated on the card by a symbol a few pixels wide.
   </p>
+  {# The confidence bar is the app's own — same markup, same classes, same
+     integer rounding as the review queue renders. Two bars this close beside
+     that price gap is the argument, and it makes it faster than the numbers
+     did. #}
   <div class="proof">
-    <div class="proof-row proof-head"><span>One scan of Charizard 004/102</span><span class="num">score</span><span class="num">market</span></div>
-    <div class="proof-row"><span>Base Set · Holofoil</span><span class="num">0.932</span><span class="num">$855.52</span></div>
-    <div class="proof-row alt"><span>Base Set (Shadowless) · 1st Edition Holofoil</span><span class="num">0.913</span><span class="num">$10,000.00</span></div>
+    <div class="proof-row proof-head">
+      <span>One scan of Charizard 004/102
+        <span class="pill warn" title="This card has several printings at different prices">?</span>
+      </span>
+      <span>match</span>
+      <span class="num">market</span>
+    </div>
+    <div class="proof-row">
+      <span>Base Set · Holofoil</span>
+      <span class="conf">
+        <span class="track"><i style="width: 93%"></i></span>
+        <span class="lbl">93% match</span>
+      </span>
+      <span class="num">$855.52</span>
+    </div>
+    <div class="proof-row alt">
+      <span>Base Set (Shadowless) · 1st Edition Holofoil</span>
+      <span class="conf">
+        <span class="track"><i style="width: 91%"></i></span>
+        <span class="lbl">91% match</span>
+      </span>
+      <span class="num">$10,000.00</span>
+    </div>
   </div>
   <p class="proof-note">
-    Both prices are real rows from the catalogue foilstack fetched. The two
-    scores are illustrative — a scan of your card produces its own.
+    Both prices are real rows from the catalogue foilstack fetched, and the
+    bars are the review queue's own. The two scores are illustrative — a scan
+    of your card produces its own.
   </p>
   <p class="band-note">
     The same illustration, printed twice, separated by a small black symbol and
