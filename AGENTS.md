@@ -196,6 +196,25 @@ Two habits worth keeping:
 
 ## Deployment
 
+Deploy with the commit in hand, so the running build can say what it is:
+
+```bash
+GIT_SHA="$(git rev-parse --short HEAD)$(git diff --quiet HEAD || echo -dirty)" \
+  docker compose up -d --build
+curl -sS https://your-host/healthz     # ok / foilstack 0.1.9 (8c2cd47)
+```
+
+Commit before you build. The `-dirty` suffix is there because a build from an
+uncommitted tree labelled with a clean commit claims code it does not contain,
+and that has already happened here: a deploy built before its own commit
+reported the commit *before* the fix while running the fix. The version behaves
+the same way — the bump hook runs at commit time, so a build made first carries
+the previous number.
+
+It catches staged and unstaged edits, not untracked files, which do still reach
+the build context. Committing first is the habit; the suffix is the safety net
+for when you forget.
+
 `docker compose up -d` runs `alembic upgrade head` before uvicorn, so a deploy
 applies its own migrations. The `backup` service dumps on a schedule and writes
 `BACKUP_FAILING` into the backup directory when a run produces nothing usable —
