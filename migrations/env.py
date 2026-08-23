@@ -51,9 +51,7 @@ def include_object(obj, name, type_, reflected, compare_to):
     expressed in the model metadata, so autogenerate sees an index Postgres has
     and the models do not, and helpfully proposes dropping it.
     """
-    if type_ == "index" and name == "ix_card_embeddings_hnsw":
-        return False
-    return True
+    return not (type_ == "index" and name == "ix_card_embeddings_hnsw")
 
 
 def run_migrations_offline() -> None:

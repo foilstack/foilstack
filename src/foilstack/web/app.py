@@ -11,7 +11,6 @@ through stays on screen while you decide about one card.
 
 from __future__ import annotations
 
-import asyncio
 import datetime as dt
 import hashlib
 import logging
@@ -22,12 +21,22 @@ from pathlib import Path
 
 import httpx
 from fastapi import (
-    BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request,
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
     UploadFile,
 )
 from fastapi.responses import (
-    FileResponse, HTMLResponse, JSONResponse, PlainTextResponse,
-    RedirectResponse, Response,
+    FileResponse,
+    HTMLResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
 )
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -134,15 +143,15 @@ def _startup() -> None:
 
 def _aware(when: dt.datetime) -> dt.datetime:
     """Postgres hands these back tz-aware; a stray naive one must not crash a page."""
-    return when if when.tzinfo else when.replace(tzinfo=dt.timezone.utc)
+    return when if when.tzinfo else when.replace(tzinfo=dt.UTC)
 
 
 def _ago(then: dt.datetime | None) -> str:
     if then is None:
         return "never"
     if then.tzinfo is None:
-        then = then.replace(tzinfo=dt.timezone.utc)
-    seconds = (dt.datetime.now(dt.timezone.utc) - then).total_seconds()
+        then = then.replace(tzinfo=dt.UTC)
+    seconds = (dt.datetime.now(dt.UTC) - then).total_seconds()
     if seconds < 90:
         return "just now"
     for unit, size in (("min", 60), ("hr", 3600), ("d", 86400)):
@@ -659,7 +668,7 @@ def page_analytics(
     # computable from what we hold; fees and shipping are not, and are not
     # invented here — they are named as missing on the screen instead.
     sold = [r for r in rows if r["sold"]]
-    horizon = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)
+    horizon = dt.datetime.now(dt.UTC) - dt.timedelta(days=30)
     recent = [
         r for r in sold
         if r["sold_at"] and _aware(r["sold_at"]) >= horizon
@@ -916,7 +925,7 @@ async def api_mark_listed(
     for item in items:
         item.listed = 1
         item.listed_channels = label
-        item.listed_at = dt.datetime.now(dt.timezone.utc)
+        item.listed_at = dt.datetime.now(dt.UTC)
     session.commit()
     joblog.add(f"marked {len(items)} rows listed on {label}")
     return {"ok": True, "marked": len(items)}
@@ -1062,7 +1071,7 @@ async def api_inventory_update(
             raise HTTPException(400, "unknown status")
         if status == "sold" and item.status != "sold":
             item.status = "sold"
-            item.sold_at = dt.datetime.now(dt.timezone.utc)
+            item.sold_at = dt.datetime.now(dt.UTC)
         elif status == "stock" and item.status != "stock":
             # Unsold: clear the sale so realised profit does not keep counting
             # a card that is back on the shelf.

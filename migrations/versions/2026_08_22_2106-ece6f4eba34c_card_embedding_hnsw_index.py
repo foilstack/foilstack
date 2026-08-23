@@ -25,7 +25,6 @@ Revises: 327c4a89b5f1
 from __future__ import annotations
 
 from alembic import op
-import sqlalchemy as sa
 
 
 revision = 'ece6f4eba34c'

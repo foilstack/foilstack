@@ -315,7 +315,7 @@ async def cmd_sync_prices(args) -> int:
 
 
 def _now() -> dt.datetime:
-    return dt.datetime.now(dt.timezone.utc)
+    return dt.datetime.now(dt.UTC)
 
 
 def cmd_plugins(_args) -> int:

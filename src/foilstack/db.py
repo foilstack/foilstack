@@ -24,8 +24,18 @@ from typing import Any
 
 from pgvector.sqlalchemy import HALFVEC
 from sqlalchemy import (
-    Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text,
-    UniqueConstraint, create_engine, func,
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    create_engine,
+    func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
@@ -37,7 +47,7 @@ class Base(DeclarativeBase):
 
 
 def _now() -> dt.datetime:
-    return dt.datetime.now(dt.timezone.utc)
+    return dt.datetime.now(dt.UTC)
 
 
 class User(Base):
@@ -247,7 +257,7 @@ class ImportJob(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    scans: Mapped[list["Scan"]] = relationship(back_populates="job")
+    scans: Mapped[list[Scan]] = relationship(back_populates="job")
 
 
 class Scan(Base):
@@ -292,7 +302,7 @@ class Scan(Base):
     )
 
     job: Mapped[ImportJob] = relationship(back_populates="scans")
-    candidates: Mapped[list["Candidate"]] = relationship(
+    candidates: Mapped[list[Candidate]] = relationship(
         back_populates="scan", cascade="all, delete-orphan",
         order_by="Candidate.rank",
     )

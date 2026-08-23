@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sqlalchemy import create_engine, select, text  # noqa: E402
+from sqlalchemy import create_engine, select, text
 
 EMAIL = "preview@foilstack.invalid"
 PASSWORD = "preview-only-password"
@@ -72,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"serving {url}  ({EMAIL} / {PASSWORD})")
 
         if args.shots:
-            from shots import main as shoot  # noqa: PLC0415
+            from shots import main as shoot
 
             sys.path.insert(0, str(Path(__file__).resolve().parent))
             card_id = _first_card(preview_url)
@@ -100,10 +100,7 @@ def _seed(source_url: str, preview_url: str) -> None:
     import datetime as dt
 
     from foilstack import db
-    from foilstack.config import get_settings
     from foilstack.web import auth
-
-    scans_dir = get_settings().scans_dir
 
     src = create_engine(source_url, future=True)
     with src.connect() as conn:
@@ -182,7 +179,7 @@ def _seed(source_url: str, preview_url: str) -> None:
                 status="sold" if i == 5 else "stock",
                 sold_price=round(float(card["market"]) * 0.9, 2) if i == 5 else None,
                 sold_at=(
-                    dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=9)
+                    dt.datetime.now(dt.UTC) - dt.timedelta(days=9)
                     if i == 5 else None
                 ),
             ))
@@ -216,7 +213,12 @@ def _seed(source_url: str, preview_url: str) -> None:
     # One card with the ambiguity the picker exists for: three printings that
     # all answer to "foil", an order of magnitude apart.
     amb = cards[0]
-    for sub, mult in (("1st Edition Holofoil", 30.0), ("Unlimited Holofoil", 6.4), ("Holofoil", 1.0)):
+    ambiguous = (
+        ("1st Edition Holofoil", 30.0),
+        ("Unlimited Holofoil", 6.4),
+        ("Holofoil", 1.0),
+    )
+    for sub, mult in ambiguous:
         base = float(amb["market"] or 1.0) * mult
         session.merge(db.CardPrice(
             card_id=amb["id"], sub_type=sub, market=round(base, 2),

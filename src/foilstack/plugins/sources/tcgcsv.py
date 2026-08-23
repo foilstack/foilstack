@@ -12,7 +12,8 @@ prices for a printing, which is a real observed number and not an appraisal.
 from __future__ import annotations
 
 import asyncio
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
+from typing import ClassVar
 
 import httpx
 
@@ -75,7 +76,7 @@ def _extended(product: dict, field: str) -> str | None:
 
 class TCGCSVSource:
     name = "tcgcsv"
-    games = list(CATEGORIES)
+    games: ClassVar[list[str]] = list(CATEGORIES)
 
     def __init__(self, game: str = "pokemon", set_code: str | None = None) -> None:
         if game not in CATEGORIES:

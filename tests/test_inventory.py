@@ -46,10 +46,11 @@ def test_sku_is_stable_and_distinct_per_row():
 
 
 def _row(**kw):
-    base = dict(
-        card_id=1, condition="NM", finish="nonfoil",
-        market=10.0, cost=None, list_price=10.0, sold=False, sold_price=None,
-    )
+    base = {
+        "card_id": 1, "condition": "NM", "finish": "nonfoil",
+        "market": 10.0, "cost": None, "list_price": 10.0,
+        "sold": False, "sold_price": None,
+    }
     base.update(kw)
     return base
 

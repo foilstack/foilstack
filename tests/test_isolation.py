@@ -73,13 +73,16 @@ def app_and_data(database_url, tmp_path_factory):
     get_settings.cache_clear()
 
     from foilstack import db
-    from foilstack.web import auth  # noqa: F401  (imported for its side-effect-free helpers)
+    from foilstack.web import auth
     from foilstack.web.app import app
 
     db.init(database_url)
     session = db.session()
 
-    owner = db.User(email="owner@example.com", password_hash=auth.hash_password("owner-long-password"))
+    owner = db.User(
+        email="owner@example.com",
+        password_hash=auth.hash_password("owner-long-password"),
+    )
     session.add(owner)
     session.commit()
 
@@ -403,7 +406,6 @@ def test_naming_a_printing_prices_the_card_at_it(app_and_data):
     $855. Ticking "foil" chooses between neither, so pricing guesses the dearer
     one — and a seller holding the $855 card lists it at ten thousand dollars.
     """
-    from fastapi.testclient import TestClient
     from sqlalchemy import select as sa_select
 
     from foilstack import db
@@ -454,7 +456,7 @@ def test_a_printing_the_card_does_not_have_is_refused(app_and_data):
 
     from foilstack import db
 
-    app, ids = app_and_data
+    app, _ = app_and_data
     session = db.session()
     owner = session.scalars(
         sa_select(db.User).where(db.User.email == "owner@example.com")
@@ -516,8 +518,9 @@ def test_the_topbar_total_agrees_with_the_inventory_table(app_and_data):
     the page below it quote different totals."""
     import re
 
-    from foilstack import db, inventory
     from sqlalchemy import select as sa_select
+
+    from foilstack import db, inventory
 
     app, _ = app_and_data
     client = _signed_in(app)
@@ -545,7 +548,9 @@ def _stock_item(email: str, name: str, source_id: str, sold: bool = False) -> tu
     from foilstack import db
 
     session = db.session()
-    owner = session.scalars(sa_select(db.User).where(db.User.email == email)).one()
+    owner = session.scalars(
+        sa_select(db.User).where(db.User.email == email)
+    ).one()
     card = db.Card(source="t", source_id=source_id, name=name, game="mtg", market=3.0)
     session.add(card)
     session.commit()
@@ -553,7 +558,7 @@ def _stock_item(email: str, name: str, source_id: str, sold: bool = False) -> tu
         user_id=owner.id, card_id=card.id, condition="NM", finish="nonfoil",
         status="sold" if sold else "stock",
         sold_price=2.0 if sold else None,
-        sold_at=dt.datetime.now(dt.timezone.utc) if sold else None,
+        sold_at=dt.datetime.now(dt.UTC) if sold else None,
     )
     session.add(item)
     session.commit()
@@ -599,7 +604,6 @@ def test_bulk_delete_refuses_sold_rows(app_and_data):
 def test_bulk_delete_cannot_reach_another_account(stranger, app_and_data):
     from foilstack import db
 
-    app, _ = app_and_data
     mine, _ = _stock_item("owner@example.com", "Not Yours", "t:mine")
     r = stranger.post("/api/inventory/delete", json={"ids": [mine]})
     assert r.status_code == 404

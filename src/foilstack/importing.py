@@ -182,7 +182,7 @@ async def run_import(job_id: int, archive_path: Path, settings: Settings) -> Non
             except EmbedderError as exc:
                 scan.status = "error"
                 scan.error = str(exc)
-            except Exception as exc:  # noqa: BLE001 - one bad image must not end the job
+            except Exception as exc:
                 logger.exception("match failed for %s", path.name)
                 scan.status = "error"
                 scan.error = f"{type(exc).__name__}: {exc}"
@@ -192,7 +192,7 @@ async def run_import(job_id: int, archive_path: Path, settings: Settings) -> Non
 
         job.status = "done"
         session.commit()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("import job %s failed", job_id)
         job.status = "failed"
         job.message = f"{type(exc).__name__}: {exc}"
@@ -203,7 +203,7 @@ async def run_import(job_id: int, archive_path: Path, settings: Settings) -> Non
 
 
 async def _match_one(
-    session, scan, settings: Settings, job: "db.ImportJob"
+    session, scan, settings: Settings, job: db.ImportJob
 ) -> None:
     path = scan_path(scan.stored_path, settings.scans_dir)
     if path is None:

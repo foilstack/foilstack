@@ -47,3 +47,47 @@ asyncio_mode = "auto"
 dev = [
     "pre-commit>=4.6.2",
 ]
+
+[tool.ruff]
+# Wider than the default 88. The prose comments in this codebase are wrapped
+# to about 79 and the code sits comfortably under 100; at 88 the formatter
+# explodes several readable tables — the pricing rules, the queue row builder —
+# into one item per line for the sake of a few characters.
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # import sorting
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "C4",       # comprehensions
+    "SIM",      # simplify
+    "BLE",      # blind except
+    "RUF",
+]
+ignore = [
+    # `assert` in tests is the point of tests.
+    "S101",
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's whole dependency system is function calls in argument defaults —
+# `Depends()`, `Query()`, `Form()`, `File()`. B008 exists to catch a mutable
+# default evaluated once by accident; these are evaluated once on purpose and
+# are the documented way to use the framework. Exempting them by name rather
+# than switching B008 off keeps the rule working everywhere else.
+extend-immutable-calls = [
+    "fastapi.Depends", "fastapi.Query", "fastapi.Form",
+    "fastapi.File", "fastapi.Body", "fastapi.Header",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Migrations are generated, then annotated by hand. Import order and line
+# length in them are alembic's business, not ours.
+"migrations/versions/*" = ["E501", "I001"]
+
+[tool.ruff.format]
+docstring-code-format = true

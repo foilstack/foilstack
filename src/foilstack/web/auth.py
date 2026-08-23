@@ -13,7 +13,6 @@ day a hosted seller sees another seller's cards.
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
@@ -206,5 +205,5 @@ def authenticate(session, email: str, password: str) -> db.User:
 def touch_login(session, user: db.User) -> None:
     import datetime as dt
 
-    user.last_login_at = dt.datetime.now(dt.timezone.utc)
+    user.last_login_at = dt.datetime.now(dt.UTC)
     session.commit()

@@ -117,5 +117,5 @@ async def embed(req: EmbedRequest) -> JSONResponse:
 async def _warm() -> None:
     try:
         await _ensure_loaded()
-    except Exception:  # noqa: BLE001 — a failed warm must not stop the service
+    except Exception:
         logger.exception("encoder failed to warm; will retry on first request")

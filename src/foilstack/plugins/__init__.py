@@ -37,6 +37,9 @@ def export_plugins() -> dict[str, ExportSpec]:
 
 
 __all__ = [
-    "CardRecord", "SourcePlugin", "ExportSpec",
-    "source_plugins", "export_plugins",
+    "CardRecord",
+    "ExportSpec",
+    "SourcePlugin",
+    "export_plugins",
+    "source_plugins",
 ]

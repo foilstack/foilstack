@@ -15,7 +15,6 @@ Revises:
 from __future__ import annotations
 
 from alembic import op
-import sqlalchemy as sa
 
 
 revision = '04a130322022'
