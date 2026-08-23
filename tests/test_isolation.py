@@ -12,6 +12,7 @@ scope itself will pass every other test in this suite and fail here.
 from __future__ import annotations
 
 import os
+import re
 import uuid
 
 import pytest
@@ -684,3 +685,33 @@ def test_deleting_a_row_stops_its_scan_claiming_to_be_confirmed(app_and_data):
     session = db.session()
     assert session.get(db.Scan, scan_id).status == "discarded"
     session.close()
+
+
+def test_the_job_log_does_not_show_one_account_what_another_just_did(stranger, app_and_data):
+    """The job log is a feed of activity, and activity names things.
+
+    Filenames, SKUs, row counts and export sizes are all somebody's business
+    data. A log that is process-wide rather than per-account hands each of
+    those to whoever loads the listings page next.
+    """
+    app, _ = app_and_data
+    owner = _signed_in(app)
+
+    # What the stranger can already see, legitimately: their own actions from
+    # earlier tests. The question is whether the owner's next move adds to it.
+    before = _job_log(stranger.get("/listings").text)
+
+    owner_before = _job_log(owner.get("/listings").text)
+    owner.get("/export/tcgplayer")
+
+    # The owner sees their own action...
+    assert len(_job_log(owner.get("/listings").text)) == len(owner_before) + 1
+    # ...and the stranger's log is untouched by it.
+    assert _job_log(stranger.get("/listings").text) == before
+
+
+def _job_log(html: str) -> list[str]:
+    """The messages in the job log panel, in order."""
+    panel = html.split('<div class="joblog">', 1)[1].split("</div>\n  </div>", 1)[0]
+    lines = re.findall(r'<div class="line">(.*?)</div>', panel, re.S)
+    return [re.sub(r"<[^>]+>", "", ln).strip() for ln in lines if "nothing yet" not in ln]

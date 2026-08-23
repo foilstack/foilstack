@@ -428,7 +428,13 @@ def do_register(
 
 
 @app.post("/logout")
-def do_logout():
+def do_logout(request: Request, session=Depends(db_session)):
+    # Drop the activity log with the session. It is small and it is ephemeral,
+    # but on a shared machine "sign out" has to mean the next person to use
+    # this browser cannot read what the last one imported or exported.
+    user = auth.current_user(request, session, settings)
+    if user is not None:
+        joblog.forget(user.id)
     response = RedirectResponse("/", status_code=303)
     auth.clear(response)
     return response
@@ -708,7 +714,7 @@ def page_listings(
             "market_value": market_value,
             "delta": run_value - market_value,
             "floor": inventory.FLOOR,
-            "log": joblog.entries(),
+            "log": joblog.entries(user.id),
             **_chrome(session, request, user),
         },
     )
@@ -846,7 +852,7 @@ async def api_import(
     session.add(job)
     session.commit()
 
-    joblog.add(f"POST /imports · {archive.filename} · {size / 1048576:.1f} MB")
+    joblog.add(user.id, f"POST /imports · {archive.filename} · {size / 1048576:.1f} MB")
     background.add_task(run_import, job.id, tmp, settings)
     return {"job_id": job.id}
 
@@ -906,7 +912,7 @@ def api_confirm(
         raise HTTPException(400, "unknown finish")
     _confirm(session, user.id, scan_id, card_id, condition, finish)
     session.commit()
-    joblog.add(f"confirmed scan {scan_id} · {condition} {finish}")
+    joblog.add(user.id, f"confirmed scan {scan_id} · {condition} {finish}")
     return {"ok": True}
 
 
@@ -945,7 +951,7 @@ async def api_commit(
     guessed = sum(
         1 for r in inventory.items(session, user.id, status="stock") if r["printing_guessed"]
     )
-    joblog.add(f"committed {len(rows)} scans to inventory")
+    joblog.add(user.id, f"committed {len(rows)} scans to inventory")
     # Told, not buried. A card priced on a guess between printings looks
     # exactly like a card priced on a decision.
     return {"ok": True, "committed": len(rows), "needs_printing": guessed}
@@ -982,7 +988,7 @@ async def api_discard_all(
         if scan.status != "confirmed":
             scan.status = "discarded"
     session.commit()
-    joblog.add(f"discarded {len(scans)} unreviewed matches")
+    joblog.add(user.id, f"discarded {len(scans)} unreviewed matches")
     return {"ok": True}
 
 
@@ -1018,7 +1024,7 @@ async def api_mark_listed(
         item.listed_channels = label
         item.listed_at = dt.datetime.now(dt.UTC)
     session.commit()
-    joblog.add(f"marked {len(items)} rows listed on {label}")
+    joblog.add(user.id, f"marked {len(items)} rows listed on {label}")
     return {"ok": True, "marked": len(items)}
 
 
@@ -1071,7 +1077,7 @@ async def api_inventory_bulk_delete(
     count = len(items)
     _delete_items(session, items)
     session.commit()
-    joblog.add(f"deleted {count} rows from inventory")
+    joblog.add(user.id, f"deleted {count} rows from inventory")
     return {"ok": True, "deleted": count}
 
 
@@ -1176,7 +1182,7 @@ async def api_inventory_update(
             item.sold_price = None
 
     session.commit()
-    joblog.add(f"updated {inventory.sku(item.id)} · {item.condition} {item.finish}")
+    joblog.add(user.id, f"updated {inventory.sku(item.id)} · {item.condition} {item.finish}")
     return {"ok": True}
 
 
@@ -1199,7 +1205,7 @@ def api_inventory_delete(
     label = inventory.sku(item.id)
     _delete_items(session, [item])
     session.commit()
-    joblog.add(f"deleted {label} from inventory")
+    joblog.add(user.id, f"deleted {label} from inventory")
     return {"ok": True}
 
 
@@ -1338,7 +1344,7 @@ def export_csv(
     chosen = set(id or [])
     rows = inventory.export_rows(session, user.id, rule, ids=chosen or None)
     body = spec.render(rows)
-    joblog.add(f"wrote {spec.filename} · {len(rows)} rows · {rule}")
+    joblog.add(user.id, f"wrote {spec.filename} · {len(rows)} rows · {rule}")
     return Response(
         content=body,
         media_type="text/csv",
