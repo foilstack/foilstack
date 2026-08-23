@@ -1,8 +1,15 @@
-# Secret scanning config. Runs in pre-commit and CI.
+# Secret scanning config, used by the gitleaks pre-commit hook.
 #
-# This repo is public. A credential pushed here is compromised the moment it
-# lands — GitHub is scraped continuously and deleting the commit does not
-# recall it. Rotation is the only remedy, so the scan runs before the push.
+# Deliberately not run in CI: CI happens after the push, and this repo is
+# public, so a credential it found would already be scraped. Rotation would be
+# the only remedy left. The scan that can prevent a leak is the one that runs
+# before the commit exists.
+#
+# This file earns its place. Measured against gitleaks v8.30 with its default
+# ruleset and nothing else, a file containing POSTGRES_PASSWORD=<literal>,
+# HF_TOKEN=hf_<literal> and a Postgres URL with an inline password produced
+# "no leaks found". The defaults are tuned for cloud provider tokens; the
+# secrets this project actually holds are none of those.
 title = "foilstack"
 
 [extend]
@@ -25,6 +32,27 @@ tags = ["key", "env"]
     '''(?i)placeholder''',
     '''(?i)example''',
     '''(?i)xxx+''',
+  ]
+
+[[rules]]
+id = "foilstack-connection-uri"
+description = "A connection string with the password written into it"
+# The shape of DATABASE_URL, which is the most sensitive value this project
+# holds and which neither the default ruleset nor the rule above catches: the
+# password sits between a colon and an at-sign rather than after an equals.
+regex = '''(?i)\b(postgres|postgresql|redis|amqp|mongodb|mysql)(\+[a-z]+)?://[^\s:/@]+:[^\s:/@]{6,}@'''
+tags = ["key", "uri"]
+
+  [rules.allowlist]
+  regexTarget = "line"
+  regexes = [
+    '''\$\{''',            # ${VAR} indirection, as in docker-compose
+    '''(?i)your[-_]''',
+    '''(?i)change[-_]?me''',
+    '''(?i)placeholder''',
+    '''(?i)example''',
+    '''(?i)localhost''',
+    '''(?i)\bfoilstack:foilstack\b''',   # the documented local default
   ]
 
 [allowlist]
