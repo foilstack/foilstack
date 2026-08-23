@@ -41,3 +41,25 @@ repos:
           - sqlalchemy[mypy]>=2.0
           - pydantic>=2.7
           - types-requests
+
+  # Bumps the patch version when application code is committed, so the footer
+  # and the User-Agent always name a build that is actually running. It stages
+  # its own edit; a hook that leaves the change unstaged makes every commit
+  # fail once and need repeating.
+  #
+  # `pass_filenames: false` because it decides for itself from the index which
+  # paths are staged, and `always_run: false` with a `files:` filter so a
+  # README or CI commit does not move the version — a number that moves for
+  # everything means nothing.
+  - repo: local
+    hooks:
+      - id: bump-version
+        name: bump the patch version
+        entry: python scripts/bump_version.py
+        # `language: python` rather than `system`: pre-commit provisions its own
+        # interpreter, so this works on a machine where `python` is not on PATH
+        # — which is this one, and is most Linux boxes. The script imports only
+        # the standard library, so the environment needs nothing installed.
+        language: python
+        files: ^src/foilstack/
+        pass_filenames: false
