@@ -252,6 +252,11 @@ def page_landing(request: Request):
             "asset_v": _asset_version(),
             "support_url": settings.support_url,
             "multi_user": settings.multi_user,
+            # The front door has to offer the door that is actually open. A
+            # hosted deployment with registration closed must not invite people
+            # to create an account they cannot have, and a self-hosted one has
+            # no account to create at all.
+            "registration_open": settings.allow_registration,
         },
     )
 

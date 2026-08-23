@@ -10,7 +10,7 @@ Runs on your own machine. **Your scans never leave the host.**
 
 ![A scan of the whole workflow: reviewing matched cards, confirming one into
 inventory, opening a card to see its price trend, and exporting the selection
-as a marketplace CSV](docs/demo/foilstack.gif)
+as a marketplace CSV](src/foilstack/web/static/demo/foilstack.gif)
 
 *Scans in, priced CSV out. Your scan on the left, the catalogue's guess beside
 it, and the score between them — because the top match is evidence, not an

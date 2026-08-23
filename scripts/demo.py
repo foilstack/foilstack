@@ -11,8 +11,8 @@ Frames are captured deliberately, not on a timer: each beat of the story says
 how many it wants, so a scroll gets enough to read as motion and a pause on a
 screen worth reading gets enough to read it.
 
-    uv run python scripts/preview.py --demo docs/demo    # disposable data
-    uv run python scripts/demo.py --url http://localhost:8090 --out docs/demo
+    uv run python scripts/preview.py --demo src/foilstack/web/static/demo    # disposable data
+    uv run python scripts/demo.py --url http://localhost:8090 --out src/foilstack/web/static/demo
 
 There is no narration and no captions. This has to make sense on mute, in a
 Reddit sidebar, at whatever size the reader's browser decides.
@@ -284,7 +284,7 @@ def assemble(
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--url", default=os.getenv("FOILSTACK_SHOT_URL", "http://localhost:8090"))
-    ap.add_argument("--out", type=Path, default=Path("docs/demo"))
+    ap.add_argument("--out", type=Path, default=Path("src/foilstack/web/static/demo"))
     ap.add_argument("--email", default=os.getenv("FOILSTACK_SHOT_EMAIL"))
     ap.add_argument("--password", default=os.getenv("FOILSTACK_SHOT_PASSWORD"))
     ap.add_argument("--card", type=int, default=None, help="the stock line to open")

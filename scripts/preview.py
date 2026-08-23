@@ -8,7 +8,7 @@ come across.
 
     uv run python scripts/preview.py --port 8099        # serve until Ctrl-C
     uv run python scripts/preview.py --shots ./shots    # screenshot and exit
-    uv run python scripts/preview.py --demo docs/demo   # record the walkthrough
+    uv run python scripts/preview.py --demo src/foilstack/web/static/demo   # record the walkthrough
 """
 
 from __future__ import annotations

@@ -55,7 +55,7 @@ the queue, the inventory table, a card page and the listing run, so a change to
 any of those dates it:
 
 ```bash
-uv run python scripts/preview.py --demo docs/demo
+uv run python scripts/preview.py --demo src/foilstack/web/static/demo
 ```
 
 Same disposable database as `--shots`, so nobody's real inventory is ever on
