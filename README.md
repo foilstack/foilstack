@@ -274,8 +274,7 @@ afternoon of typing card names into a spreadsheet:
 
 **[Buy me a coffee](https://buymeacoffee.com/foilstack)**
 
-The link is in the sidebar of every install, self-hosted ones included. Point it
-somewhere else with `FOILSTACK_SUPPORT_URL` if you are running a fork.
+The link is in the sidebar of every install, self-hosted ones included.
 
 ## Licence
 
