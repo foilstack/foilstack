@@ -1,16 +1,13 @@
 name: ci
 on: [push, pull_request]
 
-jobs:
-  secrets:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+# Secret scanning is deliberately not here. CI runs after a push, and this
+# repository is public — a credential this found would already be scraped, and
+# the only remedy left would be rotation. The scan that can actually stop one
+# is the pre-commit hook, which runs before the commit exists. See
+# .pre-commit-config.yaml.
 
+jobs:
   test:
     runs-on: ubuntu-latest
 
@@ -43,15 +40,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --extra dev
-      - run: uv run pytest -q
 
-      # A skip is a test that did not run, and the ones that skip here are the
-      # security ones. Fail the build rather than let a green tick mean "we
-      # didn't check".
-      - name: no tests were skipped
+      # One run, then two questions of it: did anything fail, and did anything
+      # *skip*. A skip is a test that did not run, and the ones that skip here
+      # are the account-isolation tests — a green tick that means "we did not
+      # check" is worse than a red one.
+      - name: tests
         run: |
-          uv run pytest -q --no-header -rs 2>&1 | tee /tmp/out
-          if grep -qE '[0-9]+ skipped' /tmp/out; then
+          set -o pipefail
+          uv run pytest -q --no-header -rs 2>&1 | tee /tmp/pytest.out
+          if grep -qE '[0-9]+ skipped' /tmp/pytest.out; then
             echo "::error::tests were skipped — see the SKIPPED lines above"
             exit 1
           fi
