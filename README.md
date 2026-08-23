@@ -136,7 +136,7 @@ conventions, and the handful of mistakes this codebase has already made once.
 
 ```bash
 uv sync --extra dev
-uv run pre-commit install     # before your first commit
+uv run pre-commit install --hook-type pre-commit --hook-type pre-push
 uv run pytest -q
 ```
 
@@ -148,6 +148,9 @@ anything touching accounts:
 ```bash
 docker compose up -d postgres && uv run pytest -q
 ```
+
+The pre-push hook runs the suite and refuses a push if anything **skipped**, for
+the same reason.
 
 ## Supporting this
 

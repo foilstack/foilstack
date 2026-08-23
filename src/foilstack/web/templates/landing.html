@@ -19,7 +19,9 @@
     <a href="#printings">Why the review queue</a>
     <a href="#selfhost">Self-host</a>
     <a href="https://github.com/foilstack/foilstack">Source</a>
-    {% if multi_user %}
+    {% if viewer %}
+    <a class="btn btn-primary" href="/app">Open your inventory</a>
+    {% elif multi_user %}
     <a class="btn btn-primary" href="{{ '/register' if registration_open else '/login' }}">{{ 'Create an account' if registration_open else 'Sign in' }}</a>
     {% else %}
     <a class="btn btn-primary" href="/app">Open the app</a>
@@ -35,7 +37,9 @@
     inventory and a CSV your marketplace already accepts.
   </p>
   <div class="hero-actions">
-    {% if multi_user %}
+    {% if viewer %}
+    <a class="btn btn-primary btn-lg" href="/app">Open your inventory</a>
+    {% elif multi_user %}
     <a class="btn btn-primary btn-lg" href="{{ '/register' if registration_open else '/login' }}">{{ 'Create an account' if registration_open else 'Sign in' }}</a>
     {% else %}
     <a class="btn btn-primary btn-lg" href="/app">Open the app</a>
@@ -43,7 +47,8 @@
     <a class="btn btn-lg" href="#selfhost">Run it yourself</a>
   </div>
   <p class="hero-note">
-    {% if multi_user %}Free while it is this young. Your scans, inventory and exports are yours alone — no other account can see them.
+    {% if viewer %}Signed in as {{ viewer.email }}.
+    {% elif multi_user %}Free while it is this young. Your scans, inventory and exports are yours alone — no other account can see them.
     {% else %}Your scans are processed on the host running this and are never sent anywhere else.{% endif %}
   </p>
 
@@ -84,12 +89,17 @@
     separated on the card by a symbol a few pixels wide.
   </p>
   <div class="proof">
-    <div class="proof-row proof-head"><span>Same scan, Base Set Charizard</span><span class="num">score</span><span class="num">price</span></div>
-    <div class="proof-row"><span>Charizard 004/102 · Holofoil</span><span class="num">0.932</span><span class="num">$855.52</span></div>
-    <div class="proof-row alt"><span>Charizard 004/102 · 1st Edition Holofoil</span><span class="num">0.913</span><span class="num">$10,000.00</span></div>
+    <div class="proof-row proof-head"><span>One scan of Charizard 004/102</span><span class="num">score</span><span class="num">market</span></div>
+    <div class="proof-row"><span>Base Set · Holofoil</span><span class="num">0.932</span><span class="num">$855.52</span></div>
+    <div class="proof-row alt"><span>Base Set (Shadowless) · 1st Edition Holofoil</span><span class="num">0.913</span><span class="num">$10,000.00</span></div>
   </div>
+  <p class="proof-note">
+    Both prices are real rows from the catalogue foilstack fetched. The two
+    scores are illustrative — a scan of your card produces its own.
+  </p>
   <p class="band-note">
-    Nineteen thousandths of a point apart, and twelve times the money. A tool
+    The same illustration, printed twice, separated by a small black symbol and
+    the word "Shadowless" — and by eleven and a half thousand dollars. A tool
     that shows you only the winner will eventually sell that card for $855.
     So auto-accept requires a high score, a clear margin over the runner-up,
     <em>and</em> — when the runner-up is the same card in another printing —

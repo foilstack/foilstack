@@ -72,10 +72,23 @@ five frames a second reads as broken.
 
 ## Formatting and types
 
-Install the hooks before your first commit — `uv run pre-commit install`. They
-also run `gitleaks`, which is deliberately a hook and not a CI job: this
-repository is public, so a credential CI catches is one that has already been
-pushed and can only be rotated.
+Install both hook types before your first commit:
+
+```bash
+uv run pre-commit install --hook-type pre-commit --hook-type pre-push
+```
+
+On commit: formatting, linting, types, the version bump, and `gitleaks` —
+deliberately a hook and not a CI job, because this repository is public and a
+credential CI catches is one that has already been pushed and can only be
+rotated.
+
+On push: the test suite, which also fails if anything **skipped**. Not on
+commit, and that is the whole design — `tests/test_isolation.py` needs Postgres
+and skips cleanly without it, so a plain pytest hook on a machine with no
+database reports green while the forty tests proving one account cannot read
+another's cards did not run. Requiring a database before every commit is
+friction nobody keeps; before every push it is the right trade.
 
 `ruff` formats and lints; `mypy` type-checks `src/`. All three run in
 pre-commit and in CI, and the settings live in `pyproject.toml` so a local run

@@ -276,15 +276,23 @@ def _chrome(session, request: Request, user: db.User) -> dict:
 
 
 @app.get("/", response_class=HTMLResponse)
-def page_landing(request: Request):
+def page_landing(request: Request, session=Depends(db_session)):
     """The front door. Deliberately not the tool: someone arriving cold needs to
     know what this is and that they can run it themselves before being handed a
-    file picker."""
+    file picker.
+
+    It does check for a session, though. Inviting somebody who is already
+    signed in to create an account is the page admitting it has no idea who is
+    reading it, and the one link they actually want — back into their
+    inventory — is the one it does not offer.
+    """
+    viewer = auth.current_user(request, session, settings) if settings.multi_user else None
     return templates.TemplateResponse(
         request,
         "landing.html",
         {
             "nav": "landing",
+            "viewer": viewer,
             "version": __version__,
             "git_sha": settings.git_sha,
             "asset_v": _asset_version(),
