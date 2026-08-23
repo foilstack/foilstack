@@ -21,7 +21,6 @@ from contextlib import asynccontextmanager
 from hmac import compare_digest
 from pathlib import Path
 
-import httpx
 from fastapi import (
     BackgroundTasks,
     Depends,
@@ -34,7 +33,6 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import (
-    FileResponse,
     HTMLResponse,
     PlainTextResponse,
     RedirectResponse,
@@ -44,18 +42,21 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 
-from foilstack import __version__, db, images, importing, inventory, prices, search
+from foilstack import __version__, db, importing, inventory, prices, search
 from foilstack.config import get_settings
 from foilstack.embedding import encoder_health
-from foilstack.importing import run_import, scan_path
+from foilstack.importing import run_import
 from foilstack.plugins import export_plugins, source_plugins
 from foilstack.web import auth, joblog, ratelimit
+from foilstack.web.deps import api_owner, db_session, owner
+from foilstack.web.routes import media
 
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent
 app = FastAPI(title="foilstack", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+app.include_router(media.router)
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 settings = get_settings()
@@ -78,38 +79,6 @@ _login_account = ratelimit.Limiter(settings.login_attempts, settings.login_windo
 # Registration is cheaper to abuse than login — every attempt that succeeds
 # costs a row and a slot — so it gets a tighter budget on the address alone.
 _register_ip = ratelimit.Limiter(max(3, settings.login_attempts // 2), settings.login_window_s)
-
-
-def db_session():
-    """One session per request, always closed."""
-    session = db.session()
-    try:
-        yield session
-    finally:
-        session.close()
-
-
-def owner(request: Request, session=Depends(db_session)) -> db.User:
-    """The account this request acts as.
-
-    In single-user mode this is the local owner and never fails. In multi-user
-    mode it redirects to the login screen. Every route that touches a seller's
-    work depends on it, so there is no way to reach one of those queries
-    without an id to scope it by.
-    """
-    return auth.require_user(request, session, settings)
-
-
-def api_owner(request: Request, session=Depends(db_session)) -> db.User:
-    """Same, but answering 401 instead of redirecting.
-
-    A fetch() that follows a 303 to the login page succeeds with an HTML body,
-    and the caller reports "saved" for a request that saved nothing.
-    """
-    user = auth.current_user(request, session, settings)
-    if user is None:
-        raise HTTPException(401, "sign in required")
-    return user
 
 
 def _money(n: float | None) -> str:
@@ -1327,104 +1296,6 @@ def _delete_items(session, items: list[db.InventoryItem]) -> None:
 # ==========================================================================
 # Images and export
 # ==========================================================================
-
-
-@app.get("/scan/{scan_id}/image")
-def scan_image(
-    scan_id: int,
-    session=Depends(db_session),
-    user: db.User = Depends(owner),
-):
-    scan = session.get(db.Scan, scan_id)
-    # Ownership is checked before the file is: this route serves photographs
-    # of another person's property, and "does this id exist" is not a question
-    # a stranger gets to ask.
-    if scan is None or scan.user_id != user.id:
-        raise HTTPException(404, "not found")
-    # `scan_path` resolves the stored location against the scans directory and
-    # refuses anything that lands outside it. The extractor already rejects
-    # such entries on the way in; this route turns a database value into a
-    # filesystem read, so it checks again.
-    path = scan_path(scan.stored_path, settings.scans_dir)
-    if path is None:
-        raise HTTPException(404, "not found")
-    # Prefer the downscaled copy, building it on first request for scans
-    # imported before display copies existed. Falls back to the original, which
-    # is correct but large.
-    display = images.make_display_copy(path, settings.display_dir, scan.stored_path)
-    return FileResponse(
-        display or path,
-        headers={"Cache-Control": "private, max-age=86400"},
-    )
-
-
-# TCGplayer serves several sizes of the same product image, selected by a
-# suffix on the URL. The catalogue stores the 200w thumbnail, which is 200x278
-# — fine behind a 46px box and useless the moment anyone looks closer, and
-# looking closer is the entire job of the review queue: printings differ by a
-# set symbol a few pixels wide.
-#
-# Tried in order, first success wins. `1000x1000` answers 403; `in_1000x1000`
-# is the variant that works, at 672x936.
-_REF_VARIANTS = ("in_1000x1000", "400w")
-
-
-def _reference_urls(url: str) -> list[str]:
-    """Larger variants of a catalogue image, best first, original last."""
-    candidates = [url.replace("_200w", f"_{v}") for v in _REF_VARIANTS if "_200w" in url]
-    candidates.append(url)
-    # dict.fromkeys keeps order and drops the duplicate when no swap happened.
-    return list(dict.fromkeys(candidates))
-
-
-@app.get("/card/{card_id}/image")
-async def card_image(
-    card_id: int,
-    session=Depends(db_session),
-    user: db.User = Depends(owner),
-):
-    """The catalogue's reference image, fetched once and cached on disk.
-
-    Proxied rather than linked straight to the upstream CDN. Both the review
-    queue and the inventory table put the reference next to the scan, and a
-    direct `<img src>` would tell that CDN which cards this seller is looking
-    at, every time a page loads.
-
-    The catalogue is shared, so there is nothing here that belongs to one
-    account — but it still requires a session, because an open image proxy on
-    a public host is a free bandwidth donation to whoever finds it.
-    """
-    card = session.get(db.Card, card_id)
-    url = card.image_url if card else None
-    if not url:
-        raise HTTPException(404, "no reference image")
-
-    # `-lg` rather than the old bare `{card_id}.img`: the cache key has to change
-    # when the thing being cached does, or every card viewed before this stays
-    # pinned at 200px forever. Old files are simply orphaned and can be deleted.
-    cache = settings.refs_dir / f"{card_id}-lg.img"
-    if not cache.exists():
-        body = None
-        for candidate in _reference_urls(url):
-            try:
-                async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-                    response = await client.get(candidate)
-            except httpx.HTTPError as exc:
-                logger.warning("reference fetch failed for %s at %s: %s", card_id, candidate, exc)
-                continue
-            if response.status_code == 200:
-                body = response.content
-                break
-        if body is None:
-            raise HTTPException(502, "could not fetch reference image")
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        cache.write_bytes(body)
-
-    return FileResponse(
-        cache,
-        media_type="image/jpeg",
-        headers={"Cache-Control": "private, max-age=86400"},
-    )
 
 
 @app.get("/export/{name}")

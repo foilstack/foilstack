@@ -177,8 +177,14 @@ def test_stranger_sees_no_queue(stranger):
 
 def test_stranger_cannot_read_a_scan_image(stranger, app_and_data):
     """Photographs of another person's property."""
-    _, ids = app_and_data
+    app, ids = app_and_data
     assert stranger.get(f"/scan/{ids['scan']}/image").status_code == 404
+
+    # And the 404 above means "not yours", not "no such route". Without this
+    # line the test passes just as happily against a build where the image
+    # route was dropped altogether — which nearly happened when these routes
+    # moved into their own module.
+    assert _signed_in(app).get(f"/scan/{ids['scan']}/image").status_code == 200
 
 
 def test_stranger_cannot_read_a_job(stranger, app_and_data):
