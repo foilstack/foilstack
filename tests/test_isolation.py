@@ -1016,3 +1016,96 @@ def test_an_uningested_catalogue_shows_no_proof_thumbnails(app_and_data):
     # The proof rows are there; the thumbnails are not, because nothing matched.
     assert "Base Set · Holofoil" in body
     assert "/card/None/image" not in body
+
+
+def test_a_slow_image_fetch_does_not_hold_a_database_connection(app_and_data, monkeypatch):
+    """This took the site down.
+
+    The route held a pooled connection for the whole upstream fetch. With a
+    pool of five plus ten overflow, fifteen concurrent thumbnails against a
+    slow CDN starved every other route — `/healthz` included — for thirty
+    seconds. It survived a small catalogue because misses were rare, and
+    stopped surviving at thirty thousand cards, where many promo entries have
+    no image behind them at all.
+    """
+    import httpx as _httpx
+
+    from foilstack import db
+    from foilstack.web.routes import media
+
+    app, _ = app_and_data
+
+    session = db.session()
+    card = db.Card(
+        source="t",
+        source_id="t:slow",
+        name="Slow Card",
+        set_name="Slow Set",
+        game="pokemon",
+        image_url="https://example.invalid/slow_200w.jpg",
+    )
+    session.add(card)
+    session.commit()
+    card_id = card.id
+    session.close()
+
+    in_flight_connections = []
+
+    class _Hang:
+        """An upstream that never answers, and records the pool while it hangs."""
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, *a, **k):
+            engine = db._engine
+            in_flight_connections.append(engine.pool.checkedout())
+            raise _httpx.ConnectTimeout("upstream is not answering")
+
+    monkeypatch.setattr(media.httpx, "AsyncClient", lambda **kw: _Hang())
+
+    try:
+        client = _signed_in(app)
+        assert client.get(f"/card/{card_id}/image").status_code == 404
+
+        # The whole point: nothing was checked out of the pool while the
+        # request sat on the network.
+        assert in_flight_connections, "the fetch never ran"
+        assert max(in_flight_connections) == 0, (
+            f"held {max(in_flight_connections)} database connection(s) across the fetch"
+        )
+    finally:
+        session = db.session()
+        row = session.get(db.Card, card_id)
+        if row is not None:
+            session.delete(row)
+        session.commit()
+        session.close()
+
+
+def test_serving_a_scan_does_not_hold_a_database_connection(app_and_data):
+    """The other half of the outage.
+
+    `scan_image` is a `def` route, so FastAPI runs it in a threadpool forty
+    threads wide, and each one held a pooled connection through a Pillow
+    resize. Forty threads against a pool of fifteen empties it, and every other
+    route — `/healthz` included — then waits for a connection that is not
+    coming.
+    """
+    from foilstack import db
+
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    # Warm anything lazy, so the measurement below is the route and not setup.
+    client.get(f"/scan/{ids['scan']}/image")
+
+    before = db._engine.pool.checkedout()
+    response = client.get(f"/scan/{ids['scan']}/image")
+    after = db._engine.pool.checkedout()
+
+    assert response.status_code == 200
+    assert after == before, f"leaked {after - before} connection(s) serving a scan"
