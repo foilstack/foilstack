@@ -25,6 +25,10 @@ from foilstack.embedding import embed_image
 from foilstack.plugins import export_plugins, source_plugins
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
+# Distinguishes "upstream has no image for this card", which is ordinary and
+# permanent, from "we could not get it", which is worth another go later.
+MISSING = object()
+
 IMAGE_HEADERS = {
     "User-Agent": f"foilstack/{__version__} (+https://github.com/foilstack/foilstack)",
     "Accept": "image/*,*/*",
@@ -112,7 +116,7 @@ async def cmd_embed(args) -> int:
         settings.embed_model,
         args.concurrency,
     )
-    written = failed = processed = 0
+    written = failed = missing = processed = 0
     # Bounded, not unbounded. The reference images come from a CDN rather than
     # from the catalogue API, so the pacing that applies to `sync-prices` is not
     # the constraint here — but "not the constraint" is not a licence to open a
@@ -122,7 +126,15 @@ async def cmd_embed(args) -> int:
     limiter = asyncio.Semaphore(max(1, args.concurrency))
 
     async def fetch_and_encode(client, card):
-        """One card, with the manners a shared CDN deserves."""
+        """One card, with the manners a shared CDN deserves.
+
+        Retries what might work and gives up immediately on what will not. A
+        catalogue this size is full of promo and staff entries that upstream
+        has no image for at all — those answer 403 or 404, forever, and
+        retrying one four times with backoff costs seven seconds to learn
+        nothing. Thousands of them turned a run that should take an hour into
+        one that had not finished a tenth of it.
+        """
         async with limiter:
             for attempt in range(4):
                 try:
@@ -136,6 +148,12 @@ async def cmd_embed(args) -> int:
                         )
                         await asyncio.sleep(min(wait, 60))
                         continue
+                    if 400 <= image.status_code < 500:
+                        # Permanent. Not a warning either: on this catalogue it
+                        # is thousands of lines saying the same ordinary thing,
+                        # and the count at the end says it once.
+                        log.debug("  no image upstream for %s (%s)", card.name, image.status_code)
+                        return card.id, MISSING
                     image.raise_for_status()
                     vector = await embed_image(settings.embedder_url, image.content)
                 except Exception as exc:  # noqa: BLE001 - one bad image must not end the run
@@ -152,7 +170,9 @@ async def cmd_embed(args) -> int:
         for coro in asyncio.as_completed(pending):
             card_id, vector = await coro
             processed += 1
-            if vector is None:
+            if vector is MISSING:
+                missing += 1
+            elif vector is None:
                 failed += 1
             else:
                 session.merge(
@@ -168,11 +188,20 @@ async def cmd_embed(args) -> int:
             # transaction that a Ctrl-C rolls back.
             if processed % 100 == 0:
                 session.commit()
-                log.info("  encoded %s/%s (%s skipped)", processed, len(cards), failed)
+                log.info(
+                    "  encoded %s/%s (%s no image, %s failed)",
+                    processed,
+                    len(cards),
+                    missing,
+                    failed,
+                )
 
     session.commit()
-    log.info("wrote %s vectors (%s skipped)", written, failed)
-    return 0 if written else 1
+    log.info("wrote %s vectors (%s have no image upstream, %s failed)", written, missing, failed)
+    # A batch where every remaining card simply has no image upstream is a
+    # finished job, not a failed one — and on a resumed run over a large
+    # catalogue that is exactly what the last batch looks like.
+    return 0 if (written or missing) else 1
 
 
 async def cmd_sets(args) -> int:

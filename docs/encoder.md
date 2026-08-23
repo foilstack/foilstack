@@ -84,8 +84,25 @@ from a CDN rather than from the catalogue API, so the pacing that governs
 on 429 and honours `Retry-After`. Eight is a polite default; there is no prize
 for making it forty.
 
+For a full catalogue — an hour or more — use `run --rm` rather than `exec`:
+
+```bash
+docker compose run --rm --no-deps web foilstack ingest --source tcgcsv --game pokemon
+docker compose run --rm --no-deps web foilstack embed --concurrency 8
+```
+
+`exec` runs inside the live web container, so rebuilding or restarting the site
+kills the job halfway. `run` starts a one-off container of its own that a deploy
+cannot touch. Same command, same image, and it exits when it is done.
+
 Both commands are resumable. `embed` skips anything already encoded with the
 current model, so an interrupted run costs the interruption rather than the run.
+
+Expect a large number of cards to have no image at all: promo, staff and prize
+entries are in the catalogue because they are products, and upstream has no
+picture for them. Those are reported separately from failures, and they are not
+retried — a 403 is permanent, and asking four times with backoff costs seven
+seconds to learn what the first answer already said.
 
 **A catalogue you have not ingested is a card the matcher cannot return.**
 Nearest-neighbour search answers with the closest thing it holds, so scanning
