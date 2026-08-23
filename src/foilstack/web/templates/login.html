@@ -15,7 +15,7 @@
   <a class="brand" href="/">
     <img class="brand-mark" src="/static/brand/mark.svg?v={{ asset_v }}" alt="" width="20" height="20">
     <b>foilstack</b>
-    <span class="ver">v{{ version }}</span>
+    <span class="ver">v{{ version }}{% if git_sha %}<span class="sha" title="build">{{ git_sha }}</span>{% endif %}</span>
   </a>
 
   <h1>{{ 'Create an account' if mode == 'register' else 'Sign in' }}</h1>

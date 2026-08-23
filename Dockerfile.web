@@ -23,6 +23,16 @@ RUN chmod +x /app/entrypoint.sh
 RUN printf '#!/bin/sh\nexec python -m foilstack.cli "$@"\n' > /usr/local/bin/foilstack \
     && chmod +x /usr/local/bin/foilstack
 
+# Which commit this image was built from.
+#
+# A build argument rather than a runtime environment variable, and that is the
+# whole point: a runtime value can be changed by restarting a container, so it
+# would report the commit the *host* has checked out rather than the code
+# actually inside the image. Those differ exactly when it matters — when a
+# service was not rebuilt — which is the case this exists to catch.
+ARG GIT_SHA=""
+ENV FOILSTACK_GIT_SHA=$GIT_SHA
+
 EXPOSE 8000
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["uvicorn", "foilstack.web.app:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -193,11 +193,22 @@ def _chrome(session, request: Request, user: db.User) -> dict:
     rows = inventory.items(session, user.id, status="stock")
     value = sum(r["market"] or 0 for r in rows)
     needs_printing = sum(1 for r in rows if r["printing_guessed"])
-    synced = session.scalar(select(func.max(db.Card.updated_at)))
+    # When the sync last *ran*, not when a price last moved.
+    #
+    # This read `max(cards.updated_at)`, which only advances when a number
+    # actually changes — so a sync that ran ten minutes ago against an unchanged
+    # upstream still reported "synced 10 hr ago", and the footer looked like a
+    # stalled job. It sent someone to check whether the service was broken,
+    # which is the opposite of what a status line is for. `sync_state` records
+    # every run, including the ones that correctly did nothing.
+    synced = session.scalar(
+        select(func.max(db.SyncState.last_run_at)).where(db.SyncState.kind.like("prices%"))
+    ) or session.scalar(select(func.max(db.Card.updated_at)))
     sources = session.scalars(select(db.Card.source).distinct()).all()
 
     return {
         "version": __version__,
+        "git_sha": settings.git_sha,
         # Recomputed per request: the stylesheet is bind-mounted during
         # development, so caching this would defeat the point of having it.
         "asset_v": _asset_version(),
@@ -237,6 +248,7 @@ def page_landing(request: Request):
         {
             "nav": "landing",
             "version": __version__,
+            "git_sha": settings.git_sha,
             "asset_v": _asset_version(),
             "support_url": settings.support_url,
             "multi_user": settings.multi_user,
@@ -368,6 +380,7 @@ def _auth_page(
             "registration_open": settings.allow_registration,
             "needs_invite": bool(settings.invite_code),
             "version": __version__,
+            "git_sha": settings.git_sha,
             "asset_v": _asset_version(),
             "support_url": settings.support_url,
         },
@@ -1323,4 +1336,12 @@ def export_csv(
 
 @app.get("/healthz", response_class=PlainTextResponse)
 def healthz() -> str:
-    return "ok"
+    """Liveness, and which build answered.
+
+    The first line stays exactly `ok` so anything already watching this keeps
+    working. The build line is what turns "is the deploy out" into one curl —
+    the alternative is loading a page and reading a footer, which is how a
+    service ran ten-hour-old code here without anyone noticing.
+    """
+    build = settings.git_sha or "unknown"
+    return f"ok\nfoilstack {__version__} ({build})\n"

@@ -139,6 +139,10 @@ body.app {
   font-family: var(--mono); font-size: 10px; color: var(--muted);
   border: 1px solid var(--rule); border-radius: 3px; padding: 1px 4px;
 }
+/* The commit the running image was built from, inside the version chip so the
+   two are read as one fact. Fainter than the version because it is the thing
+   you go looking for rather than the thing you notice. */
+.brand .ver .sha { margin-left: 5px; padding-left: 5px; border-left: 1px solid var(--rule); opacity: 0.75; }
 .spacer { flex: 1; }
 .topbar-meta {
   display: flex; align-items: center; gap: 14px; min-width: 0; overflow: hidden;
