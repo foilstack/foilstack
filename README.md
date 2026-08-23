@@ -120,6 +120,19 @@ certain does nothing else.
 
 **[docs/plugins.md](docs/plugins.md)**
 
+## Encoding the catalogue
+
+The encoder runs on CPU by default so the stack starts anywhere — about one card
+a second, which is more than a day for a full Magic catalogue. If you have an
+NVIDIA GPU, an overlay turns it on:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+```
+
+**[docs/encoder.md](docs/encoder.md)** — picking the right CUDA wheels, checking
+which device it actually loaded on, and filling the catalogue.
+
 ## This project redistributes no card data
 
 The catalogue is fetched from upstream, on your machine, by a plugin you chose.

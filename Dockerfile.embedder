@@ -4,14 +4,26 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app/src
 
 # torch is the bulk of this image. CPU wheels by default so the stack comes up
-# on a laptop; override the index for CUDA if you have a GPU.
+# on a laptop with no GPU and no CUDA toolkit — and the invitation to "override
+# the index" that used to sit in this comment was not actually possible, so the
+# encoder ran on CPU on a machine with a Blackwell sitting idle beside it.
+#
+# It is a build argument now. Pick the index that matches your driver:
+#
+#   cpu     no GPU, or you do not care          (default)
+#   cu126   driver 525+
+#   cu128   driver 570+, Blackwell sm_120
+#   cu130   driver 580+, CUDA 13                (GB10 / DGX Spark is sm_121)
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
 #
 # torchvision is not optional: AutoImageProcessor refuses to build without it,
 # and the failure arrives at model-load time rather than at install time.
+ARG TORCH_INDEX=https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir \
     "fastapi>=0.115" "uvicorn[standard]>=0.30" "pydantic>=2.7" "pillow>=10.0" \
     "transformers>=4.44" \
-    && pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+    && pip install --no-cache-dir torch torchvision --index-url ${TORCH_INDEX}
 
 COPY src/foilstack/embedder /app/src/foilstack/embedder
 COPY src/foilstack/__init__.py /app/src/foilstack/__init__.py

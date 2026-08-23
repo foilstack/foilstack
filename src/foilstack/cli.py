@@ -13,17 +13,23 @@ import argparse
 import asyncio
 import datetime as dt
 import logging
+import os
 import sys
 
 import httpx
 from sqlalchemy import func, select, text
 
-from foilstack import db
+from foilstack import __version__, db
 from foilstack.config import get_settings
 from foilstack.embedding import embed_image
 from foilstack.plugins import export_plugins, source_plugins
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
+IMAGE_HEADERS = {
+    "User-Agent": f"foilstack/{__version__} (+https://github.com/foilstack/foilstack)",
+    "Accept": "image/*,*/*",
+}
+
 log = logging.getLogger("foilstack")
 
 
@@ -100,32 +106,70 @@ async def cmd_embed(args) -> int:
         log.info("nothing to do — all %s cards are encoded with %s", total, settings.embed_model)
         return 0
 
-    log.info("encoding %s cards with %s", len(cards), settings.embed_model)
-    written = failed = 0
+    log.info(
+        "encoding %s cards with %s (%s at a time)",
+        len(cards),
+        settings.embed_model,
+        args.concurrency,
+    )
+    written = failed = processed = 0
+    # Bounded, not unbounded. The reference images come from a CDN rather than
+    # from the catalogue API, so the pacing that applies to `sync-prices` is not
+    # the constraint here — but "not the constraint" is not a licence to open a
+    # thousand sockets at somebody else's expense. A small pool overlaps the
+    # download of the next card with the encoding of the current one, which is
+    # where nearly all of the wall clock goes.
+    limiter = asyncio.Semaphore(max(1, args.concurrency))
+
+    async def fetch_and_encode(client, card):
+        """One card, with the manners a shared CDN deserves."""
+        async with limiter:
+            for attempt in range(4):
+                try:
+                    image = await client.get(card.image_url, headers=IMAGE_HEADERS)
+                    if image.status_code in (429, 502, 503, 504):
+                        # Honour Retry-After when they send one; they know
+                        # better than a guess does.
+                        wait = float(image.headers.get("Retry-After") or 2**attempt)
+                        log.warning(
+                            "  %s on %s — waiting %.0fs", image.status_code, card.name, wait
+                        )
+                        await asyncio.sleep(min(wait, 60))
+                        continue
+                    image.raise_for_status()
+                    vector = await embed_image(settings.embedder_url, image.content)
+                except Exception as exc:  # noqa: BLE001 - one bad image must not end the run
+                    if attempt == 3:
+                        log.warning("  skip %s (%s)", card.name, type(exc).__name__)
+                        return card.id, None
+                    await asyncio.sleep(2**attempt)
+                    continue
+                return card.id, vector
+            return card.id, None
+
     async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-        for i, card in enumerate(cards, 1):
-            try:
-                image = await client.get(card.image_url)
-                image.raise_for_status()
-                vector = await embed_image(settings.embedder_url, image.content)
-            except Exception as exc:  # noqa: BLE001 - one bad image must not end the run
-                log.warning("  skip %s (%s)", card.name, type(exc).__name__)
+        pending = [asyncio.create_task(fetch_and_encode(client, c)) for c in cards]
+        for coro in asyncio.as_completed(pending):
+            card_id, vector = await coro
+            processed += 1
+            if vector is None:
                 failed += 1
-                continue
-            session.merge(
-                db.CardEmbedding(
-                    card_id=card.id,
-                    embedding=[float(x) for x in vector],
-                    model=settings.embed_model,
+            else:
+                session.merge(
+                    db.CardEmbedding(
+                        card_id=card_id,
+                        embedding=[float(x) for x in vector],
+                        model=settings.embed_model,
+                    )
                 )
-            )
-            written += 1
+                written += 1
             # Committed in batches so an interrupted run keeps its work: the
             # point of resumability is lost if everything lives in one
             # transaction that a Ctrl-C rolls back.
-            if i % 50 == 0:
+            if processed % 100 == 0:
                 session.commit()
-                log.info("  encoded %s/%s", i, len(cards))
+                log.info("  encoded %s/%s (%s skipped)", processed, len(cards), failed)
+
     session.commit()
     log.info("wrote %s vectors (%s skipped)", written, failed)
     return 0 if written else 1
@@ -361,6 +405,12 @@ def main(argv: list[str] | None = None) -> int:
 
     p_embed = sub.add_parser("embed", help="encode catalogue images into vectors")
     p_embed.add_argument("--limit", type=int, default=None)
+    p_embed.add_argument(
+        "--concurrency",
+        type=int,
+        default=int(os.getenv("FOILSTACK_EMBED_CONCURRENCY", "8")),
+        help="cards in flight at once (default 8)",
+    )
     p_embed.add_argument(
         "--all",
         action="store_true",
