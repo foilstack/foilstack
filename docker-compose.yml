@@ -106,6 +106,11 @@ services:
       # A host bind mount, not a named volume: a backup that
       # `docker compose down -v` can destroy is not a backup.
       - ${FOILSTACK_BACKUP_DIR:-./backups}:/backups
+      # Read-only, and only so the scans can be mirrored out. The dump protects
+      # the database; without this the restore brings back an inventory whose
+      # every image is a broken link, because the rows survived and the JPEGs
+      # they point at did not.
+      - ${FOILSTACK_DATA_DIR:-./data}:/data:ro
     entrypoint: ["sh", "-c"]
     command:
       - |
@@ -143,6 +148,24 @@ services:
             echo "backed up foilstack-$${ts}.sql.gz ($$(stat -c %s "$${f}") bytes)"
             cp "$${f}" /backups/foilstack-latest.sql.gz
             rm -f /backups/BACKUP_FAILING
+
+            # Scans are mirrored, not tarred. They are write-once — a scan is
+            # never edited after import — so `cp -n` copies each file exactly
+            # once and every run after the first is nearly free. A dated
+            # tarball would instead store a second, third and fourth copy of
+            # bytes that never changed, and on a deployment with real users
+            # that is tens of gigabytes to protect against an edit that cannot
+            # happen.
+            #
+            # Deletions deliberately do not propagate. Someone discarding a
+            # scan should not also remove it from the backup; the cost is a
+            # mirror that grows slowly against the alternative, which is a
+            # mirror that faithfully reproduces an accident.
+            if [ -d /data/scans ]; then
+              mkdir -p /backups/scans
+              cp -an /data/scans/. /backups/scans/ 2>/dev/null || true
+              echo "mirrored scans ($$(du -sh /backups/scans 2>/dev/null | cut -f1))"
+            fi
             # Only ever after a good dump, and never matching `-latest` — the
             # glob starts at the timestamp's century digits on purpose.
             ls -1t /backups/foilstack-20*.sql.gz 2>/dev/null \
@@ -153,6 +176,65 @@ services:
             echo "$${ts} no usable dump produced" >> /backups/BACKUP_FAILING
           fi
           sleep "$${BACKUP_CHECK_EVERY}"
+        done
+
+  # Copies the backup directory somewhere that is not this machine.
+  #
+  # Everything above protects against the failures that happen inside the box:
+  # a dropped table, `docker compose down -v`, someone deleting the wrong
+  # thing. None of it survives the disk dying, because the dumps and the scan
+  # mirror live on the same disk as the database they are copies of. This is
+  # the service that fixes that, and it is the only one here that needs an
+  # account somewhere else.
+  #
+  # Off unless asked for, because it cannot work without credentials and a
+  # service that crash-loops on a fresh clone is worse than one that is absent:
+  #
+  #   rclone config                       # once, on the host — creates rclone.conf
+  #   FOILSTACK_OFFSITE_REMOTE=r2:foilstack-backups \
+  #     docker compose --profile offsite up -d
+  #
+  # Any rclone remote works. Object storage is the cheap answer at this size —
+  # a few hundred megabytes of scans costs cents a month, and providers whose
+  # egress is free make the restore free too.
+  offsite:
+    profiles: ["offsite"]
+    image: rclone/rclone:latest
+    restart: unless-stopped
+    user: "${FOILSTACK_BACKUP_UID:-1000}:${FOILSTACK_BACKUP_GID:-1000}"
+    environment:
+      TZ: ${TZ:-UTC}
+      # A plain default rather than `${VAR:?...}`. Compose interpolates every
+      # service in the file whether or not its profile is active, so the
+      # required-variable form fails `docker compose up` for someone who has
+      # never heard of this service. The check belongs in the script below,
+      # which only runs when the profile does.
+      OFFSITE_REMOTE: ${FOILSTACK_OFFSITE_REMOTE:-}
+      OFFSITE_EVERY: ${FOILSTACK_OFFSITE_EVERY:-86400}
+    volumes:
+      - ${FOILSTACK_BACKUP_DIR:-./backups}:/backups:ro
+      - ${FOILSTACK_RCLONE_CONFIG:-~/.config/rclone}:/config/rclone:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if [ -z "$${OFFSITE_REMOTE}" ]; then
+          echo "offsite: set FOILSTACK_OFFSITE_REMOTE (e.g. r2:foilstack-backups) — nothing to copy to"
+          exit 1
+        fi
+        echo "offsite: copying /backups to $${OFFSITE_REMOTE} every $${OFFSITE_EVERY}s"
+        while true; do
+          # `copy`, never `sync`. sync makes the remote match the local
+          # directory, which means a local disk that has just wiped itself
+          # would replicate that faithfully to the one copy that survived it.
+          if rclone copy /backups "$${OFFSITE_REMOTE}" \
+               --config /config/rclone/rclone.conf --stats-one-line -v; then
+            echo "offsite ok at $$(date -Iseconds)"
+            rm -f /backups/OFFSITE_FAILING
+          else
+            echo "offsite FAILED at $$(date -Iseconds)"
+            echo "$$(date -Iseconds) rclone copy failed" >> /backups/OFFSITE_FAILING
+          fi
+          sleep "$${OFFSITE_EVERY}"
         done
 
   # Refreshes card prices and records the ones that moved.
