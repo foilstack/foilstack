@@ -135,3 +135,45 @@ def test_a_detached_head_is_read(tmp_path):
     (git / "HEAD").write_text("fedcba9876543210fedcba9876543210fedcba98\n")
 
     assert _git_sha_from_checkout(tmp_path) == "fedcba9"
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("/static/demo/foilstack.webp", "image/webp"),
+        ("/static/fonts/jetbrains-mono-latin.woff2", "font/woff2"),
+        ("/static/app.css", "text/css"),
+        ("/static/brand/mark.svg", "image/svg+xml"),
+    ],
+)
+def test_static_assets_are_typed_correctly(path, expected):
+    """`python:3.12-slim` has no mime table entry for webp or woff2, so these
+    went out as application/octet-stream and application/json — and the
+    nosniff header tells the browser not to second-guess that."""
+    from fastapi.testclient import TestClient
+
+    from foilstack.web.app import app
+
+    with TestClient(app) as client:
+        response = client.get(path)
+
+    assert response.status_code == 200, path
+    assert response.headers["content-type"].split(";")[0] == expected
+
+
+def test_the_types_are_registered_rather_than_inherited():
+    """The end-to-end check above passes on a development machine whether or
+    not the registration exists, because /etc/mime.types already knows these.
+    It only fails inside the slim image — which is no use as a test. This one
+    starts from a registry that knows nothing and fails anywhere."""
+    import mimetypes
+
+    from foilstack.web.app import _register_mime_types
+
+    db = mimetypes.MimeTypes(filenames=())
+    assert db.guess_type("x.woff2")[0] is None
+
+    _register_mime_types(db)
+
+    assert db.guess_type("x.woff2")[0] == "font/woff2"
+    assert db.guess_type("x.webp")[0] == "image/webp"

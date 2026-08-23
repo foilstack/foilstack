@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import logging
+import mimetypes
 import os
 import shutil
 import tempfile
@@ -54,6 +55,29 @@ from foilstack.web.routes import media
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent
+
+
+def _register_mime_types(db: mimetypes.MimeTypes | None = None) -> None:
+    """Type the assets whose extensions the host may not know.
+
+    StaticFiles types every response with `mimetypes.guess_type`, which reads
+    the system's mime table — and `python:3.12-slim` ships one that has never
+    heard of either of these. The bundled fonts went out as `application/json`
+    and the demo as `application/octet-stream`, which the `nosniff` header then
+    tells the browser not to second-guess.
+
+    Takes a registry so this is testable off a development machine, where
+    `/etc/mime.types` already supplies the answers and an end-to-end check
+    therefore passes whether or not this function exists.
+    """
+    add = mimetypes.add_type if db is None else db.add_type
+    add("image/webp", ".webp")
+    add("font/woff2", ".woff2")
+    add("font/woff", ".woff")
+
+
+_register_mime_types()
+
 app = FastAPI(title="foilstack", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 app.include_router(media.router)
