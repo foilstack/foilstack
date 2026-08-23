@@ -132,6 +132,20 @@ def _asset_version() -> str:
             digest.update((BASE_DIR / "static" / name).read_bytes())
         except OSError:
             return "0"
+
+    # The demo, by size and mtime rather than by content. It carries the same
+    # query string, so it has to be in the hash — a CDN held a stale
+    # `application/octet-stream` copy of it through a deploy that fixed exactly
+    # that, because the URL never changed. Reading three megabytes on every
+    # request to learn something `stat` already knows would be the wrong way to
+    # fix it.
+    for name in ("demo/foilstack.webp", "demo/foilstack.gif"):
+        try:
+            info = (BASE_DIR / "static" / name).stat()
+        except OSError:
+            continue
+        digest.update(f"{name}:{info.st_size}:{info.st_mtime_ns}".encode())
+
     return digest.hexdigest()[:10]
 
 

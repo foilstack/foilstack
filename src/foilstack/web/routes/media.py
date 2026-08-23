@@ -22,7 +22,10 @@ from foilstack.web.deps import db_session, owner
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-settings = get_settings()
+
+# Resolved per call, not bound at import — see the note in web/deps.py. These
+# routes read the data directory, so a stale settings object here serves images
+# out of whichever directory the process first happened to see.
 
 
 @router.get("/scan/{scan_id}/image")
@@ -41,6 +44,7 @@ def scan_image(
     # refuses anything that lands outside it. The extractor already rejects
     # such entries on the way in; this route turns a database value into a
     # filesystem read, so it checks again.
+    settings = get_settings()
     path = scan_path(scan.stored_path, settings.scans_dir)
     if path is None:
         raise HTTPException(404, "not found")
@@ -98,7 +102,7 @@ async def card_image(
     # `-lg` rather than the old bare `{card_id}.img`: the cache key has to change
     # when the thing being cached does, or every card viewed before this stays
     # pinned at 200px forever. Old files are simply orphaned and can be deleted.
-    cache = settings.refs_dir / f"{card_id}-lg.img"
+    cache = get_settings().refs_dir / f"{card_id}-lg.img"
     if not cache.exists():
         body = None
         for candidate in _reference_urls(url):
