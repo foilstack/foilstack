@@ -36,8 +36,14 @@ loses to `display: grid`; a "low confidence" warning on a 99% match; queue rows
 wrapping at 1280 but not 1440.
 
 ```bash
-uv run python scripts/preview.py --shots ./shots
+uv run python scripts/preview.py                 # serve at :8099 until Ctrl-C
+uv run python scripts/preview.py --shots ./shots # screenshot and exit
 ```
+
+Either way it is a disposable database, an account already signed in, and a
+slice of your catalogue so the screens have real cards in them. It drops the
+database on exit and never touches a real deployment. Screenshots land in
+`shots/`, which is gitignored.
 
 Then actually open the PNGs. A screenshot you did not look at is worth nothing.
 
@@ -65,6 +71,11 @@ it by scrolling less rather than by dropping the frame rate, because a scroll at
 five frames a second reads as broken.
 
 ## Formatting and types
+
+Install the hooks before your first commit — `uv run pre-commit install`. They
+also run `gitleaks`, which is deliberately a hook and not a CI job: this
+repository is public, so a credential CI catches is one that has already been
+pushed and can only be rotated.
 
 `ruff` formats and lints; `mypy` type-checks `src/`. All three run in
 pre-commit and in CI, and the settings live in `pyproject.toml` so a local run
@@ -154,6 +165,16 @@ Two habits worth keeping:
   rule. Do not narrate what the next line does.
 * Schema changes are Alembic revisions. `create_all` beside migrations is how a
   database reaches a state no migration describes.
+
+  ```bash
+  uv run alembic upgrade head                        # apply
+  uv run alembic revision --autogenerate -m "what"   # write one
+  uv run alembic downgrade -1                        # step back
+  ```
+* Nearest-neighbour search runs **in Postgres**, against an HNSW index, rather
+  than over a numpy array held in memory. That is what made accounts possible —
+  a per-user filter is a `WHERE` clause — and what stops a large catalogue
+  reading every vector on every scan.
 * Numbers in the interface must be real or visibly marked. The analytics screen
   computes what it can from inventory and labels the rest `demo data`; fees and
   shipping are absent rather than estimated, because foilstack never sees them.
