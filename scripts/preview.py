@@ -8,6 +8,7 @@ come across.
 
     uv run python scripts/preview.py --port 8099        # serve until Ctrl-C
     uv run python scripts/preview.py --shots ./shots    # screenshot and exit
+    uv run python scripts/preview.py --demo docs/demo   # record the walkthrough
 """
 
 from __future__ import annotations
@@ -27,6 +28,10 @@ from sqlalchemy import create_engine, select, text
 EMAIL = "preview@foilstack.invalid"
 PASSWORD = "preview-only-password"
 
+# How many scans wait in the review queue. Enough to fill the pane, so the
+# screen shows what reviewing a batch is actually like.
+PENDING = 7
+
 
 def _admin_url() -> str:
     from foilstack.config import get_settings
@@ -38,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--port", type=int, default=8099)
     ap.add_argument("--shots", type=Path, default=None)
+    ap.add_argument("--demo", type=Path, default=None, help="record the walkthrough and exit")
     ap.add_argument("--keep", action="store_true", help="leave the database behind")
     ap.add_argument("--width", type=int, default=1440)
     ap.add_argument("--height", type=int, default=900)
@@ -83,7 +89,26 @@ def main(argv: list[str] | None = None) -> int:
         _wait(url)
         print(f"serving {url}  ({EMAIL} / {PASSWORD})")
 
-        if args.shots:
+        if args.demo:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from demo import main as record
+
+            card_id = _first_card(preview_url)
+            record(
+                [
+                    "--url",
+                    url,
+                    "--out",
+                    str(args.demo),
+                    "--email",
+                    EMAIL,
+                    "--password",
+                    PASSWORD,
+                    *(["--card", str(card_id)] if card_id else []),
+                ]
+            )
+            proc.terminate()
+        elif args.shots:
             from shots import main as shoot
 
             sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -148,7 +173,7 @@ def _seed(source_url: str, preview_url: str) -> None:
                     "  JOIN candidates c ON c.scan_id = s.id AND c.rank = 0"
                     "  JOIN cards cd ON cd.id = c.card_id"
                     " WHERE cd.image_url IS NOT NULL AND cd.market IS NOT NULL"
-                    " ORDER BY c.score DESC LIMIT 14"
+                    " ORDER BY c.score DESC LIMIT 60"
                 )
             )
             .mappings()
@@ -161,7 +186,29 @@ def _seed(source_url: str, preview_url: str) -> None:
             "Import an archive there first — a preview seeded with invented "
             "pairs would show matches that are not matches."
         )
-    cards = pairs
+    # Distinct cards first, then the duplicates.
+    #
+    # Ordering purely by score put the same card in the queue twice, because
+    # two scans of one card both match it and both score highly. On screen that
+    # reads as a bug rather than as a duplicate, and the queue is the first
+    # thing anyone sees. So: a run of distinct cards to review, and the repeats
+    # held back for the confirmed rows, where a duplicate is the point — it is
+    # what the inventory screen consolidates.
+    distinct: list = []
+    repeats: list = []
+    seen_card: set[int] = set()
+    for row in pairs:
+        if row["id"] in seen_card:
+            repeats.append(row)
+        else:
+            seen_card.add(row["id"])
+            distinct.append(row)
+
+    # Enough waiting in the queue to fill the pane and to be worth scrolling.
+    # Two was enough to prove the screen renders and far too few to show what
+    # reviewing actually feels like.
+    pending = distinct[:PENDING]
+    cards = pending + distinct[PENDING:] + repeats[:2]
 
     db.init(preview_url)
     session = db.session()
@@ -217,7 +264,7 @@ def _seed(source_url: str, preview_url: str) -> None:
             user_id=user.id,
             filename=card["filename"],
             stored_path=card["stored_path"],
-            status="pending" if i < 2 else "confirmed",
+            status="pending" if i < PENDING else "confirmed",
             auto_accepted=card["auto_accepted"],
             best_score=float(card["score"]),
         )
@@ -228,7 +275,7 @@ def _seed(source_url: str, preview_url: str) -> None:
         session.add(
             db.Candidate(scan_id=scan.id, card_id=card["id"], score=float(card["score"]), rank=0)
         )
-        if i >= 2:
+        if i >= PENDING:
             session.add(
                 db.InventoryItem(
                     user_id=user.id,
@@ -248,7 +295,26 @@ def _seed(source_url: str, preview_url: str) -> None:
     import random
 
     today = dt.date.today()
-    for n, card in enumerate(cards[:7]):
+
+    # Price history goes on cards that are *in the inventory*, which is the only
+    # place a chart can be reached from — `/inventory/<card>` is reached by
+    # clicking a stock line. Attaching it to the first few cards overall put it
+    # on the ones still sitting in the review queue, so every card page a
+    # visitor could actually open drew an empty panel.
+    #
+    # Deduplicated too. Two scans matching one printing is the ordinary case —
+    # it is the duplicate the inventory screen consolidates — and card_prices is
+    # keyed on (card_id, sub_type), so the repeat raised a unique violation and
+    # took the whole preview down with it.
+    unique: list = []
+    seen_price: set[int] = set()
+    for card in cards[PENDING:]:
+        if card["id"] in seen_price:
+            continue
+        seen_price.add(card["id"])
+        unique.append(card)
+
+    for n, card in enumerate(unique[:7]):
         base = float(card["market"] or 1.0)
         # The seventh gets exactly one reading — the state every card is in on
         # the day price recording starts, and the one that must not render as a
@@ -281,7 +347,7 @@ def _seed(source_url: str, preview_url: str) -> None:
 
     # One card with the ambiguity the picker exists for: three printings that
     # all answer to "foil", an order of magnitude apart.
-    amb = cards[0]
+    amb = unique[0]
     ambiguous = (
         ("1st Edition Holofoil", 30.0),
         ("Unlimited Holofoil", 6.4),
@@ -299,6 +365,24 @@ def _seed(source_url: str, preview_url: str) -> None:
                 high=round(base * 1.3, 2),
             )
         )
+        # History per printing, not just per card. The trend panel is keyed on
+        # the printing a copy is declared as, so a card whose history was
+        # written under "Normal" while its copies say "1st Edition Holofoil"
+        # renders "no price history" — on the very card chosen to show the
+        # feature off, because the ambiguous one is the interesting one.
+        for back in range(21, -1, -3):
+            drift = 1 + (random.random() - 0.45) * 0.09 * (21 - back) / 21
+            session.merge(
+                db.CardPriceHistory(
+                    card_id=amb["id"],
+                    sub_type=sub,
+                    recorded_on=today - dt.timedelta(days=back),
+                    market=round(base * drift, 2),
+                    low=round(base * drift * 0.9, 2),
+                    mid=round(base * drift * 1.05, 2),
+                    high=round(base * drift * 1.3, 2),
+                )
+            )
     session.add(
         db.InventoryItem(
             user_id=user.id,

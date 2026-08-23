@@ -8,11 +8,19 @@ Runs on your own machine. **Your scans never leave the host.**
 
 > Status: early. The matching pipeline works end to end; expect rough edges.
 
+![A scan of the whole workflow: reviewing matched cards, confirming one into
+inventory, opening a card to see its price trend, and exporting the selection
+as a marketplace CSV](docs/demo/foilstack.gif)
+
+*Scans in, priced CSV out. Review the matches, confirm what is right, and the
+inventory prices itself from the catalogue.*
+
 ![The review queue: each scan beside the catalogue card it matched, with its
 confidence, condition and finish](docs/review-queue.png)
 
-*The review queue. Your scan on the left, the catalogue's guess beside it, and
-the score between them — because the top match is evidence, not an answer.*
+*The review queue up close. Your scan on the left, the catalogue's guess beside
+it, and the score between them — because the top match is evidence, not an
+answer.*
 
 ## What it does
 
@@ -296,6 +304,20 @@ on anything touching accounts:
 ```bash
 docker compose up -d postgres && uv run pytest -q
 ```
+
+### The demo animation
+
+The GIF at the top is generated, not filmed:
+
+```bash
+uv run python scripts/preview.py --demo docs/demo
+```
+
+That builds a throwaway database, seeds it from real matched pairs in whatever
+`DATABASE_URL` points at, drives the walkthrough with Playwright and drops the
+database afterwards — so nobody's actual inventory is ever on camera. It writes
+a GIF for the README and a higher-quality WebP and webm beside it, both
+gitignored; only the GIF is committed.
 
 ### Running the UI
 
