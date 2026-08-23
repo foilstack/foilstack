@@ -418,6 +418,20 @@ def init(database_url: str | None = None):
         database_url,
         future=True,
         pool_pre_ping=True,  # a pooled connection outlives a postgres restart
+        # Sized against the threadpool that will ask for them, not against a
+        # guess. FastAPI runs every `def` route in a pool forty threads wide,
+        # so a default of five plus ten overflow is a ceiling those threads
+        # reach on any page that loads a lot of images — and reaching it means
+        # thirty seconds of waiting on every other route, `/healthz` with them.
+        pool_size=20,
+        max_overflow=30,
+        # Fail in five seconds rather than thirty. A request that cannot get a
+        # connection is not going to be saved by waiting half a minute; it is
+        # going to hold a worker while the queue behind it grows.
+        pool_timeout=5,
+        # Postgres drops idle connections eventually; recycling first means the
+        # application never hands out one that the server has already closed.
+        pool_recycle=1800,
     )
     _Session = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
     return _Session

@@ -46,13 +46,25 @@ def scan_image(
     # such entries on the way in; this route turns a database value into a
     # filesystem read, so it checks again.
     settings = get_settings()
-    path = scan_path(scan.stored_path, settings.scans_dir)
+    stored_path = scan.stored_path
+
+    # Give the connection back before touching the filesystem.
+    #
+    # This route is `def`, not `async def`, so FastAPI runs it in a threadpool
+    # forty threads wide — and every one of them was holding a pooled
+    # connection through a Pillow resize. Forty threads against a pool of five
+    # plus ten overflow is where the site went down: the pool empties, every
+    # other route waits thirty seconds for a connection that is not coming, and
+    # `/healthz` fails with it.
+    session.close()
+
+    path = scan_path(stored_path, settings.scans_dir)
     if path is None:
         raise HTTPException(404, "not found")
     # Prefer the downscaled copy, building it on first request for scans
     # imported before display copies existed. Falls back to the original, which
     # is correct but large.
-    display = images.make_display_copy(path, settings.display_dir, scan.stored_path)
+    display = images.make_display_copy(path, settings.display_dir, stored_path)
     return FileResponse(
         display or path,
         headers={"Cache-Control": "private, max-age=86400"},
@@ -106,27 +118,59 @@ async def card_image(
         raise HTTPException(404, "no reference image")
     card = session.get(db.Card, card_id)
     url = card.image_url if card else None
+
+    # Everything the database is needed for has now happened, so give the
+    # connection back before going anywhere near the network.
+    #
+    # This took the site down. The fetch below can take twenty seconds per
+    # candidate, and holding a pooled connection across it means fifteen
+    # concurrent thumbnails exhaust a pool of five plus ten overflow — after
+    # which every route, `/healthz` included, blocks for thirty seconds and
+    # times out. It survived a small catalogue because misses were rare; it
+    # stopped surviving at thirty thousand cards, where a good number of the
+    # promo entries have no image behind them at all.
+    session.close()
+
     if not url:
         raise HTTPException(404, "no reference image")
 
     # `-lg` rather than the old bare `{card_id}.img`: the cache key has to change
     # when the thing being cached does, or every card viewed before this stays
     # pinned at 200px forever. Old files are simply orphaned and can be deleted.
-    cache = get_settings().refs_dir / f"{card_id}-lg.img"
+    cache = settings.refs_dir / f"{card_id}-lg.img"
+
+    # A card whose image upstream refuses is not a transient failure, and a
+    # page full of them must not re-ask on every load. The miss is remembered
+    # the same way a hit is, as a file, so it survives a restart.
+    missing = settings.refs_dir / f"{card_id}-lg.missing"
+    if missing.exists():
+        raise HTTPException(404, "no reference image")
+
     if not cache.exists():
         body = None
-        for candidate in _reference_urls(url):
-            try:
-                async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+        # One client for all candidates rather than one per attempt: building a
+        # fresh connection pool to the same host three times over is wasted
+        # handshakes on the exact path that was already too slow.
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+            for candidate in _reference_urls(url):
+                try:
                     response = await client.get(candidate)
-            except httpx.HTTPError as exc:
-                logger.warning("reference fetch failed for %s at %s: %s", card_id, candidate, exc)
-                continue
-            if response.status_code == 200:
-                body = response.content
-                break
+                except httpx.HTTPError as exc:
+                    logger.warning(
+                        "reference fetch failed for %s at %s: %s", card_id, candidate, exc
+                    )
+                    continue
+                if response.status_code == 200:
+                    body = response.content
+                    break
         if body is None:
-            raise HTTPException(502, "could not fetch reference image")
+            # Remembered, so the next page view does not spend twenty seconds
+            # rediscovering it. 404 rather than 502: from the browser's side
+            # this card has no reference image, which is the truth and is not
+            # worth a retry.
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            missing.touch()
+            raise HTTPException(404, "no reference image")
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_bytes(body)
 
