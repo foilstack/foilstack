@@ -42,7 +42,15 @@ services:
         # running; leave it and the footer simply omits it. Compose cannot run
         # a command here, so this comes from the environment:
         #
-        #   GIT_SHA=$(git rev-parse --short HEAD) docker compose up -d --build
+        #   GIT_SHA="$(git rev-parse --short HEAD)$(git diff --quiet HEAD || echo -dirty)" \
+        #     docker compose up -d --build
+        #
+        # The `-dirty` half is not decoration. A build from a working tree with
+        # uncommitted changes, labelled with a clean commit, claims to be code
+        # it does not contain — which is exactly the question this label exists
+        # to answer, answered wrongly. It has already happened once: a deploy
+        # built before its own commit reported the commit before the fix, while
+        # running the fix.
         GIT_SHA: ${GIT_SHA:-}
     restart: unless-stopped
     environment:
