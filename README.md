@@ -10,7 +10,7 @@ Runs on your own machine. **Your scans never leave the host.**
 
 ![A scan of the whole workflow: reviewing matched cards, confirming one into
 inventory, opening a card to see its price trend, and exporting the selection
-as a marketplace CSV](docs/demo/foilstack.gif)
+as a marketplace CSV](src/foilstack/web/static/demo/foilstack.gif)
 
 *Scans in, priced CSV out. Your scan on the left, the catalogue's guess beside
 it, and the score between them — because the top match is evidence, not an
@@ -136,7 +136,7 @@ conventions, and the handful of mistakes this codebase has already made once.
 
 ```bash
 uv sync --extra dev
-uv run pre-commit install     # before your first commit
+uv run pre-commit install --hook-type pre-commit --hook-type pre-push
 uv run pytest -q
 ```
 
@@ -148,6 +148,9 @@ anything touching accounts:
 ```bash
 docker compose up -d postgres && uv run pytest -q
 ```
+
+The pre-push hook runs the suite and refuses a push if anything **skipped**, for
+the same reason.
 
 ## Supporting this
 

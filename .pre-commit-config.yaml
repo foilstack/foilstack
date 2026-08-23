@@ -63,3 +63,19 @@ repos:
         language: python
         files: ^src/foilstack/
         pass_filenames: false
+
+  # The suite, on push rather than on commit. See scripts/check-tests.sh for
+  # why: a plain pytest hook is green on a machine with no Postgres, because
+  # the account-isolation tests skip rather than fail — and those are the ones
+  # worth gating on. Install it with:
+  #
+  #     pre-commit install --hook-type pre-push
+  - repo: local
+    hooks:
+      - id: tests
+        name: tests (and nothing skipped)
+        entry: scripts/check-tests.sh
+        language: script
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true

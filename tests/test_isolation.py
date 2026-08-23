@@ -915,3 +915,37 @@ def _with_setting(monkeypatch, web, **changes):
     import dataclasses
 
     monkeypatch.setattr(web, "settings", dataclasses.replace(web.settings, **changes))
+
+
+def test_the_landing_page_knows_who_is_reading_it(app_and_data):
+    """Inviting somebody already signed in to create an account is the front
+    door admitting it has no idea who is at it — and withholding the one link
+    they want, which is the way back to their inventory."""
+    from fastapi.testclient import TestClient
+
+    app, _ = app_and_data
+
+    with TestClient(app) as anon:
+        cold = anon.get("/").text
+    assert "Create an account" in cold
+    assert "Open your inventory" not in cold
+
+    warm = _signed_in(app).get("/").text
+    assert "Open your inventory" in warm
+    assert "Create an account" not in warm
+    assert "owner@example.com" in warm
+
+
+def test_the_landing_page_offers_no_signup_when_registration_is_closed(app_and_data, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from foilstack.web import app as web
+
+    app, _ = app_and_data
+    _with_setting(monkeypatch, web, allow_registration=False)
+
+    with TestClient(app) as anon:
+        body = anon.get("/").text
+
+    assert "Create an account" not in body
+    assert "Sign in" in body

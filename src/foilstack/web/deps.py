@@ -3,13 +3,13 @@
 Here rather than in app.py so a route module can take them without importing
 the application object and creating a cycle.
 
-`settings` is read once at import, which is the same thing app.py does and is
-fine in production — the process reads its environment at boot and never
-changes it. It is a trap in tests: a module imported before a fixture points
-the application at a throwaway database keeps the first settings object it
-saw, and the failure that follows names a password rather than an ordering.
-Making settings something a route is *handed* would fix that properly, and is
-a change worth making on its own rather than in passing.
+Settings are resolved per call rather than bound at import. `get_settings` is
+cached, so this costs a dict lookup — and it means `get_settings.cache_clear()`
+actually takes effect here. Bound at import, it does not: a module imported
+before a fixture points the application at a throwaway database keeps the
+first settings object it ever saw, and every test then fails against the
+developer's own database with an error that names a password rather than an
+ordering. That cost hours, twice.
 """
 
 from __future__ import annotations
@@ -19,8 +19,6 @@ from fastapi import Depends, HTTPException, Request
 from foilstack import db
 from foilstack.config import get_settings
 from foilstack.web import auth
-
-settings = get_settings()
 
 
 def db_session():
@@ -40,7 +38,7 @@ def owner(request: Request, session=Depends(db_session)) -> db.User:
     work depends on it, so there is no way to reach one of those queries
     without an id to scope it by.
     """
-    return auth.require_user(request, session, settings)
+    return auth.require_user(request, session, get_settings())
 
 
 def api_owner(request: Request, session=Depends(db_session)) -> db.User:
@@ -49,7 +47,7 @@ def api_owner(request: Request, session=Depends(db_session)) -> db.User:
     A fetch() that follows a 303 to the login page succeeds with an HTML body,
     and the caller reports "saved" for a request that saved nothing.
     """
-    user = auth.current_user(request, session, settings)
+    user = auth.current_user(request, session, get_settings())
     if user is None:
         raise HTTPException(401, "sign in required")
     return user

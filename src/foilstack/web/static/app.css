@@ -956,7 +956,10 @@ body.site { background: var(--paper); }
 .site-nav nav a:hover { color: var(--ink); }
 .site-nav nav a.btn { color: #fff; }
 
-.hero { max-width: 780px; margin: 0 auto; padding: 74px 32px 60px; text-align: center; }
+/* Wider than the 780px of a text-only hero, because it now carries the demo
+   and the demo is the argument. Top padding is smaller for the same reason:
+   the old hero floated in whitespace left for an image that was never added. */
+.hero { max-width: 1064px; margin: 0 auto; padding: 52px 32px 24px; text-align: center; }
 .eyebrow {
   font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.12em;
   color: var(--faint); margin-bottom: 18px;
@@ -969,6 +972,39 @@ body.site { background: var(--paper); }
 .hero-actions { display: flex; gap: 10px; justify-content: center; margin: 28px 0 14px; flex-wrap: wrap; }
 .hero-actions a { text-decoration: none; }
 .hero-note { font-size: 12.5px; color: var(--faint); }
+
+/* The demo. Framed rather than floated: a bare animation on a page this plain
+   reads as a stray image, and the frame says "this is the product". */
+.hero-demo { margin: 34px auto 0; max-width: 1000px; }
+.hero-demo picture { display: block; }
+.hero-demo img {
+  display: block; width: 100%; height: auto; border: 1px solid var(--rule);
+  border-radius: 8px; background: var(--surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 12px 32px rgba(0, 0, 0, 0.07);
+}
+.hero-demo figcaption {
+  margin-top: 12px; font-size: 12px; color: var(--faint);
+  font-family: var(--mono);
+}
+
+/* On a phone the whole frame is a thousand pixels of interface in three
+   hundred, which is a grey smudge rather than an argument. Crop into the
+   review queue instead — the one part that is legible at this size and the
+   part that does the persuading: a scan beside the card it matched. */
+@media (max-width: 640px) {
+  .hero-demo img {
+    /* 2/3 is not arbitrary: right-aligned, `cover` on this box shows the
+       original from x=583 onward, and the queue column starts at x=578. A
+       shorter box drags a strip of the import pane in with it, which reads as
+       a rendering fault rather than as a crop. */
+    aspect-ratio: 2 / 3;
+    object-fit: cover;
+    object-position: 100% 24%;
+  }
+  .hero-demo figcaption::after {
+    content: " Shown here: the review queue.";
+  }
+}
 
 .band { max-width: 980px; margin: 0 auto; padding: 54px 32px; }
 .band-tint { max-width: none; background: var(--surface); border-block: 1px solid var(--rule); }
@@ -1003,7 +1039,15 @@ body.site { background: var(--paper); }
 }
 .code-block code { background: none; border: none; color: inherit; padding: 0; }
 
-.two-up { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 26px; margin-top: 30px; }
+/* Says which of the numbers above are measured and which are illustrative.
+   The house rule is that numbers are real or visibly marked, and a table
+   styled like application output is exactly where that matters. */
+.proof-note { margin-top: 10px; font-size: 12px; color: var(--faint); font-family: var(--mono); }
+
+.two-up { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 26px 30px; margin-top: 30px; }
+/* Four items, so a wider minimum: at the band's 980px the 260px minimum fits
+   three across and leaves the fourth stranded on a row of its own. */
+.four-up { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
 .two-up h3 { font-size: 15px; margin-bottom: 6px; }
 .two-up p { color: var(--muted); font-size: 13.5px; line-height: 1.55; }
 

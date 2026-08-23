@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import logging
+import mimetypes
 import os
 import shutil
 import tempfile
@@ -54,6 +55,29 @@ from foilstack.web.routes import media
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent
+
+
+def _register_mime_types(db: mimetypes.MimeTypes | None = None) -> None:
+    """Type the assets whose extensions the host may not know.
+
+    StaticFiles types every response with `mimetypes.guess_type`, which reads
+    the system's mime table — and `python:3.12-slim` ships one that has never
+    heard of either of these. The bundled fonts went out as `application/json`
+    and the demo as `application/octet-stream`, which the `nosniff` header then
+    tells the browser not to second-guess.
+
+    Takes a registry so this is testable off a development machine, where
+    `/etc/mime.types` already supplies the answers and an end-to-end check
+    therefore passes whether or not this function exists.
+    """
+    add = mimetypes.add_type if db is None else db.add_type
+    add("image/webp", ".webp")
+    add("font/woff2", ".woff2")
+    add("font/woff", ".woff")
+
+
+_register_mime_types()
+
 app = FastAPI(title="foilstack", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 app.include_router(media.router)
@@ -108,6 +132,20 @@ def _asset_version() -> str:
             digest.update((BASE_DIR / "static" / name).read_bytes())
         except OSError:
             return "0"
+
+    # The demo, by size and mtime rather than by content. It carries the same
+    # query string, so it has to be in the hash — a CDN held a stale
+    # `application/octet-stream` copy of it through a deploy that fixed exactly
+    # that, because the URL never changed. Reading three megabytes on every
+    # request to learn something `stat` already knows would be the wrong way to
+    # fix it.
+    for name in ("demo/foilstack.webp", "demo/foilstack.gif"):
+        try:
+            info = (BASE_DIR / "static" / name).stat()
+        except OSError:
+            continue
+        digest.update(f"{name}:{info.st_size}:{info.st_mtime_ns}".encode())
+
     return digest.hexdigest()[:10]
 
 
@@ -238,20 +276,33 @@ def _chrome(session, request: Request, user: db.User) -> dict:
 
 
 @app.get("/", response_class=HTMLResponse)
-def page_landing(request: Request):
+def page_landing(request: Request, session=Depends(db_session)):
     """The front door. Deliberately not the tool: someone arriving cold needs to
     know what this is and that they can run it themselves before being handed a
-    file picker."""
+    file picker.
+
+    It does check for a session, though. Inviting somebody who is already
+    signed in to create an account is the page admitting it has no idea who is
+    reading it, and the one link they actually want — back into their
+    inventory — is the one it does not offer.
+    """
+    viewer = auth.current_user(request, session, settings) if settings.multi_user else None
     return templates.TemplateResponse(
         request,
         "landing.html",
         {
             "nav": "landing",
+            "viewer": viewer,
             "version": __version__,
             "git_sha": settings.git_sha,
             "asset_v": _asset_version(),
             "support_url": settings.support_url,
             "multi_user": settings.multi_user,
+            # The front door has to offer the door that is actually open. A
+            # hosted deployment with registration closed must not invite people
+            # to create an account they cannot have, and a self-hosted one has
+            # no account to create at all.
+            "registration_open": settings.allow_registration,
         },
     )
 

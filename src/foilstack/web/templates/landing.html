@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>foilstack — open-source card scanning and listing</title>
-<meta name="description" content="Drop in a zip of card scans. Get an identified, priced inventory and a marketplace CSV. Open source, self-hostable, your scans never leave your machine.">
+<title>foilstack — scan your cards, get a marketplace CSV</title>
+<meta name="description" content="Drop in a zip of card scans. Get an identified, priced inventory and a marketplace CSV. Open source, self-hostable, your scans never leave the host.">
 <link rel="icon" href="/static/brand/favicon.svg?v={{ asset_v }}" type="image/svg+xml">
 <link rel="alternate icon" href="/static/brand/favicon-32.png?v={{ asset_v }}" sizes="32x32">
 <link rel="apple-touch-icon" href="/static/brand/apple-touch-icon.png?v={{ asset_v }}">
@@ -16,27 +16,52 @@
   <a class="brand" href="/"><img class="brand-mark" src="/static/brand/mark.svg?v={{ asset_v }}" alt="" width="20" height="20"><b>foilstack</b><span class="ver">v{{ version }}{% if git_sha %}<span class="sha" title="build">{{ git_sha }}</span>{% endif %}</span></a>
   <nav>
     <a href="#how">How it works</a>
-    <a href="#printings">Why printings matter</a>
+    <a href="#printings">Why the review queue</a>
     <a href="#selfhost">Self-host</a>
+    <a href="https://github.com/foilstack/foilstack">Source</a>
+    {% if viewer %}
+    <a class="btn btn-primary" href="/app">Open your inventory</a>
+    {% elif multi_user %}
+    <a class="btn btn-primary" href="{{ '/register' if registration_open else '/login' }}">{{ 'Create an account' if registration_open else 'Sign in' }}</a>
+    {% else %}
     <a class="btn btn-primary" href="/app">Open the app</a>
+    {% endif %}
   </nav>
 </header>
 
 <section class="hero">
-  <p class="eyebrow">AGPL-3.0 · SELF-HOSTABLE{% if not multi_user %} · NO ACCOUNT{% endif %}</p>
-  <h1>Stop paying to list your cards.</h1>
+  <p class="eyebrow">AGPL-3.0 · SELF-HOSTABLE · YOUR SCANS STAY PUT</p>
+  <h1>Scans in. Priced CSV out.</h1>
   <p class="lede">
     Drop in a <code>.zip</code> of card scans. Get back an identified, priced
     inventory and a CSV your marketplace already accepts.
   </p>
   <div class="hero-actions">
-    <a class="btn btn-primary btn-lg" href="/app">{{ 'Sign in' if multi_user else 'Open the app' }}</a>
-    <a class="btn btn-lg" href="https://github.com/foilstack/foilstack">View source</a>
+    {% if viewer %}
+    <a class="btn btn-primary btn-lg" href="/app">Open your inventory</a>
+    {% elif multi_user %}
+    <a class="btn btn-primary btn-lg" href="{{ '/register' if registration_open else '/login' }}">{{ 'Create an account' if registration_open else 'Sign in' }}</a>
+    {% else %}
+    <a class="btn btn-primary btn-lg" href="/app">Open the app</a>
+    {% endif %}
+    <a class="btn btn-lg" href="#selfhost">Run it yourself</a>
   </div>
   <p class="hero-note">
-    {% if multi_user %}Your scans, inventory and exports are yours alone — no other account can see them.
+    {% if viewer %}Signed in as {{ viewer.email }}.
+    {% elif multi_user %}Free while it is this young. Your scans, inventory and exports are yours alone — no other account can see them.
     {% else %}Your scans are processed on the host running this and are never sent anywhere else.{% endif %}
   </p>
+
+  {# WebP first: same fifteen seconds at a third fewer bytes and without the
+     256-colour banding. The GIF is the fallback, and every browser has one. #}
+  <figure class="hero-demo">
+    <picture>
+      <source srcset="/static/demo/foilstack.webp?v={{ asset_v }}" type="image/webp">
+      <img src="/static/demo/foilstack.gif?v={{ asset_v }}" width="1000" height="625"
+           alt="Reviewing matched cards, confirming them into inventory, opening a card to see its price trend, and exporting the selection as a marketplace CSV">
+    </picture>
+    <figcaption>The whole loop, in about fifteen seconds. No narration — there is nothing to listen to.</figcaption>
+  </figure>
 </section>
 
 <section class="band" id="how">
@@ -64,12 +89,17 @@
     separated on the card by a symbol a few pixels wide.
   </p>
   <div class="proof">
-    <div class="proof-row proof-head"><span>Same scan, Base Set Charizard</span><span class="num">score</span><span class="num">price</span></div>
-    <div class="proof-row"><span>Charizard 004/102 · Holofoil</span><span class="num">0.932</span><span class="num">$855.52</span></div>
-    <div class="proof-row alt"><span>Charizard 004/102 · 1st Edition Holofoil</span><span class="num">0.913</span><span class="num">$10,000.00</span></div>
+    <div class="proof-row proof-head"><span>One scan of Charizard 004/102</span><span class="num">score</span><span class="num">market</span></div>
+    <div class="proof-row"><span>Base Set · Holofoil</span><span class="num">0.932</span><span class="num">$855.52</span></div>
+    <div class="proof-row alt"><span>Base Set (Shadowless) · 1st Edition Holofoil</span><span class="num">0.913</span><span class="num">$10,000.00</span></div>
   </div>
+  <p class="proof-note">
+    Both prices are real rows from the catalogue foilstack fetched. The two
+    scores are illustrative — a scan of your card produces its own.
+  </p>
   <p class="band-note">
-    Nineteen thousandths of a point apart, and twelve times the money. A tool
+    The same illustration, printed twice, separated by a small black symbol and
+    the word "Shadowless" — and by eleven and a half thousand dollars. A tool
     that shows you only the winner will eventually sell that card for $855.
     So auto-accept requires a high score, a clear margin over the runner-up,
     <em>and</em> — when the runner-up is the same card in another printing —
@@ -77,8 +107,39 @@
   </p>
 </section>
 
-<section class="band" id="selfhost">
-  <h2 class="band-h">Run it yourself</h2>
+<section class="band" id="prices">
+  <h2 class="band-h">It keeps up with the market</h2>
+  <div class="two-up four-up">
+    <div>
+      <h3>Priced per printing, not per card</h3>
+      <p>A foil is priced as a foil. Where several printings all answer to
+         "foil", you name the one you hold and the price follows it — until you
+         do, the dearest match is used and the row says <code>guessed</code>,
+         because an overpriced card sits unsold where an underpriced one is
+         already gone.</p>
+    </div>
+    <div>
+      <h3>A price history you own</h3>
+      <p>Prices sync daily and every move is recorded, so each card carries its
+         own trend rather than a number with no past. Upstream keeps only today,
+         so this is history that exists because you ran it.</p>
+    </div>
+    <div>
+      <h3>One line per card</h3>
+      <p>Four copies of the same card is one row with a quantity, not four rows
+         to scroll past. Open it to see every copy, its condition, what you paid
+         and what it is worth now.</p>
+    </div>
+    <div>
+      <h3>Sold is a state, not a delete</h3>
+      <p>Mark a card sold and it leaves your stock totals while staying in the
+         record with what it fetched, so the margin column means something.</p>
+    </div>
+  </div>
+</section>
+
+<section class="band band-tint" id="selfhost">
+  <h2 class="band-h">Or run the whole thing yourself</h2>
   <p class="band-lede">
     Three containers and a Postgres volume. No telemetry, no upload of your
     images to anyone, and — running it yourself — no account to create: one
@@ -88,8 +149,8 @@
 cd foilstack &amp;&amp; cp .env.example .env
 docker compose up -d          # migrations run on start
 
-docker compose exec web python -m foilstack.cli ingest --source tcgcsv --game pokemon
-docker compose exec web python -m foilstack.cli embed</code></pre>
+docker compose exec web foilstack ingest --source tcgcsv --game pokemon
+docker compose exec web foilstack embed</code></pre>
   <div class="two-up">
     <div>
       <h3>Bring your own catalogue</h3>
