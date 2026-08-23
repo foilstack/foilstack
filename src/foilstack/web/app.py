@@ -48,7 +48,7 @@ from foilstack.config import get_settings
 from foilstack.embedding import encoder_health
 from foilstack.importing import run_import
 from foilstack.plugins import export_plugins, source_plugins
-from foilstack.web import auth, joblog, ratelimit
+from foilstack.web import auth, joblog, proof, ratelimit
 from foilstack.web.deps import api_owner, db_session, owner
 from foilstack.web.routes import media
 
@@ -303,6 +303,10 @@ def page_landing(request: Request, session=Depends(db_session)):
             # to create an account they cannot have, and a self-hosted one has
             # no account to create at all.
             "registration_open": settings.allow_registration,
+            # Looked up, never hardcoded: a card id is a row number in whichever
+            # catalogue this instance built. Absent on a fresh install, and the
+            # table simply renders without thumbnails.
+            "proof_ids": proof.proof_card_ids(session),
         },
     )
 
