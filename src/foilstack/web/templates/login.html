@@ -46,6 +46,13 @@
       <span class="field-hint">At least 10 characters. Length beats punctuation.</span>
       {% endif %}
     </label>
+    {% if mode == 'register' and needs_invite %}
+    <label class="field">
+      <span class="field-label">Invite code</span>
+      <input class="input" type="text" name="invite" autocomplete="off" required>
+      <span class="field-hint">This server asks for a code from whoever runs it.</span>
+    </label>
+    {% endif %}
     <button class="btn btn-primary btn-tall btn-block" type="submit">
       {{ 'Create account' if mode == 'register' else 'Sign in' }}
     </button>
@@ -54,8 +61,10 @@
   <p class="auth-alt">
     {% if mode == 'register' %}
       Already have an account? <a href="/login">Sign in</a>
-    {% else %}
+    {% elif registration_open %}
       No account yet? <a href="/register">Create one</a>
+    {% else %}
+      Registration is closed on this server.
     {% endif %}
   </p>
 

@@ -17,9 +17,10 @@ import logging
 import os
 import shutil
 import tempfile
+from contextlib import asynccontextmanager
+from hmac import compare_digest
 from pathlib import Path
 
-import httpx
 from fastapi import (
     BackgroundTasks,
     Depends,
@@ -32,7 +33,6 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import (
-    FileResponse,
     HTMLResponse,
     PlainTextResponse,
     RedirectResponse,
@@ -42,18 +42,21 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 
-from foilstack import db, images, inventory, prices, search
+from foilstack import __version__, db, importing, inventory, prices, search
 from foilstack.config import get_settings
 from foilstack.embedding import encoder_health
-from foilstack.importing import run_import, scan_path
+from foilstack.importing import run_import
 from foilstack.plugins import export_plugins, source_plugins
-from foilstack.web import auth, joblog
+from foilstack.web import auth, joblog, ratelimit
+from foilstack.web.deps import api_owner, db_session, owner
+from foilstack.web.routes import media
 
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent
 app = FastAPI(title="foilstack", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+app.include_router(media.router)
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 settings = get_settings()
@@ -67,36 +70,15 @@ CHANNELS = [
 ]
 
 
-def db_session():
-    """One session per request, always closed."""
-    session = db.session()
-    try:
-        yield session
-    finally:
-        session.close()
+# Two budgets, both of which must allow an attempt through. The address budget
+# stops one machine working through a password list; the account budget stops a
+# botnet doing the same thing from a thousand addresses against one seller.
+_login_ip = ratelimit.Limiter(settings.login_attempts, settings.login_window_s)
+_login_account = ratelimit.Limiter(settings.login_attempts, settings.login_window_s)
 
-
-def owner(request: Request, session=Depends(db_session)) -> db.User:
-    """The account this request acts as.
-
-    In single-user mode this is the local owner and never fails. In multi-user
-    mode it redirects to the login screen. Every route that touches a seller's
-    work depends on it, so there is no way to reach one of those queries
-    without an id to scope it by.
-    """
-    return auth.require_user(request, session, settings)
-
-
-def api_owner(request: Request, session=Depends(db_session)) -> db.User:
-    """Same, but answering 401 instead of redirecting.
-
-    A fetch() that follows a 303 to the login page succeeds with an HTML body,
-    and the caller reports "saved" for a request that saved nothing.
-    """
-    user = auth.current_user(request, session, settings)
-    if user is None:
-        raise HTTPException(401, "sign in required")
-    return user
+# Registration is cheaper to abuse than login — every attempt that succeeds
+# costs a row and a slot — so it gets a tighter budget on the address alone.
+_register_ip = ratelimit.Limiter(max(3, settings.login_attempts // 2), settings.login_window_s)
 
 
 def _money(n: float | None) -> str:
@@ -129,8 +111,8 @@ def _asset_version() -> str:
     return digest.hexdigest()[:10]
 
 
-@app.on_event("startup")
-def _startup() -> None:
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
     # Fails the boot rather than the first login: a multi-user deployment
     # signing sessions with the published development key is one anybody can
     # forge a session against.
@@ -139,6 +121,45 @@ def _startup() -> None:
     settings.refs_dir.mkdir(parents=True, exist_ok=True)
     settings.display_dir.mkdir(parents=True, exist_ok=True)
     db.init(settings.database_url)
+    yield
+
+
+app.router.lifespan_context = _lifespan
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    """Headers the browser needs in order to refuse things on our behalf.
+
+    Deliberately not a script/style CSP. The screens carry inline `<script>`
+    and inline `style=`, so a `script-src` policy strict enough to be worth
+    having would switch half the interface off — that wants nonces threaded
+    through every template, which is a real change and not a header. What is
+    here is the part that costs nothing and still closes real holes:
+
+    * `frame-ancestors` and `X-Frame-Options` — nobody frames this page, so
+      nobody clickjacks the delete button on somebody's inventory.
+    * `nosniff` — a scan uploaded as `card.jpg` is served as an image and must
+      never be sniffed into something executable.
+    * `Referrer-Policy` — inventory URLs carry card ids; those should not be
+      handed to whatever a user clicks through to.
+    * HSTS, but only on a request that already arrived over TLS. Sending it
+      over plain HTTP is both ignored by browsers and a way to lock a
+      self-hoster out of their own LAN deployment.
+    """
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Content-Security-Policy", "frame-ancestors 'none'")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault(
+        "Permissions-Policy", "camera=(), microphone=(), geolocation=(), interest-cohort=()"
+    )
+    if request.url.scheme == "https":
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return response
 
 
 def _aware(when: dt.datetime) -> dt.datetime:
@@ -176,7 +197,7 @@ def _chrome(session, request: Request, user: db.User) -> dict:
     sources = session.scalars(select(db.Card.source).distinct()).all()
 
     return {
-        "version": "0.1.0",
+        "version": __version__,
         # Recomputed per request: the stylesheet is bind-mounted during
         # development, so caching this would defeat the point of having it.
         "asset_v": _asset_version(),
@@ -215,7 +236,7 @@ def page_landing(request: Request):
         "landing.html",
         {
             "nav": "landing",
-            "version": "0.1.0",
+            "version": __version__,
             "asset_v": _asset_version(),
             "support_url": settings.support_url,
             "multi_user": settings.multi_user,
@@ -325,23 +346,40 @@ def _queue_rows(session, user_id: int) -> list[dict]:
 # ==========================================================================
 
 
-@app.get("/login", response_class=HTMLResponse)
-def page_login(request: Request, next: str = "/app"):
-    if not settings.multi_user:
-        return RedirectResponse("/app", status_code=303)
+def _auth_page(
+    request: Request,
+    mode: str,
+    *,
+    next: str = "/app",
+    error: str | None = None,
+    email: str = "",
+    status: int = 200,
+):
+    """The login/register screen. One builder rather than six copies of the
+    same dict — the copies had drifted a hardcoded version string apiece."""
     return templates.TemplateResponse(
         request,
         "login.html",
         {
-            "mode": "login",
+            "mode": mode,
             "next": next,
-            "error": None,
-            "email": "",
-            "version": "0.1.0",
+            "error": error,
+            "email": email,
+            "registration_open": settings.allow_registration,
+            "needs_invite": bool(settings.invite_code),
+            "version": __version__,
             "asset_v": _asset_version(),
             "support_url": settings.support_url,
         },
+        status_code=status,
     )
+
+
+@app.get("/login", response_class=HTMLResponse)
+def page_login(request: Request, next: str = "/app"):
+    if not settings.multi_user:
+        return RedirectResponse("/app", status_code=303)
+    return _auth_page(request, "login", next=next)
 
 
 @app.post("/login", response_class=HTMLResponse)
@@ -354,23 +392,31 @@ def do_login(
 ):
     if not settings.multi_user:
         return RedirectResponse("/app", status_code=303)
+
+    ip = ratelimit.client_ip(request)
+    account = auth.normalise_email(email)
+    # Checked before the password is verified, so a refused attempt costs an
+    # dictionary lookup rather than an argon2 hash. That is the difference
+    # between a limit that protects the machine and one that is a way to load
+    # it up.
+    wait = max(_login_ip.check(ip), _login_account.check(account))
+    if wait > 0:
+        return _auth_page(
+            request, "login", next=next, error=ratelimit.wait_message(wait), email=email, status=429
+        )
+
     try:
         user = auth.authenticate(session, email, password)
     except auth.AuthError as exc:
-        return templates.TemplateResponse(
-            request,
-            "login.html",
-            {
-                "mode": "login",
-                "next": next,
-                "error": str(exc),
-                "email": email,
-                "version": "0.1.0",
-                "asset_v": _asset_version(),
-                "support_url": settings.support_url,
-            },
-            status_code=400,
-        )
+        _login_ip.record(ip)
+        _login_account.record(account)
+        return _auth_page(request, "login", next=next, error=str(exc), email=email, status=400)
+
+    # A success clears both budgets. Someone who mistyped their password four
+    # times and then remembered it should not carry those four into the rest
+    # of their day.
+    _login_ip.reset(ip)
+    _login_account.reset(account)
     auth.touch_login(session, user)
     response = RedirectResponse(_safe_next(next), status_code=303)
     auth.issue(request, response, settings, user.id)
@@ -381,19 +427,11 @@ def do_login(
 def page_register(request: Request):
     if not settings.multi_user:
         return RedirectResponse("/app", status_code=303)
-    return templates.TemplateResponse(
-        request,
-        "login.html",
-        {
-            "mode": "register",
-            "next": "/app",
-            "error": None,
-            "email": "",
-            "version": "0.1.0",
-            "asset_v": _asset_version(),
-            "support_url": settings.support_url,
-        },
-    )
+    if not settings.allow_registration:
+        return _auth_page(
+            request, "login", error="registration is closed on this server", status=403
+        )
+    return _auth_page(request, "register")
 
 
 @app.post("/register", response_class=HTMLResponse)
@@ -401,34 +439,50 @@ def do_register(
     request: Request,
     email: str = Form(...),
     password: str = Form(...),
+    invite: str = Form(""),
     session=Depends(db_session),
 ):
     if not settings.multi_user:
         return RedirectResponse("/app", status_code=303)
+    if not settings.allow_registration:
+        return _auth_page(
+            request, "login", error="registration is closed on this server", status=403
+        )
+
+    ip = ratelimit.client_ip(request)
+    wait = _register_ip.check(ip)
+    if wait > 0:
+        return _auth_page(
+            request, "register", error=ratelimit.wait_message(wait), email=email, status=429
+        )
+
+    if settings.invite_code and not compare_digest(invite.strip(), settings.invite_code):
+        # Counts against the budget: without that, the code itself is
+        # guessable at whatever rate the network allows.
+        _register_ip.record(ip)
+        return _auth_page(
+            request, "register", error="that invite code is not valid", email=email, status=403
+        )
+
     try:
         user = auth.register(session, settings, email, password)
     except auth.AuthError as exc:
-        return templates.TemplateResponse(
-            request,
-            "login.html",
-            {
-                "mode": "register",
-                "next": "/app",
-                "error": str(exc),
-                "email": email,
-                "version": "0.1.0",
-                "asset_v": _asset_version(),
-                "support_url": settings.support_url,
-            },
-            status_code=400,
-        )
+        _register_ip.record(ip)
+        return _auth_page(request, "register", error=str(exc), email=email, status=400)
+
     response = RedirectResponse("/app", status_code=303)
     auth.issue(request, response, settings, user.id)
     return response
 
 
 @app.post("/logout")
-def do_logout():
+def do_logout(request: Request, session=Depends(db_session)):
+    # Drop the activity log with the session. It is small and it is ephemeral,
+    # but on a shared machine "sign out" has to mean the next person to use
+    # this browser cannot read what the last one imported or exported.
+    user = auth.current_user(request, session, settings)
+    if user is not None:
+        joblog.forget(user.id)
     response = RedirectResponse("/", status_code=303)
     auth.clear(response)
     return response
@@ -708,7 +762,7 @@ def page_listings(
             "market_value": market_value,
             "delta": run_value - market_value,
             "floor": inventory.FLOOR,
-            "log": joblog.entries(),
+            "log": joblog.entries(user.id),
             **_chrome(session, request, user),
         },
     )
@@ -823,16 +877,35 @@ async def api_import(
     if default_finish not in inventory.FINISHES:
         raise HTTPException(400, "unknown finish")
 
+    # Checked before a byte is written, and again against what the archive
+    # actually contains once its size is known. A quota tested only after the
+    # upload has landed is a quota that still lets the disk fill.
+    if settings.max_account_mb:
+        used = importing.usage_bytes(session, user.id)
+        ceiling = settings.max_account_mb * 1024 * 1024
+        if used >= ceiling:
+            raise HTTPException(
+                413,
+                f"this account is using {used / 1048576:.0f} MB of its "
+                f"{settings.max_account_mb} MB limit — discard some scans first",
+            )
+
     tmp = Path(tempfile.mkdtemp(prefix="foilstack-")) / "upload.zip"
     size = 0
     limit = settings.max_archive_mb * 1024 * 1024
+    if settings.max_account_mb:
+        limit = min(limit, ceiling - used)
     with open(tmp, "wb") as out:
         while chunk := await archive.read(1024 * 1024):
             size += len(chunk)
             if size > limit:
                 out.close()
                 shutil.rmtree(tmp.parent, ignore_errors=True)
-                raise HTTPException(413, f"archive exceeds {settings.max_archive_mb} MB")
+                raise HTTPException(
+                    413,
+                    f"archive exceeds {limit / 1048576:.0f} MB "
+                    "(the per-upload cap, or what is left of this account's quota)",
+                )
             out.write(chunk)
 
     job = db.ImportJob(
@@ -846,7 +919,7 @@ async def api_import(
     session.add(job)
     session.commit()
 
-    joblog.add(f"POST /imports · {archive.filename} · {size / 1048576:.1f} MB")
+    joblog.add(user.id, f"POST /imports · {archive.filename} · {size / 1048576:.1f} MB")
     background.add_task(run_import, job.id, tmp, settings)
     return {"job_id": job.id}
 
@@ -906,7 +979,7 @@ def api_confirm(
         raise HTTPException(400, "unknown finish")
     _confirm(session, user.id, scan_id, card_id, condition, finish)
     session.commit()
-    joblog.add(f"confirmed scan {scan_id} · {condition} {finish}")
+    joblog.add(user.id, f"confirmed scan {scan_id} · {condition} {finish}")
     return {"ok": True}
 
 
@@ -945,7 +1018,7 @@ async def api_commit(
     guessed = sum(
         1 for r in inventory.items(session, user.id, status="stock") if r["printing_guessed"]
     )
-    joblog.add(f"committed {len(rows)} scans to inventory")
+    joblog.add(user.id, f"committed {len(rows)} scans to inventory")
     # Told, not buried. A card priced on a guess between printings looks
     # exactly like a card priced on a decision.
     return {"ok": True, "committed": len(rows), "needs_printing": guessed}
@@ -982,7 +1055,7 @@ async def api_discard_all(
         if scan.status != "confirmed":
             scan.status = "discarded"
     session.commit()
-    joblog.add(f"discarded {len(scans)} unreviewed matches")
+    joblog.add(user.id, f"discarded {len(scans)} unreviewed matches")
     return {"ok": True}
 
 
@@ -1018,7 +1091,7 @@ async def api_mark_listed(
         item.listed_channels = label
         item.listed_at = dt.datetime.now(dt.UTC)
     session.commit()
-    joblog.add(f"marked {len(items)} rows listed on {label}")
+    joblog.add(user.id, f"marked {len(items)} rows listed on {label}")
     return {"ok": True, "marked": len(items)}
 
 
@@ -1071,7 +1144,7 @@ async def api_inventory_bulk_delete(
     count = len(items)
     _delete_items(session, items)
     session.commit()
-    joblog.add(f"deleted {count} rows from inventory")
+    joblog.add(user.id, f"deleted {count} rows from inventory")
     return {"ok": True, "deleted": count}
 
 
@@ -1176,7 +1249,7 @@ async def api_inventory_update(
             item.sold_price = None
 
     session.commit()
-    joblog.add(f"updated {inventory.sku(item.id)} · {item.condition} {item.finish}")
+    joblog.add(user.id, f"updated {inventory.sku(item.id)} · {item.condition} {item.finish}")
     return {"ok": True}
 
 
@@ -1199,7 +1272,7 @@ def api_inventory_delete(
     label = inventory.sku(item.id)
     _delete_items(session, [item])
     session.commit()
-    joblog.add(f"deleted {label} from inventory")
+    joblog.add(user.id, f"deleted {label} from inventory")
     return {"ok": True}
 
 
@@ -1225,104 +1298,6 @@ def _delete_items(session, items: list[db.InventoryItem]) -> None:
 # ==========================================================================
 
 
-@app.get("/scan/{scan_id}/image")
-def scan_image(
-    scan_id: int,
-    session=Depends(db_session),
-    user: db.User = Depends(owner),
-):
-    scan = session.get(db.Scan, scan_id)
-    # Ownership is checked before the file is: this route serves photographs
-    # of another person's property, and "does this id exist" is not a question
-    # a stranger gets to ask.
-    if scan is None or scan.user_id != user.id:
-        raise HTTPException(404, "not found")
-    # `scan_path` resolves the stored location against the scans directory and
-    # refuses anything that lands outside it. The extractor already rejects
-    # such entries on the way in; this route turns a database value into a
-    # filesystem read, so it checks again.
-    path = scan_path(scan.stored_path, settings.scans_dir)
-    if path is None:
-        raise HTTPException(404, "not found")
-    # Prefer the downscaled copy, building it on first request for scans
-    # imported before display copies existed. Falls back to the original, which
-    # is correct but large.
-    display = images.make_display_copy(path, settings.display_dir, scan.stored_path)
-    return FileResponse(
-        display or path,
-        headers={"Cache-Control": "private, max-age=86400"},
-    )
-
-
-# TCGplayer serves several sizes of the same product image, selected by a
-# suffix on the URL. The catalogue stores the 200w thumbnail, which is 200x278
-# — fine behind a 46px box and useless the moment anyone looks closer, and
-# looking closer is the entire job of the review queue: printings differ by a
-# set symbol a few pixels wide.
-#
-# Tried in order, first success wins. `1000x1000` answers 403; `in_1000x1000`
-# is the variant that works, at 672x936.
-_REF_VARIANTS = ("in_1000x1000", "400w")
-
-
-def _reference_urls(url: str) -> list[str]:
-    """Larger variants of a catalogue image, best first, original last."""
-    candidates = [url.replace("_200w", f"_{v}") for v in _REF_VARIANTS if "_200w" in url]
-    candidates.append(url)
-    # dict.fromkeys keeps order and drops the duplicate when no swap happened.
-    return list(dict.fromkeys(candidates))
-
-
-@app.get("/card/{card_id}/image")
-async def card_image(
-    card_id: int,
-    session=Depends(db_session),
-    user: db.User = Depends(owner),
-):
-    """The catalogue's reference image, fetched once and cached on disk.
-
-    Proxied rather than linked straight to the upstream CDN. Both the review
-    queue and the inventory table put the reference next to the scan, and a
-    direct `<img src>` would tell that CDN which cards this seller is looking
-    at, every time a page loads.
-
-    The catalogue is shared, so there is nothing here that belongs to one
-    account — but it still requires a session, because an open image proxy on
-    a public host is a free bandwidth donation to whoever finds it.
-    """
-    card = session.get(db.Card, card_id)
-    url = card.image_url if card else None
-    if not url:
-        raise HTTPException(404, "no reference image")
-
-    # `-lg` rather than the old bare `{card_id}.img`: the cache key has to change
-    # when the thing being cached does, or every card viewed before this stays
-    # pinned at 200px forever. Old files are simply orphaned and can be deleted.
-    cache = settings.refs_dir / f"{card_id}-lg.img"
-    if not cache.exists():
-        body = None
-        for candidate in _reference_urls(url):
-            try:
-                async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-                    response = await client.get(candidate)
-            except httpx.HTTPError as exc:
-                logger.warning("reference fetch failed for %s at %s: %s", card_id, candidate, exc)
-                continue
-            if response.status_code == 200:
-                body = response.content
-                break
-        if body is None:
-            raise HTTPException(502, "could not fetch reference image")
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        cache.write_bytes(body)
-
-    return FileResponse(
-        cache,
-        media_type="image/jpeg",
-        headers={"Cache-Control": "private, max-age=86400"},
-    )
-
-
 @app.get("/export/{name}")
 def export_csv(
     name: str,
@@ -1338,7 +1313,7 @@ def export_csv(
     chosen = set(id or [])
     rows = inventory.export_rows(session, user.id, rule, ids=chosen or None)
     body = spec.render(rows)
-    joblog.add(f"wrote {spec.filename} · {len(rows)} rows · {rule}")
+    joblog.add(user.id, f"wrote {spec.filename} · {len(rows)} rows · {rule}")
     return Response(
         content=body,
         media_type="text/csv",

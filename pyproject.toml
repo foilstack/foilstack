@@ -1,6 +1,6 @@
 [project]
 name = "foilstack"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Open-source card scanning, inventory and listing export. Self-hostable."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -35,6 +35,12 @@ foilstack = "foilstack.cli:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# The version lives in `src/foilstack/__init__.py` and is read from there.
+# It is rendered in the page footer and sent as the TCGCSV User-Agent, so a
+# second copy here is a copy that goes stale and then misreports both.
+[tool.hatch.version]
+path = "src/foilstack/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/foilstack"]

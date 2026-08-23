@@ -17,6 +17,7 @@ from typing import ClassVar
 
 import httpx
 
+from foilstack import __version__
 from foilstack.plugins.base import CardRecord, PriceRecord
 
 
@@ -38,7 +39,7 @@ REQUEST_DELAY = 0.1
 
 # TCGCSV answers 401 to requests that do not identify themselves — the default
 # httpx user-agent is rejected outright. Send a real name and a version.
-USER_AGENT = "foilstack/0.1.0 (+https://github.com/foilstack/foilstack)"
+USER_AGENT = f"foilstack/{__version__} (+https://github.com/foilstack/foilstack)"
 HEADERS = {"User-Agent": USER_AGENT, "Accept": "*/*"}
 
 # TCGplayer category ids, read from the categories endpoint rather than guessed.

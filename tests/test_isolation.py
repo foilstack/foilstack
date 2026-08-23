@@ -12,6 +12,7 @@ scope itself will pass every other test in this suite and fail here.
 from __future__ import annotations
 
 import os
+import re
 import uuid
 
 import pytest
@@ -40,6 +41,16 @@ def database_url():
 
     url = ADMIN_URL.rsplit("/", 1)[0] + "/" + name
     os.environ["DATABASE_URL"] = url
+
+    # Before alembic runs, not after. `migrations/env.py` takes its URL from
+    # `get_settings()` regardless of what is set on the Config here, so a
+    # settings object cached by any module imported earlier in the run sends
+    # this migration at the developer's own database instead of the throwaway
+    # one — and the failure names a password, which points nowhere near the
+    # cause.
+    from foilstack.config import get_settings
+
+    get_settings.cache_clear()
 
     from alembic import command
     from alembic.config import Config
@@ -74,8 +85,17 @@ def app_and_data(database_url, tmp_path_factory):
     get_settings.cache_clear()
 
     from foilstack import db
+    from foilstack.web import app as web
     from foilstack.web import auth
-    from foilstack.web.app import app
+
+    app = web.app
+
+    # `web.settings` is bound once, when the module is first imported. If any
+    # earlier test module imported it, that binding already happened against
+    # the developer's own database and clearing the cache above does not undo
+    # it — the app then talks to the wrong database and every test here fails
+    # on a password error that names nothing to do with test ordering.
+    web.settings = get_settings()
 
     db.init(database_url)
     session = db.session()
@@ -157,8 +177,14 @@ def test_stranger_sees_no_queue(stranger):
 
 def test_stranger_cannot_read_a_scan_image(stranger, app_and_data):
     """Photographs of another person's property."""
-    _, ids = app_and_data
+    app, ids = app_and_data
     assert stranger.get(f"/scan/{ids['scan']}/image").status_code == 404
+
+    # And the 404 above means "not yours", not "no such route". Without this
+    # line the test passes just as happily against a build where the image
+    # route was dropped altogether — which nearly happened when these routes
+    # moved into their own module.
+    assert _signed_in(app).get(f"/scan/{ids['scan']}/image").status_code == 200
 
 
 def test_stranger_cannot_read_a_job(stranger, app_and_data):
@@ -684,3 +710,208 @@ def test_deleting_a_row_stops_its_scan_claiming_to_be_confirmed(app_and_data):
     session = db.session()
     assert session.get(db.Scan, scan_id).status == "discarded"
     session.close()
+
+
+def test_the_job_log_does_not_show_one_account_what_another_just_did(stranger, app_and_data):
+    """The job log is a feed of activity, and activity names things.
+
+    Filenames, SKUs, row counts and export sizes are all somebody's business
+    data. A log that is process-wide rather than per-account hands each of
+    those to whoever loads the listings page next.
+    """
+    app, _ = app_and_data
+    owner = _signed_in(app)
+
+    # What the stranger can already see, legitimately: their own actions from
+    # earlier tests. The question is whether the owner's next move adds to it.
+    before = _job_log(stranger.get("/listings").text)
+
+    owner_before = _job_log(owner.get("/listings").text)
+    owner.get("/export/tcgplayer")
+
+    # The owner sees their own action...
+    assert len(_job_log(owner.get("/listings").text)) == len(owner_before) + 1
+    # ...and the stranger's log is untouched by it.
+    assert _job_log(stranger.get("/listings").text) == before
+
+
+def _job_log(html: str) -> list[str]:
+    """The messages in the job log panel, in order."""
+    panel = html.split('<div class="joblog">', 1)[1].split("</div>\n  </div>", 1)[0]
+    lines = re.findall(r'<div class="line">(.*?)</div>', panel, re.S)
+    return [re.sub(r"<[^>]+>", "", ln).strip() for ln in lines if "nothing yet" not in ln]
+
+
+def test_login_starts_refusing_after_a_run_of_wrong_passwords(app_and_data):
+    """Unlimited guesses against a real account, and every one of them paying
+    for an argon2 verify, is both how the password goes and how the machine
+    does."""
+    from fastapi.testclient import TestClient
+
+    from foilstack.web import app as web
+
+    app, _ = app_and_data
+    web._login_ip.clear()
+    web._login_account.clear()
+
+    client = TestClient(app)
+    codes = [
+        client.post(
+            "/login", data={"email": "owner@example.com", "password": f"wrong-{i}"}
+        ).status_code
+        for i in range(14)
+    ]
+
+    assert 429 in codes, "the login form never started refusing"
+    assert codes.index(429) <= 11, "it refused far later than the configured budget"
+
+    # And the refusal outlasts the right password, so a guesser cannot simply
+    # keep going until they stumble on it.
+    blocked = client.post(
+        "/login", data={"email": "owner@example.com", "password": "owner-long-password"}
+    )
+    assert blocked.status_code == 429
+
+    web._login_ip.clear()
+    web._login_account.clear()
+
+
+def test_a_good_password_still_works_once_the_window_is_clear(app_and_data):
+    """The limiter must not be a way to lock the real owner out for good."""
+    from foilstack.web import app as web
+
+    app, _ = app_and_data
+    web._login_ip.clear()
+    web._login_account.clear()
+    client = _signed_in(app)
+    assert client.get("/app", follow_redirects=False).status_code == 200
+
+
+def test_registration_can_be_closed(app_and_data, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from foilstack.web import app as web
+
+    app, _ = app_and_data
+    _with_setting(monkeypatch, web, allow_registration=False)
+    web._register_ip.clear()
+
+    with TestClient(app) as anon:
+        assert anon.get("/register").status_code == 403
+        made = anon.post(
+            "/register",
+            data={"email": "opportunist@example.com", "password": "a-long-enough-password"},
+        )
+        assert made.status_code == 403
+
+    # And the account really was not created.
+    from sqlalchemy import select
+
+    from foilstack import db
+
+    session = db.session()
+    assert session.scalar(select(db.User).where(db.User.email == "opportunist@example.com")) is None
+    session.close()
+
+
+def test_an_invite_code_is_required_when_one_is_set(app_and_data, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from foilstack.web import app as web
+
+    app, _ = app_and_data
+    _with_setting(monkeypatch, web, invite_code="open-sesame")
+    web._register_ip.clear()
+
+    with TestClient(app) as anon:
+        refused = anon.post(
+            "/register",
+            data={"email": "nocode@example.com", "password": "a-long-enough-password"},
+        )
+        assert refused.status_code == 403
+
+        allowed = anon.post(
+            "/register",
+            data={
+                "email": "withcode@example.com",
+                "password": "a-long-enough-password",
+                "invite": "open-sesame",
+            },
+            follow_redirects=False,
+        )
+        assert allowed.status_code == 303
+
+    web._register_ip.clear()
+
+
+def test_the_security_headers_are_on_every_response(app_and_data):
+    from fastapi.testclient import TestClient
+
+    app, _ = app_and_data
+    with TestClient(app) as anon:
+        headers = anon.get("/login").headers
+
+    assert headers["x-content-type-options"] == "nosniff"
+    assert headers["x-frame-options"] == "DENY"
+    assert "frame-ancestors 'none'" in headers["content-security-policy"]
+    assert headers["referrer-policy"] == "strict-origin-when-cross-origin"
+    # Not sent over plain HTTP: a self-hoster on a LAN would be locked out of
+    # their own deployment by a header they never asked for.
+    assert "strict-transport-security" not in headers
+
+
+def test_an_account_over_its_quota_cannot_upload_more(app_and_data, monkeypatch):
+    """Registration is open, so the amount of disk one account may take is
+    otherwise decided by that account."""
+    import io
+    import zipfile
+
+    from foilstack.web import app as web
+
+    app, ids = app_and_data
+    _with_setting(monkeypatch, web, max_account_mb=1)
+
+    from foilstack import db
+
+    session = db.session()
+    scan = session.get(db.Scan, ids["scan"])
+    before = scan.size_bytes
+    scan.size_bytes = 2 * 1024 * 1024  # already over the 1 MB ceiling
+    session.commit()
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("card.jpg", b"x" * 128)
+
+    client = _signed_in(app)
+    response = client.post(
+        "/api/import",
+        files={"archive": ("cards.zip", buf.getvalue(), "application/zip")},
+        data={"default_condition": "NM", "default_finish": "nonfoil"},
+    )
+    assert response.status_code == 413
+    assert "limit" in response.json()["detail"]
+
+    scan.size_bytes = before
+    session.commit()
+    session.close()
+
+
+def test_the_quota_is_off_by_default(app_and_data):
+    """A self-hosted install is one person and their own disk; making them
+    configure a limit against themselves would be a worse default."""
+    from foilstack.config import Settings
+
+    assert Settings.max_account_mb == 0
+
+
+def _with_setting(monkeypatch, web, **changes):
+    """Swap the module's Settings for one with `changes` applied.
+
+    Settings is frozen, which is the right call for a value read once at boot
+    and never meant to drift underneath a running request. It does mean a test
+    replaces the whole object rather than poking a field.
+    """
+    import dataclasses
+
+    monkeypatch.setattr(web, "settings", dataclasses.replace(web.settings, **changes))
