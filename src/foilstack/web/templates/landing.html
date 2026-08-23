@@ -13,7 +13,7 @@
 <body class="site">
 
 <header class="site-nav">
-  <a class="brand" href="/"><img class="brand-mark" src="/static/brand/mark.svg?v={{ asset_v }}" alt="" width="20" height="20"><b>foilstack</b><span class="ver">v{{ version }}</span></a>
+  <a class="brand" href="/"><img class="brand-mark" src="/static/brand/mark.svg?v={{ asset_v }}" alt="" width="20" height="20"><b>foilstack</b><span class="ver">v{{ version }}{% if git_sha %}<span class="sha" title="build">{{ git_sha }}</span>{% endif %}</span></a>
   <nav>
     <a href="#how">How it works</a>
     <a href="#printings">Why printings matter</a>

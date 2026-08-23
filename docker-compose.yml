@@ -37,6 +37,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.web
+      args:
+        # Set it when you build and the footer names the commit that is
+        # running; leave it and the footer simply omits it. Compose cannot run
+        # a command here, so this comes from the environment:
+        #
+        #   GIT_SHA=$(git rev-parse --short HEAD) docker compose up -d --build
+        GIT_SHA: ${GIT_SHA:-}
     restart: unless-stopped
     environment:
       FOILSTACK_DATA_DIR: /data
@@ -261,6 +268,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.web
+      args:
+        GIT_SHA: ${GIT_SHA:-}
     restart: unless-stopped
     depends_on:
       postgres:

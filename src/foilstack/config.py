@@ -35,6 +35,7 @@ class Settings:
     max_account_mb: int = 0
     login_attempts: int = 10
     login_window_s: int = 900
+    git_sha: str = ""
 
     @property
     def scans_dir(self) -> Path:
@@ -101,7 +102,44 @@ def get_settings() -> Settings:
         # password they used and ruinous for a script working through a list.
         login_attempts=int(os.getenv("FOILSTACK_LOGIN_ATTEMPTS", "10")),
         login_window_s=int(os.getenv("FOILSTACK_LOGIN_WINDOW_S", "900")),
+        # Which commit is running. Baked into the image at build time; read
+        # from the checkout when running straight from a clone.
+        git_sha=os.getenv("FOILSTACK_GIT_SHA") or _git_sha_from_checkout(),
     )
+
+
+def _git_sha_from_checkout(root: Path | None = None) -> str:
+    """The current commit, read from `.git` — no subprocess.
+
+    Only useful when running from a clone; a container has no `.git`, which is
+    why the image bakes the value in instead. Reading the files directly rather
+    than shelling out to `git` keeps this off the startup path of a machine
+    that has no git installed, and cannot hang.
+    """
+    root = root or Path(__file__).resolve().parents[2]
+    head = root / ".git" / "HEAD"
+    try:
+        ref = head.read_text().strip()
+    except OSError:
+        return ""
+    if ref.startswith("ref: "):
+        target = root / ".git" / ref[5:]
+        try:
+            ref = target.read_text().strip()
+        except OSError:
+            # A packed ref, which lives in packed-refs rather than as a file.
+            packed = root / ".git" / "packed-refs"
+            name = ref[5:]
+            try:
+                for line in packed.read_text().splitlines():
+                    if line.endswith(f" {name}"):
+                        ref = line.split(" ", 1)[0]
+                        break
+                else:
+                    return ""
+            except OSError:
+                return ""
+    return ref[:7] if len(ref) >= 7 else ""
 
 
 def _flag(name: str, default: bool) -> bool:

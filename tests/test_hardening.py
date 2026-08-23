@@ -60,3 +60,78 @@ def test_tracking_is_bounded():
 @pytest.mark.parametrize("seconds,expected", [(1, "1 minute"), (61, "2 minutes"), (900, "15 min")])
 def test_the_refusal_names_a_wait(seconds, expected):
     assert expected in ratelimit.wait_message(seconds)
+
+
+def test_the_build_is_read_from_the_environment_first(monkeypatch):
+    """The image bakes it in; the checkout is only the fallback."""
+    from foilstack.config import get_settings
+
+    monkeypatch.setenv("FOILSTACK_GIT_SHA", "abc1234")
+    get_settings.cache_clear()
+    try:
+        assert get_settings().git_sha == "abc1234"
+    finally:
+        get_settings.cache_clear()
+
+
+def test_the_build_falls_back_to_the_checkout(monkeypatch):
+    """Running straight from a clone should still say which commit it is."""
+    from foilstack.config import _git_sha_from_checkout, get_settings
+
+    monkeypatch.delenv("FOILSTACK_GIT_SHA", raising=False)
+    get_settings.cache_clear()
+    try:
+        sha = get_settings().git_sha
+    finally:
+        get_settings.cache_clear()
+
+    assert sha == _git_sha_from_checkout()
+    # This repository is a checkout, so there is a real answer to find.
+    assert len(sha) == 7 and all(c in "0123456789abcdef" for c in sha)
+
+
+def test_a_missing_checkout_reports_nothing(tmp_path):
+    """No .git and no environment variable is an ordinary state — a container
+    built without the argument — and must not raise on startup."""
+    from foilstack.config import _git_sha_from_checkout
+
+    assert _git_sha_from_checkout(tmp_path) == ""
+
+
+def test_a_loose_ref_is_read(tmp_path):
+    from foilstack.config import _git_sha_from_checkout
+
+    git = tmp_path / ".git"
+    (git / "refs" / "heads").mkdir(parents=True)
+    (git / "HEAD").write_text("ref: refs/heads/main\n")
+    (git / "refs" / "heads" / "main").write_text("0123456789abcdef0123456789abcdef01234567\n")
+
+    assert _git_sha_from_checkout(tmp_path) == "0123456"
+
+
+def test_a_packed_ref_is_read(tmp_path):
+    """A freshly cloned repository has its refs packed, with no file to read —
+    which is the state a self-hoster's clone is in."""
+    from foilstack.config import _git_sha_from_checkout
+
+    git = tmp_path / ".git"
+    git.mkdir()
+    (git / "HEAD").write_text("ref: refs/heads/main\n")
+    (git / "packed-refs").write_text(
+        "# pack-refs with: peeled fully-peeled sorted\n"
+        "89abcdef0123456789abcdef0123456789abcdef refs/heads/main\n"
+    )
+
+    assert _git_sha_from_checkout(tmp_path) == "89abcde"
+
+
+def test_a_detached_head_is_read(tmp_path):
+    """HEAD holding a bare sha rather than a ref — what a CI checkout looks
+    like, and what a `git checkout <tag>` deploy looks like."""
+    from foilstack.config import _git_sha_from_checkout
+
+    git = tmp_path / ".git"
+    git.mkdir()
+    (git / "HEAD").write_text("fedcba9876543210fedcba9876543210fedcba98\n")
+
+    assert _git_sha_from_checkout(tmp_path) == "fedcba9"
