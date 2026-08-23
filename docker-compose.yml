@@ -50,6 +50,16 @@ services:
       FOILSTACK_MULTI_USER: ${FOILSTACK_MULTI_USER:-false}
       FOILSTACK_SECRET_KEY: ${FOILSTACK_SECRET_KEY:-dev-insecure-change-me}
       FOILSTACK_SUPPORT_URL: ${FOILSTACK_SUPPORT_URL:-https://buymeacoffee.com/foilstack}
+      # Everything the application reads has to be named here. Compose passes
+      # only what this block lists, so a setting added to config.py and to
+      # .env but not to this list is one that silently does nothing — and the
+      # ones below are the levers you reach for when a public deployment is
+      # going wrong, which is the worst possible time to find that out.
+      FOILSTACK_ALLOW_REGISTRATION: ${FOILSTACK_ALLOW_REGISTRATION:-true}
+      FOILSTACK_INVITE_CODE: ${FOILSTACK_INVITE_CODE:-}
+      FOILSTACK_MAX_ACCOUNT_MB: ${FOILSTACK_MAX_ACCOUNT_MB:-0}
+      FOILSTACK_LOGIN_ATTEMPTS: ${FOILSTACK_LOGIN_ATTEMPTS:-10}
+      FOILSTACK_LOGIN_WINDOW_S: ${FOILSTACK_LOGIN_WINDOW_S:-900}
     volumes:
       # Your scans. A bind mount rather than a named volume so you can see
       # them, back them up, and delete them. The database is a separate volume;
