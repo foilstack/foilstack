@@ -8,11 +8,19 @@ Runs on your own machine. **Your scans never leave the host.**
 
 > Status: early. The matching pipeline works end to end; expect rough edges.
 
+![A scan of the whole workflow: reviewing matched cards, confirming one into
+inventory, opening a card to see its price trend, and exporting the selection
+as a marketplace CSV](docs/demo/foilstack.gif)
+
+*Scans in, priced CSV out. Review the matches, confirm what is right, and the
+inventory prices itself from the catalogue.*
+
 ![The review queue: each scan beside the catalogue card it matched, with its
 confidence, condition and finish](docs/review-queue.png)
 
-*The review queue. Your scan on the left, the catalogue's guess beside it, and
-the score between them — because the top match is evidence, not an answer.*
+*The review queue up close. Your scan on the left, the catalogue's guess beside
+it, and the score between them — because the top match is evidence, not an
+answer.*
 
 ## What it does
 
