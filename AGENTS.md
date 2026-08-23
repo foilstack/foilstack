@@ -44,6 +44,26 @@ Then actually open the PNGs. A screenshot you did not look at is worth nothing.
 Playwright is a dev dependency; `uv run playwright install chromium` is enough,
 and the `--with-deps` step that wants sudo is not needed.
 
+**Re-record the README animation when you change a screen it shows.** It covers
+the queue, the inventory table, a card page and the listing run, so a change to
+any of those dates it:
+
+```bash
+uv run python scripts/preview.py --demo docs/demo
+```
+
+Same disposable database as `--shots`, so nobody's real inventory is ever on
+camera. It writes the committed GIF plus a WebP and a webm that are gitignored —
+the webm is the one to post anywhere that takes real video.
+
+Then watch it. Every fault this has had was invisible in the code and obvious in
+the output: scrolls that silently moved nothing and vanished from the GIF when
+identical frames collapsed, a queue seeded with the same card twice, a price
+trend panel reading "no price history" on the one card chosen to show it off.
+The size ceiling is the `check-added-large-files` hook at 2048 KB — fit under
+it by scrolling less rather than by dropping the frame rate, because a scroll at
+five frames a second reads as broken.
+
 ## Formatting and types
 
 `ruff` formats and lints; `mypy` type-checks `src/`. All three run in

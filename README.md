@@ -305,20 +305,6 @@ on anything touching accounts:
 docker compose up -d postgres && uv run pytest -q
 ```
 
-### The demo animation
-
-The GIF at the top is generated, not filmed:
-
-```bash
-uv run python scripts/preview.py --demo docs/demo
-```
-
-That builds a throwaway database, seeds it from real matched pairs in whatever
-`DATABASE_URL` points at, drives the walkthrough with Playwright and drops the
-database afterwards — so nobody's actual inventory is ever on camera. It writes
-a GIF for the README and a higher-quality WebP and webm beside it, both
-gitignored; only the GIF is committed.
-
 ### Running the UI
 
 `scripts/preview.py` brings up a throwaway instance with sample data: a
