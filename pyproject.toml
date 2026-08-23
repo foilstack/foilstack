@@ -24,7 +24,7 @@ dependencies = [
 
 [project.optional-dependencies]
 embedder = ["torch>=2.2", "transformers>=4.44"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "playwright>=1.48"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "playwright>=1.48", "ruff>=0.14", "mypy>=1.13"]
 
 # Installs a `foilstack` command. Without it the CLI is only reachable as
 # `python -m foilstack.cli`, which is not what the README says and not what
@@ -91,3 +91,30 @@ extend-immutable-calls = [
 
 [tool.ruff.format]
 docstring-code-format = true
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/foilstack"]
+# Third-party stubs are patchy across sqlalchemy plugins, transformers and
+# torch; chasing them adds noise without finding bugs.
+ignore_missing_imports = true
+# Deliberately not `strict`. Strict reports 126 errors on this codebase, almost
+# all of them "add an annotation here" rather than "this is wrong" — a number
+# that large gets a blanket ignore rather than a fix, and then the check is
+# decoration. At this setting it found four real things: a mutable class
+# attribute shared between plugin instances, a deprecated Pillow constant, a
+# dict lookup on a possibly-None key, and a plugin protocol that did not
+# describe half of what the application calls on it. Tighten a module at a
+# time as annotations arrive.
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+# numpy ships stubs written with 3.12+ `type` statements, which mypy refuses to
+# parse while `python_version` says 3.11 — and 3.11 is what `requires-python`
+# promises, so lowering the check to suit a dependency's stubs would be the
+# wrong way round. Skip following into it instead; nothing here relies on
+# numpy's types beyond "an array of floats goes to the encoder".
+[[tool.mypy.overrides]]
+module = ["numpy.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true

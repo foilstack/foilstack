@@ -56,14 +56,15 @@ def make_display_copy(source: Path, display_dir: Path, stored_path: str) -> Path
         return target
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        with Image.open(source) as im:
+        with Image.open(source) as opened:
+            im: Image.Image = opened
             # Phone cameras record orientation in EXIF rather than in the
             # pixels. Without this, portrait scans arrive rotated — and a
             # sideways card is one a reviewer cannot read at 64 pixels tall.
-            im = ImageOps.exif_transpose(im)
+            im = ImageOps.exif_transpose(im) or im
             if im.mode not in ("RGB", "L"):
                 im = im.convert("RGB")
-            im.thumbnail((MAX_EDGE, MAX_EDGE), Image.LANCZOS)
+            im.thumbnail((MAX_EDGE, MAX_EDGE), Image.Resampling.LANCZOS)
             im.save(target, "JPEG", quality=QUALITY, optimize=True, progressive=True)
         return target
     except Exception as exc:  # noqa: BLE001 - display is never worth failing an import over

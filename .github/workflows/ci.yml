@@ -8,6 +8,19 @@ on: [push, pull_request]
 # .pre-commit-config.yaml.
 
 jobs:
+  # Unlike the secret scan, these are worth running here: a contributor may not
+  # have pre-commit installed, and a lint failure found after the push costs
+  # nothing but a second commit.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra dev
+      - run: uv run ruff check src tests scripts migrations
+      - run: uv run ruff format --check src tests scripts migrations
+      - run: uv run mypy
+
   test:
     runs-on: ubuntu-latest
 

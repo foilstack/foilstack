@@ -20,3 +20,24 @@ repos:
         exclude: ^(LICENSE|.*/OFL\.txt)$
       - id: trailing-whitespace
         exclude: ^(LICENSE|.*/OFL\.txt)$
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.4
+    hooks:
+      # Lint first so a fix that changes layout is then formatted, rather than
+      # the two disagreeing across a commit.
+      - id: ruff-check
+        args: ["--fix"]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.3.1
+    hooks:
+      - id: mypy
+        # Runs against src/ only — the settings live in pyproject.toml so a
+        # local `uv run mypy` and the hook cannot disagree.
+        files: ^src/foilstack/
+        additional_dependencies:
+          - sqlalchemy[mypy]>=2.0
+          - pydantic>=2.7
+          - types-requests

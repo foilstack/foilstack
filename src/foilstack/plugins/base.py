@@ -88,6 +88,17 @@ class SourcePlugin(Protocol):
     """
 
     name: str
+    #: Every game this plugin can fetch.
     games: list[str]
+    #: The one it was constructed for. Read by the CLI when re-constructing a
+    #: plugin for a different set, so it is part of the contract rather than an
+    #: implementation detail.
+    game: str
+
+    # How the application constructs one. Declared because it does: the CLI
+    # builds `type(plugin)(game=..., set_code=...)` for every command, and a
+    # protocol that leaves the constructor out describes an interface nobody
+    # can actually implement against.
+    def __init__(self, game: str = ..., set_code: str | None = ...) -> None: ...
 
     def fetch(self, limit: int | None = None) -> AsyncIterator[CardRecord]: ...

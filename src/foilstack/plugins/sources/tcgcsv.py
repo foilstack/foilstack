@@ -172,7 +172,8 @@ class TCGCSVSource:
                         # they are not cards, and encoding them puts booster
                         # boxes into the candidate list for real scans.
                         continue
-                    price_row = by_product.get(product.get("productId"))
+                    pid = product.get("productId")
+                    price_row = by_product.get(pid) if pid is not None else None
                     yield CardRecord(
                         source_id=str(product.get("productId")),
                         name=product.get("cleanName") or product.get("name") or "",

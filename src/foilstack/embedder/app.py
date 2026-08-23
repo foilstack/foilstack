@@ -61,6 +61,7 @@ def _load():
 
 
 def _encode(image: Image.Image) -> list[float]:
+    assert _encoder is not None, "call _load() before encoding"
     torch, processor, model, device = _encoder
     inputs = processor(images=[image], return_tensors="pt").to(device)
     with torch.inference_mode():
