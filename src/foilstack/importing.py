@@ -87,6 +87,22 @@ def scan_path(stored_path: str, scans_dir: Path) -> Path | None:
     return resolved if resolved.exists() else None
 
 
+def usage_bytes(session, user_id: int) -> int:
+    """How much disk this account's scans occupy.
+
+    Summed from the rows rather than measured on the filesystem: the answer has
+    to be available before an upload is accepted, and walking a directory tree
+    on every import is a cost that grows with the size of the thing it is
+    protecting. Discarded scans delete their rows, so this falls when they do.
+    """
+    from sqlalchemy import func, select
+
+    total = session.scalar(
+        select(func.coalesce(func.sum(db.Scan.size_bytes), 0)).where(db.Scan.user_id == user_id)
+    )
+    return int(total or 0)
+
+
 def extract_archive(archive_path: Path, dest: Path) -> list[Path]:
     """Unpack image entries, refusing anything that tries to escape `dest`."""
     dest.mkdir(parents=True, exist_ok=True)
@@ -170,11 +186,16 @@ async def run_import(job_id: int, archive_path: Path, settings: Settings) -> Non
             return
 
         for path in files:
+            try:
+                size = path.stat().st_size
+            except OSError:
+                size = 0
             scan = db.Scan(
                 job_id=job.id,
                 user_id=job.user_id,
                 filename=path.name,
                 stored_path=str(path.relative_to(settings.scans_dir)),
+                size_bytes=size,
             )
             session.add(scan)
             session.commit()

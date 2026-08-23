@@ -289,6 +289,11 @@ class Scan(Base):
     )
     filename: Mapped[str] = mapped_column(Text, nullable=False)
     stored_path: Mapped[str] = mapped_column(Text, nullable=False)
+    # The image's size on disk, recorded at import. Summing this per account is
+    # what makes a storage quota answerable in a query rather than by walking
+    # the filesystem — and it falls as scans are discarded, which a running
+    # total kept on the job would not.
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[str] = mapped_column(String(32), default="pending")
     auto_accepted: Mapped[int] = mapped_column(Integer, default=0)
     # The nearest catalogue card's similarity, kept even when it was too low to

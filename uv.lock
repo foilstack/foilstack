@@ -426,7 +426,6 @@ wheels = [
 
 [[package]]
 name = "foilstack"
-version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
@@ -488,7 +487,7 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'embedder'", specifier = ">=4.44" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
-provides-extras = ["embedder", "dev"]
+provides-extras = ["dev", "embedder"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pre-commit", specifier = ">=4.6.2" }]

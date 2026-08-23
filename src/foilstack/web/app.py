@@ -17,6 +17,8 @@ import logging
 import os
 import shutil
 import tempfile
+from contextlib import asynccontextmanager
+from hmac import compare_digest
 from pathlib import Path
 
 import httpx
@@ -42,12 +44,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 
-from foilstack import db, images, inventory, prices, search
+from foilstack import __version__, db, images, importing, inventory, prices, search
 from foilstack.config import get_settings
 from foilstack.embedding import encoder_health
 from foilstack.importing import run_import, scan_path
 from foilstack.plugins import export_plugins, source_plugins
-from foilstack.web import auth, joblog
+from foilstack.web import auth, joblog, ratelimit
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +67,17 @@ CHANNELS = [
     {"key": "tcgplayer", "name": "TCGplayer", "note": "csv upload · no api key held"},
     {"key": "ebay", "name": "eBay", "note": "csv upload · no oauth held"},
 ]
+
+
+# Two budgets, both of which must allow an attempt through. The address budget
+# stops one machine working through a password list; the account budget stops a
+# botnet doing the same thing from a thousand addresses against one seller.
+_login_ip = ratelimit.Limiter(settings.login_attempts, settings.login_window_s)
+_login_account = ratelimit.Limiter(settings.login_attempts, settings.login_window_s)
+
+# Registration is cheaper to abuse than login — every attempt that succeeds
+# costs a row and a slot — so it gets a tighter budget on the address alone.
+_register_ip = ratelimit.Limiter(max(3, settings.login_attempts // 2), settings.login_window_s)
 
 
 def db_session():
@@ -129,8 +142,8 @@ def _asset_version() -> str:
     return digest.hexdigest()[:10]
 
 
-@app.on_event("startup")
-def _startup() -> None:
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
     # Fails the boot rather than the first login: a multi-user deployment
     # signing sessions with the published development key is one anybody can
     # forge a session against.
@@ -139,6 +152,45 @@ def _startup() -> None:
     settings.refs_dir.mkdir(parents=True, exist_ok=True)
     settings.display_dir.mkdir(parents=True, exist_ok=True)
     db.init(settings.database_url)
+    yield
+
+
+app.router.lifespan_context = _lifespan
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    """Headers the browser needs in order to refuse things on our behalf.
+
+    Deliberately not a script/style CSP. The screens carry inline `<script>`
+    and inline `style=`, so a `script-src` policy strict enough to be worth
+    having would switch half the interface off — that wants nonces threaded
+    through every template, which is a real change and not a header. What is
+    here is the part that costs nothing and still closes real holes:
+
+    * `frame-ancestors` and `X-Frame-Options` — nobody frames this page, so
+      nobody clickjacks the delete button on somebody's inventory.
+    * `nosniff` — a scan uploaded as `card.jpg` is served as an image and must
+      never be sniffed into something executable.
+    * `Referrer-Policy` — inventory URLs carry card ids; those should not be
+      handed to whatever a user clicks through to.
+    * HSTS, but only on a request that already arrived over TLS. Sending it
+      over plain HTTP is both ignored by browsers and a way to lock a
+      self-hoster out of their own LAN deployment.
+    """
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Content-Security-Policy", "frame-ancestors 'none'")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault(
+        "Permissions-Policy", "camera=(), microphone=(), geolocation=(), interest-cohort=()"
+    )
+    if request.url.scheme == "https":
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return response
 
 
 def _aware(when: dt.datetime) -> dt.datetime:
@@ -176,7 +228,7 @@ def _chrome(session, request: Request, user: db.User) -> dict:
     sources = session.scalars(select(db.Card.source).distinct()).all()
 
     return {
-        "version": "0.1.0",
+        "version": __version__,
         # Recomputed per request: the stylesheet is bind-mounted during
         # development, so caching this would defeat the point of having it.
         "asset_v": _asset_version(),
@@ -215,7 +267,7 @@ def page_landing(request: Request):
         "landing.html",
         {
             "nav": "landing",
-            "version": "0.1.0",
+            "version": __version__,
             "asset_v": _asset_version(),
             "support_url": settings.support_url,
             "multi_user": settings.multi_user,
@@ -325,23 +377,40 @@ def _queue_rows(session, user_id: int) -> list[dict]:
 # ==========================================================================
 
 
-@app.get("/login", response_class=HTMLResponse)
-def page_login(request: Request, next: str = "/app"):
-    if not settings.multi_user:
-        return RedirectResponse("/app", status_code=303)
+def _auth_page(
+    request: Request,
+    mode: str,
+    *,
+    next: str = "/app",
+    error: str | None = None,
+    email: str = "",
+    status: int = 200,
+):
+    """The login/register screen. One builder rather than six copies of the
+    same dict — the copies had drifted a hardcoded version string apiece."""
     return templates.TemplateResponse(
         request,
         "login.html",
         {
-            "mode": "login",
+            "mode": mode,
             "next": next,
-            "error": None,
-            "email": "",
-            "version": "0.1.0",
+            "error": error,
+            "email": email,
+            "registration_open": settings.allow_registration,
+            "needs_invite": bool(settings.invite_code),
+            "version": __version__,
             "asset_v": _asset_version(),
             "support_url": settings.support_url,
         },
+        status_code=status,
     )
+
+
+@app.get("/login", response_class=HTMLResponse)
+def page_login(request: Request, next: str = "/app"):
+    if not settings.multi_user:
+        return RedirectResponse("/app", status_code=303)
+    return _auth_page(request, "login", next=next)
 
 
 @app.post("/login", response_class=HTMLResponse)
@@ -354,23 +423,31 @@ def do_login(
 ):
     if not settings.multi_user:
         return RedirectResponse("/app", status_code=303)
+
+    ip = ratelimit.client_ip(request)
+    account = auth.normalise_email(email)
+    # Checked before the password is verified, so a refused attempt costs an
+    # dictionary lookup rather than an argon2 hash. That is the difference
+    # between a limit that protects the machine and one that is a way to load
+    # it up.
+    wait = max(_login_ip.check(ip), _login_account.check(account))
+    if wait > 0:
+        return _auth_page(
+            request, "login", next=next, error=ratelimit.wait_message(wait), email=email, status=429
+        )
+
     try:
         user = auth.authenticate(session, email, password)
     except auth.AuthError as exc:
-        return templates.TemplateResponse(
-            request,
-            "login.html",
-            {
-                "mode": "login",
-                "next": next,
-                "error": str(exc),
-                "email": email,
-                "version": "0.1.0",
-                "asset_v": _asset_version(),
-                "support_url": settings.support_url,
-            },
-            status_code=400,
-        )
+        _login_ip.record(ip)
+        _login_account.record(account)
+        return _auth_page(request, "login", next=next, error=str(exc), email=email, status=400)
+
+    # A success clears both budgets. Someone who mistyped their password four
+    # times and then remembered it should not carry those four into the rest
+    # of their day.
+    _login_ip.reset(ip)
+    _login_account.reset(account)
     auth.touch_login(session, user)
     response = RedirectResponse(_safe_next(next), status_code=303)
     auth.issue(request, response, settings, user.id)
@@ -381,19 +458,11 @@ def do_login(
 def page_register(request: Request):
     if not settings.multi_user:
         return RedirectResponse("/app", status_code=303)
-    return templates.TemplateResponse(
-        request,
-        "login.html",
-        {
-            "mode": "register",
-            "next": "/app",
-            "error": None,
-            "email": "",
-            "version": "0.1.0",
-            "asset_v": _asset_version(),
-            "support_url": settings.support_url,
-        },
-    )
+    if not settings.allow_registration:
+        return _auth_page(
+            request, "login", error="registration is closed on this server", status=403
+        )
+    return _auth_page(request, "register")
 
 
 @app.post("/register", response_class=HTMLResponse)
@@ -401,27 +470,37 @@ def do_register(
     request: Request,
     email: str = Form(...),
     password: str = Form(...),
+    invite: str = Form(""),
     session=Depends(db_session),
 ):
     if not settings.multi_user:
         return RedirectResponse("/app", status_code=303)
+    if not settings.allow_registration:
+        return _auth_page(
+            request, "login", error="registration is closed on this server", status=403
+        )
+
+    ip = ratelimit.client_ip(request)
+    wait = _register_ip.check(ip)
+    if wait > 0:
+        return _auth_page(
+            request, "register", error=ratelimit.wait_message(wait), email=email, status=429
+        )
+
+    if settings.invite_code and not compare_digest(invite.strip(), settings.invite_code):
+        # Counts against the budget: without that, the code itself is
+        # guessable at whatever rate the network allows.
+        _register_ip.record(ip)
+        return _auth_page(
+            request, "register", error="that invite code is not valid", email=email, status=403
+        )
+
     try:
         user = auth.register(session, settings, email, password)
     except auth.AuthError as exc:
-        return templates.TemplateResponse(
-            request,
-            "login.html",
-            {
-                "mode": "register",
-                "next": "/app",
-                "error": str(exc),
-                "email": email,
-                "version": "0.1.0",
-                "asset_v": _asset_version(),
-                "support_url": settings.support_url,
-            },
-            status_code=400,
-        )
+        _register_ip.record(ip)
+        return _auth_page(request, "register", error=str(exc), email=email, status=400)
+
     response = RedirectResponse("/app", status_code=303)
     auth.issue(request, response, settings, user.id)
     return response
@@ -829,16 +908,35 @@ async def api_import(
     if default_finish not in inventory.FINISHES:
         raise HTTPException(400, "unknown finish")
 
+    # Checked before a byte is written, and again against what the archive
+    # actually contains once its size is known. A quota tested only after the
+    # upload has landed is a quota that still lets the disk fill.
+    if settings.max_account_mb:
+        used = importing.usage_bytes(session, user.id)
+        ceiling = settings.max_account_mb * 1024 * 1024
+        if used >= ceiling:
+            raise HTTPException(
+                413,
+                f"this account is using {used / 1048576:.0f} MB of its "
+                f"{settings.max_account_mb} MB limit — discard some scans first",
+            )
+
     tmp = Path(tempfile.mkdtemp(prefix="foilstack-")) / "upload.zip"
     size = 0
     limit = settings.max_archive_mb * 1024 * 1024
+    if settings.max_account_mb:
+        limit = min(limit, ceiling - used)
     with open(tmp, "wb") as out:
         while chunk := await archive.read(1024 * 1024):
             size += len(chunk)
             if size > limit:
                 out.close()
                 shutil.rmtree(tmp.parent, ignore_errors=True)
-                raise HTTPException(413, f"archive exceeds {settings.max_archive_mb} MB")
+                raise HTTPException(
+                    413,
+                    f"archive exceeds {limit / 1048576:.0f} MB "
+                    "(the per-upload cap, or what is left of this account's quota)",
+                )
             out.write(chunk)
 
     job = db.ImportJob(

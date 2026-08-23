@@ -26,6 +26,15 @@ class Settings:
     multi_user: bool
     secret_key: str
     support_url: str
+    # Defaults here, unlike the fields above, so that adding a setting does not
+    # break every place a Settings is constructed by hand. `get_settings` always
+    # passes all of them; the defaults are for tests and for callers that only
+    # care about one thing.
+    allow_registration: bool = True
+    invite_code: str = ""
+    max_account_mb: int = 0
+    login_attempts: int = 10
+    login_window_s: int = 900
 
     @property
     def scans_dir(self) -> Path:
@@ -71,6 +80,27 @@ def get_settings() -> Settings:
         # signing key means anyone can mint a session for any account.
         secret_key=os.getenv("FOILSTACK_SECRET_KEY", "dev-insecure-change-me"),
         support_url=os.getenv("FOILSTACK_SUPPORT_URL", "https://buymeacoffee.com/foilstack"),
+        # The lever for the day a public deployment attracts the wrong
+        # attention. Turning it off leaves every existing account working and
+        # simply stops new ones, which is what you want at 2am — the
+        # alternative, taking the site down, punishes the people already using
+        # it for the behaviour of somebody who is not.
+        allow_registration=_flag("FOILSTACK_ALLOW_REGISTRATION", True),
+        # The middle setting between "anyone" and "nobody": registration stays
+        # open but needs a code you handed out. Empty means no code is asked
+        # for. Compared against the submitted value in constant time.
+        invite_code=os.getenv("FOILSTACK_INVITE_CODE", ""),
+        # A ceiling on the scans one account may keep. Zero means no ceiling,
+        # which is the sensible default for a self-hosted install where the
+        # only account is the person who owns the disk. A deployment strangers
+        # can register on wants a number here, because otherwise the amount of
+        # disk one account may consume is decided by that account.
+        max_account_mb=int(os.getenv("FOILSTACK_MAX_ACCOUNT_MB", "0")),
+        # Failed sign-ins allowed per account and per address before the form
+        # starts refusing. Ten is generous for a human who has forgotten which
+        # password they used and ruinous for a script working through a list.
+        login_attempts=int(os.getenv("FOILSTACK_LOGIN_ATTEMPTS", "10")),
+        login_window_s=int(os.getenv("FOILSTACK_LOGIN_WINDOW_S", "900")),
     )
 
 
