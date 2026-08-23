@@ -12,13 +12,7 @@ Runs on your own machine. **Your scans never leave the host.**
 inventory, opening a card to see its price trend, and exporting the selection
 as a marketplace CSV](docs/demo/foilstack.gif)
 
-*Scans in, priced CSV out. Review the matches, confirm what is right, and the
-inventory prices itself from the catalogue.*
-
-![The review queue: each scan beside the catalogue card it matched, with its
-confidence, condition and finish](docs/review-queue.png)
-
-*The review queue up close. Your scan on the left, the catalogue's guess beside
+*Scans in, priced CSV out. Your scan on the left, the catalogue's guess beside
 it, and the score between them — because the top match is evidence, not an
 answer.*
 
@@ -318,8 +312,7 @@ uv run python scripts/preview.py            # serve at :8099 until Ctrl-C
 uv run python scripts/preview.py --shots ./shots
 ```
 
-Screenshots land in `shots/`, which is gitignored. The one in this README lives
-in `docs/`.
+Screenshots land in `shots/`, which is gitignored.
 
 Install the pre-commit hooks before your first commit. They run `gitleaks`,
 because this repository is public and a credential pushed here is compromised
