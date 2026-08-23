@@ -100,6 +100,29 @@ forget. `tests/test_isolation.py` drives the real application against a real
 Postgres and asserts a stranger gets nothing from every route that touches a
 seller's work.
 
+### Deciding who gets in
+
+Registration is open by default. On a deployment strangers can reach, three
+settings decide how open:
+
+```bash
+FOILSTACK_ALLOW_REGISTRATION=false   # stop new accounts; existing ones keep working
+FOILSTACK_INVITE_CODE=some-secret    # or stay open, but ask for a code
+FOILSTACK_MAX_ACCOUNT_MB=2048        # cap the disk one account's scans may take
+```
+
+Turning registration off is the lever for the day a public deployment attracts
+the wrong attention — it leaves everybody already using the site alone, which
+taking the site down does not. The quota is off by default (`0`), because a
+self-hoster should not have to configure a limit against themselves.
+
+Sign-ins are rate limited per account **and** per address, both of which must
+allow an attempt through: spoofing a forwarded address buys a fresh address
+budget, not a fresh budget against the seller being targeted. Ten failures in
+fifteen minutes by default (`FOILSTACK_LOGIN_ATTEMPTS`,
+`FOILSTACK_LOGIN_WINDOW_S`); a successful sign-in clears both. The counters live
+in the process, so adding uvicorn workers multiplies the effective limit.
+
 ## Backups
 
 The database is the one thing here that cannot be rebuilt. Containers, model
@@ -118,10 +141,33 @@ last `FOILSTACK_BACKUP_KEEP` (default 14) and writes `BACKUP_FAILING` into the
 backup directory when a run produces nothing usable. Checking for that file is
 the whole of your monitoring.
 
+It also mirrors your scans into the same directory. They are write-once, so
+each file is copied exactly once and later runs cost milliseconds — where dated
+tarballs would keep a fourth identical copy of bytes that cannot change.
+Deletions do not propagate: discarding a scan should not also remove it from the
+backup.
+
 Dumps land in `FOILSTACK_BACKUP_DIR` on the host — a bind mount, not a named
 volume, because a backup that `docker compose down -v` can destroy is not a
-backup. Copy them off the machine as well; a backup that only exists on the box
-it protects is not a backup either.
+backup.
+
+### Getting it off the machine
+
+None of the above survives the disk dying, because the dumps and the scan
+mirror sit on the same disk as the database they protect. That is what the
+`offsite` profile is for:
+
+```bash
+rclone config                                 # once, on the host
+FOILSTACK_OFFSITE_REMOTE=r2:foilstack-backups \
+  docker compose --profile offsite up -d
+```
+
+Any rclone remote works, and object storage is the cheap answer at this size.
+It runs `rclone copy`, never `sync` — sync makes the remote match local, so a
+disk that has just wiped itself would replicate that faithfully to the one copy
+that survived. `OFFSITE_FAILING` appears in the backup directory when a run
+fails, alongside `BACKUP_FAILING`.
 
 To restore:
 
@@ -129,9 +175,10 @@ To restore:
 scripts/restore.sh ~/backups/foilstack/foilstack-latest.sql.gz
 ```
 
-Scans live on disk under `FOILSTACK_DATA_DIR`, not in the database. Back that
-directory up too, or accept that a restore gives you an inventory with no
-thumbnails.
+`restore.sh` puts the scans back before it starts the web service, taking them
+from a `scans/` directory beside the dump unless you name another. It warns
+loudly if there is no mirror to restore from, because a database restored
+without them is an inventory whose every image is a broken link.
 
 ## Database
 
