@@ -56,16 +56,28 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         env = dict(os.environ, DATABASE_URL=preview_url)
-        subprocess.run(["alembic", "upgrade", "head"], check=True, env=env,
-                       stdout=subprocess.DEVNULL)
+        subprocess.run(
+            ["alembic", "upgrade", "head"], check=True, env=env, stdout=subprocess.DEVNULL
+        )
         _seed(source_url, preview_url)
 
         proc = subprocess.Popen(
-            ["uvicorn", "foilstack.web.app:app", "--host", "127.0.0.1",
-             "--port", str(args.port), "--log-level", "warning"],
-            env=dict(env, FOILSTACK_MULTI_USER="true",
-                     FOILSTACK_SECRET_KEY="preview-only-secret",
-                     PYTHONPATH="src"),
+            [
+                "uvicorn",
+                "foilstack.web.app:app",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(args.port),
+                "--log-level",
+                "warning",
+            ],
+            env=dict(
+                env,
+                FOILSTACK_MULTI_USER="true",
+                FOILSTACK_SECRET_KEY="preview-only-secret",
+                PYTHONPATH="src",
+            ),
         )
         url = f"http://127.0.0.1:{args.port}"
         _wait(url)
@@ -76,20 +88,36 @@ def main(argv: list[str] | None = None) -> int:
 
             sys.path.insert(0, str(Path(__file__).resolve().parent))
             card_id = _first_card(preview_url)
-            shoot(["--url", url, "--out", str(args.shots),
-                   "--email", EMAIL, "--password", PASSWORD,
-                   "--width", str(args.width), "--height", str(args.height),
-                   *(["--only", args.only] if args.only else []),
-                   *(["--card", str(card_id)] if card_id else [])])
+            shoot(
+                [
+                    "--url",
+                    url,
+                    "--out",
+                    str(args.shots),
+                    "--email",
+                    EMAIL,
+                    "--password",
+                    PASSWORD,
+                    "--width",
+                    str(args.width),
+                    "--height",
+                    str(args.height),
+                    *(["--only", args.only] if args.only else []),
+                    *(["--card", str(card_id)] if card_id else []),
+                ]
+            )
             proc.terminate()
         else:
             proc.wait()
     finally:
         if not args.keep:
             with admin.connect() as conn:
-                conn.execute(text(
-                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname = :n"), {"n": name})
+                conn.execute(
+                    text(
+                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = :n"
+                    ),
+                    {"n": name},
+                )
                 conn.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
             print(f"dropped {name}")
     return 0
@@ -109,17 +137,23 @@ def _seed(source_url: str, preview_url: str) -> None:
         # screen argues that the top match is evidence; pairing an arbitrary
         # card with an arbitrary photograph and captioning it "99% match" makes
         # that argument dishonest, and it is obvious to anyone who plays.
-        pairs = conn.execute(text(
-            "SELECT s.stored_path, s.filename, s.auto_accepted,"
-            "       c.score, cd.id, cd.source, cd.source_id, cd.name, cd.game,"
-            "       cd.set_name, cd.number, cd.variant, cd.image_url, cd.market,"
-            "       cd.currency"
-            "  FROM scans s"
-            "  JOIN candidates c ON c.scan_id = s.id AND c.rank = 0"
-            "  JOIN cards cd ON cd.id = c.card_id"
-            " WHERE cd.image_url IS NOT NULL AND cd.market IS NOT NULL"
-            " ORDER BY c.score DESC LIMIT 14"
-        )).mappings().all()
+        pairs = (
+            conn.execute(
+                text(
+                    "SELECT s.stored_path, s.filename, s.auto_accepted,"
+                    "       c.score, cd.id, cd.source, cd.source_id, cd.name, cd.game,"
+                    "       cd.set_name, cd.number, cd.variant, cd.image_url, cd.market,"
+                    "       cd.currency"
+                    "  FROM scans s"
+                    "  JOIN candidates c ON c.scan_id = s.id AND c.rank = 0"
+                    "  JOIN cards cd ON cd.id = c.card_id"
+                    " WHERE cd.image_url IS NOT NULL AND cd.market IS NOT NULL"
+                    " ORDER BY c.score DESC LIMIT 14"
+                )
+            )
+            .mappings()
+            .all()
+        )
 
     if not pairs:
         raise SystemExit(
@@ -143,46 +177,71 @@ def _seed(source_url: str, preview_url: str) -> None:
         if row["id"] in seen:
             continue
         seen.add(row["id"])
-        session.add(db.Card(**{
-            k: row[k] for k in (
-                "id", "source", "source_id", "name", "game", "set_name",
-                "number", "variant", "image_url", "market", "currency",
+        session.add(
+            db.Card(
+                **{
+                    k: row[k]
+                    for k in (
+                        "id",
+                        "source",
+                        "source_id",
+                        "name",
+                        "game",
+                        "set_name",
+                        "number",
+                        "variant",
+                        "image_url",
+                        "market",
+                        "currency",
+                    )
+                }
             )
-        }))
+        )
     session.commit()
 
-    job = db.ImportJob(user_id=user.id, filename="preview-batch.zip", status="done",
-                       total=len(cards), processed=len(cards))
+    job = db.ImportJob(
+        user_id=user.id,
+        filename="preview-batch.zip",
+        status="done",
+        total=len(cards),
+        processed=len(cards),
+    )
     session.add(job)
     session.commit()
 
     # Two scans left in the queue so the import screen has something to show,
     # the rest committed so inventory does — including a duplicate and a sale.
     for i, card in enumerate(cards):
-        scan = db.Scan(job_id=job.id, user_id=user.id,
-                       filename=card["filename"], stored_path=card["stored_path"],
-                       status="pending" if i < 2 else "confirmed",
-                       auto_accepted=card["auto_accepted"],
-                       best_score=float(card["score"]))
+        scan = db.Scan(
+            job_id=job.id,
+            user_id=user.id,
+            filename=card["filename"],
+            stored_path=card["stored_path"],
+            status="pending" if i < 2 else "confirmed",
+            auto_accepted=card["auto_accepted"],
+            best_score=float(card["score"]),
+        )
         session.add(scan)
         session.commit()
         # The real score, so the number under the bar is the number the matcher
         # actually produced for these two images.
-        session.add(db.Candidate(scan_id=scan.id, card_id=card["id"],
-                                 score=float(card["score"]), rank=0))
+        session.add(
+            db.Candidate(scan_id=scan.id, card_id=card["id"], score=float(card["score"]), rank=0)
+        )
         if i >= 2:
-            session.add(db.InventoryItem(
-                user_id=user.id, card_id=card["id"], scan_id=scan.id,
-                condition="NM" if i % 3 else "LP",
-                finish="foil" if i % 4 == 0 else "nonfoil",
-                cost=round(float(card["market"]) * 0.4, 2),
-                status="sold" if i == 5 else "stock",
-                sold_price=round(float(card["market"]) * 0.9, 2) if i == 5 else None,
-                sold_at=(
-                    dt.datetime.now(dt.UTC) - dt.timedelta(days=9)
-                    if i == 5 else None
-                ),
-            ))
+            session.add(
+                db.InventoryItem(
+                    user_id=user.id,
+                    card_id=card["id"],
+                    scan_id=scan.id,
+                    condition="NM" if i % 3 else "LP",
+                    finish="foil" if i % 4 == 0 else "nonfoil",
+                    cost=round(float(card["market"]) * 0.4, 2),
+                    status="sold" if i == 5 else "stock",
+                    sold_price=round(float(card["market"]) * 0.9, 2) if i == 5 else None,
+                    sold_at=(dt.datetime.now(dt.UTC) - dt.timedelta(days=9) if i == 5 else None),
+                )
+            )
     # A short run of price history on the first few cards, so the trend has a
     # shape to draw. The last card is left with a single reading on purpose —
     # that state has its own rendering and is worth being able to see.
@@ -197,17 +256,27 @@ def _seed(source_url: str, preview_url: str) -> None:
         backs = [0] if n == 6 else list(range(21, -1, -3))
         for back in backs:
             drift = 1 + (random.random() - 0.45) * 0.08 * (21 - back) / 21
-            session.add(db.CardPriceHistory(
-                card_id=card["id"], sub_type=card.get("variant") or "Normal",
-                recorded_on=today - dt.timedelta(days=back),
-                market=round(base * drift, 2), low=round(base * drift * 0.88, 2),
-                mid=round(base * drift * 1.05, 2), high=round(base * drift * 1.4, 2),
-            ))
-        session.add(db.CardPrice(
-            card_id=card["id"], sub_type=card.get("variant") or "Normal",
-            market=base, low=round(base * 0.88, 2),
-            mid=round(base * 1.05, 2), high=round(base * 1.4, 2),
-        ))
+            session.add(
+                db.CardPriceHistory(
+                    card_id=card["id"],
+                    sub_type=card.get("variant") or "Normal",
+                    recorded_on=today - dt.timedelta(days=back),
+                    market=round(base * drift, 2),
+                    low=round(base * drift * 0.88, 2),
+                    mid=round(base * drift * 1.05, 2),
+                    high=round(base * drift * 1.4, 2),
+                )
+            )
+        session.add(
+            db.CardPrice(
+                card_id=card["id"],
+                sub_type=card.get("variant") or "Normal",
+                market=base,
+                low=round(base * 0.88, 2),
+                mid=round(base * 1.05, 2),
+                high=round(base * 1.4, 2),
+            )
+        )
     session.commit()
 
     # One card with the ambiguity the picker exists for: three printings that
@@ -220,21 +289,37 @@ def _seed(source_url: str, preview_url: str) -> None:
     )
     for sub, mult in ambiguous:
         base = float(amb["market"] or 1.0) * mult
-        session.merge(db.CardPrice(
-            card_id=amb["id"], sub_type=sub, market=round(base, 2),
-            low=round(base * 0.9, 2), mid=round(base * 1.05, 2), high=round(base * 1.3, 2),
-        ))
-    session.add(db.InventoryItem(
-        user_id=user.id, card_id=amb["id"], condition="NM", finish="foil",
-        cost=round(float(amb["market"] or 1.0) * 0.4, 2),
-    ))
+        session.merge(
+            db.CardPrice(
+                card_id=amb["id"],
+                sub_type=sub,
+                market=round(base, 2),
+                low=round(base * 0.9, 2),
+                mid=round(base * 1.05, 2),
+                high=round(base * 1.3, 2),
+            )
+        )
+    session.add(
+        db.InventoryItem(
+            user_id=user.id,
+            card_id=amb["id"],
+            condition="NM",
+            finish="foil",
+            cost=round(float(amb["market"] or 1.0) * 0.4, 2),
+        )
+    )
     session.commit()
 
     # A second copy of one card, so a quantity above 1 is visible.
-    session.add(db.InventoryItem(
-        user_id=user.id, card_id=cards[3]["id"], condition="NM", finish="nonfoil",
-        cost=round(float(cards[3]["market"]) * 0.35, 2),
-    ))
+    session.add(
+        db.InventoryItem(
+            user_id=user.id,
+            card_id=cards[3]["id"],
+            condition="NM",
+            finish="nonfoil",
+            cost=round(float(cards[3]["market"]) * 0.35, 2),
+        )
+    )
     session.commit()
     session.close()
 
@@ -245,9 +330,7 @@ def _first_card(preview_url: str) -> int | None:
     db.init(preview_url)
     session = db.session()
     try:
-        return session.scalar(
-            select(db.InventoryItem.card_id).order_by(db.InventoryItem.id)
-        )
+        return session.scalar(select(db.InventoryItem.card_id).order_by(db.InventoryItem.id))
     finally:
         session.close()
 

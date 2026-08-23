@@ -17,7 +17,10 @@ def test_shipped_exporters_load():
 
 def test_render_respects_column_order_and_transforms():
     spec = ExportSpec(
-        name="t", label="T", description="", filename="t.csv",
+        name="t",
+        label="T",
+        description="",
+        filename="t.csv",
         columns=[
             ExportColumn(header="Name", field="name"),
             ExportColumn(header="Price", field="price", transform="money2"),
@@ -33,7 +36,10 @@ def test_render_respects_column_order_and_transforms():
 def test_missing_field_renders_empty_not_none():
     """A literal 'None' in a marketplace upload becomes a listing titled None."""
     spec = ExportSpec(
-        name="t", label="T", description="", filename="t.csv",
+        name="t",
+        label="T",
+        description="",
+        filename="t.csv",
         columns=[ExportColumn(header="Cost", field="cost", transform="money2")],
     )
     # csv quotes a lone empty field as `""` to distinguish it from a blank

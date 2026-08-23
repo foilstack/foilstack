@@ -63,30 +63,36 @@ def test_same_card_different_printing_with_a_real_price_gap_goes_to_review():
     """
     from foilstack.importing import _may_auto_accept
 
-    session = _FakeSession({
-        1: _PricedCard("Machop", "052/102", "Normal", 0.71),
-        2: _PricedCard("Machop", "052/102", "1st Edition", 21.12),
-    })
+    session = _FakeSession(
+        {
+            1: _PricedCard("Machop", "052/102", "Normal", 0.71),
+            2: _PricedCard("Machop", "052/102", "1st Edition", 21.12),
+        }
+    )
     assert _may_auto_accept(session, [(1, 1.000), (2, 0.946)], _S()) is False
 
 
 def test_close_runner_up_is_not_auto_accepted_even_when_a_different_card():
     from foilstack.importing import _may_auto_accept
 
-    session = _FakeSession({
-        1: _FakeCard("Charizard", "004/102", "Holofoil"),
-        2: _FakeCard("Charizard Black Dot Error", "004/102", "Holofoil"),
-    })
+    session = _FakeSession(
+        {
+            1: _FakeCard("Charizard", "004/102", "Holofoil"),
+            2: _FakeCard("Charizard Black Dot Error", "004/102", "Holofoil"),
+        }
+    )
     assert _may_auto_accept(session, [(1, 0.952), (2, 0.947)], _S()) is False
 
 
 def test_clear_winner_is_auto_accepted():
     from foilstack.importing import _may_auto_accept
 
-    session = _FakeSession({
-        1: _FakeCard("Gyarados", "006/102", "Holofoil"),
-        2: _FakeCard("Squirtle", "063/102", "Normal"),
-    })
+    session = _FakeSession(
+        {
+            1: _FakeCard("Gyarados", "006/102", "Holofoil"),
+            2: _FakeCard("Squirtle", "063/102", "Normal"),
+        }
+    )
     assert _may_auto_accept(session, [(1, 0.990), (2, 0.800)], _S()) is True
 
 
@@ -108,20 +114,24 @@ def test_ambiguous_printing_with_similar_prices_still_auto_accepts():
     blocking them would send a dealer's whole archive to review for no gain."""
     from foilstack.importing import _may_auto_accept
 
-    session = _FakeSession({
-        1: _PricedCard("Rattata", "061/102", "Normal", 0.40),
-        2: _PricedCard("Rattata", "061/102", "1st Edition", 0.45),
-    })
+    session = _FakeSession(
+        {
+            1: _PricedCard("Rattata", "061/102", "Normal", 0.40),
+            2: _PricedCard("Rattata", "061/102", "1st Edition", 0.45),
+        }
+    )
     assert _may_auto_accept(session, [(1, 0.995), (2, 0.930)], _S()) is True
 
 
 def test_ambiguous_printing_with_a_large_price_gap_goes_to_review():
     from foilstack.importing import _may_auto_accept
 
-    session = _FakeSession({
-        1: _PricedCard("Charizard", "004/102", "Holofoil", 855.52),
-        2: _PricedCard("Charizard", "004/102", "1st Edition Holofoil", 10000.0),
-    })
+    session = _FakeSession(
+        {
+            1: _PricedCard("Charizard", "004/102", "Holofoil", 855.52),
+            2: _PricedCard("Charizard", "004/102", "1st Edition Holofoil", 10000.0),
+        }
+    )
     assert _may_auto_accept(session, [(1, 0.999), (2, 0.930)], _S()) is False
 
 
@@ -129,10 +139,12 @@ def test_unknown_price_on_a_rival_printing_goes_to_review():
     """We cannot show the gap is safe, so we do not assume it is."""
     from foilstack.importing import _may_auto_accept
 
-    session = _FakeSession({
-        1: _PricedCard("Machop", "052/102", "Normal", 0.71),
-        2: _PricedCard("Machop", "052/102", "1st Edition", None),
-    })
+    session = _FakeSession(
+        {
+            1: _PricedCard("Machop", "052/102", "Normal", 0.71),
+            2: _PricedCard("Machop", "052/102", "1st Edition", None),
+        }
+    )
     assert _may_auto_accept(session, [(1, 0.999), (2, 0.930)], _S()) is False
 
 

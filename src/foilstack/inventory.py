@@ -166,9 +166,7 @@ def _prices_for(session, card_ids: set[int]) -> dict[int, dict[str, Any]]:
     if not card_ids:
         return {}
     out: dict[int, dict[str, Any]] = {}
-    rows = session.scalars(
-        select(db.CardPrice).where(db.CardPrice.card_id.in_(card_ids))
-    ).all()
+    rows = session.scalars(select(db.CardPrice).where(db.CardPrice.card_id.in_(card_ids))).all()
     for row in rows:
         out.setdefault(row.card_id, {})[row.sub_type] = row
     return out
@@ -272,9 +270,9 @@ def items(
                 "listed": bool(item.listed),
                 "listed_channels": item.listed_channels or "",
                 "listed_label": item.listed_channels or "—",
-                "ebay_title": " ".join(
-                    p for p in [card.name, card.set_name, card.number] if p
-                )[:80],
+                "ebay_title": " ".join(p for p in [card.name, card.set_name, card.number] if p)[
+                    :80
+                ],
             }
         )
     return out
@@ -289,8 +287,7 @@ def _summarise(values: list[str], labels: dict[str, str] | None = None) -> str:
         only = next(iter(counts))
         return (labels or {}).get(only, only)
     return ", ".join(
-        f"{n} {(labels or {}).get(v, v)}"
-        for v, n in sorted(counts.items(), key=lambda kv: -kv[1])
+        f"{n} {(labels or {}).get(v, v)}" for v, n in sorted(counts.items(), key=lambda kv: -kv[1])
     )
 
 
@@ -318,10 +315,19 @@ def groups(
         line = lines.get(row["card_id"])
         if line is None:
             line = lines[row["card_id"]] = {
-                **{k: row[k] for k in (
-                    "card_id", "name", "game", "set_name", "number", "variant",
-                    "market", "image_url",
-                )},
+                **{
+                    k: row[k]
+                    for k in (
+                        "card_id",
+                        "name",
+                        "game",
+                        "set_name",
+                        "number",
+                        "variant",
+                        "market",
+                        "image_url",
+                    )
+                },
                 "copies": [],
             }
         line["copies"].append(row)
@@ -347,13 +353,12 @@ def groups(
         line["list_price"] = copies[0]["list_price"]
         line["margin_pct"] = (
             round(100 * (line["market"] - line["cost"]) / line["market"])
-            if line["cost"] is not None and line["market"] else None
+            if line["cost"] is not None and line["market"]
+            else None
         )
         line["printings"] = copies[0]["printings"]
         line["guessed"] = sum(1 for c in copies if c["printing_guessed"])
-        line["printing_label"] = _summarise([
-            c["sub_type"] or c["finish_label"] for c in copies
-        ])
+        line["printing_label"] = _summarise([c["sub_type"] or c["finish_label"] for c in copies])
         channels = sorted({c["listed_channels"] for c in copies if c["listed_channels"]})
         line["listed_label"] = ", ".join(channels) if channels else "—"
         line["listed"] = any(c["listed"] for c in copies)
@@ -431,6 +436,4 @@ def export_rows(
             line = lines[key] = {**row, "quantity": 0, "ids": []}
         line["quantity"] += 1
         line["ids"].append(row["id"])
-    return sorted(
-        lines.values(), key=lambda r: (r["name"].lower(), r["condition"], r["finish"])
-    )
+    return sorted(lines.values(), key=lambda r: (r["name"].lower(), r["condition"], r["finish"]))

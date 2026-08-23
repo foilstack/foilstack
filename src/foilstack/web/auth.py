@@ -104,10 +104,11 @@ def issue(request: Request, response: Response, settings: Settings, user_id: int
     """
     token = _serializer(settings).dumps({"uid": user_id})
     response.set_cookie(
-        COOKIE_NAME, token,
+        COOKIE_NAME,
+        token,
         max_age=MAX_AGE,
-        httponly=True,      # the session this carries is not script-readable
-        samesite="lax",     # blocks the cross-site POST, keeps ordinary links working
+        httponly=True,  # the session this carries is not script-readable
+        samesite="lax",  # blocks the cross-site POST, keeps ordinary links working
         secure=request.url.scheme == "https",
         path="/",
     )
@@ -164,7 +165,8 @@ def require_user(request: Request, session, settings: Settings) -> db.User:
     user = current_user(request, session, settings)
     if user is None:
         raise HTTPException(
-            status_code=303, detail="sign in required",
+            status_code=303,
+            detail="sign in required",
             headers={"Location": "/login"},
         )
     return user
@@ -177,9 +179,7 @@ def register(session, settings: Settings, email: str, password: str) -> db.User:
     if len(password) < MIN_PASSWORD:
         raise AuthError(f"password must be at least {MIN_PASSWORD} characters")
 
-    existing = session.scalar(
-        select(db.User).where(func.lower(db.User.email) == email)
-    )
+    existing = session.scalar(select(db.User).where(func.lower(db.User.email) == email))
     if existing is not None:
         # Deliberately the same wording the login form gives a wrong password.
         # Saying "that address is taken" turns this form into a way to test

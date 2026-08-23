@@ -54,9 +54,7 @@ def history(
 
     out: dict[str, list[Point]] = {}
     for row in rows:
-        out.setdefault(row.sub_type, []).append(
-            Point(row.recorded_on, float(row.market))
-        )
+        out.setdefault(row.sub_type, []).append(Point(row.recorded_on, float(row.market)))
     return out
 
 
@@ -131,9 +129,14 @@ def spark(points: list[Point], width: int = 320, height: int = 56, pad: int = 6)
     if len(points) == 1:
         cx, cy = pad + inner_w / 2, pad + inner_h / 2
         return {
-            "points": 1, "width": width, "height": height,
+            "points": 1,
+            "width": width,
+            "height": height,
             "dot": {"x": round(cx, 1), "y": round(cy, 1)},
-            "path": "", "area": "", "lo": lo, "hi": hi,
+            "path": "",
+            "area": "",
+            "lo": lo,
+            "hi": hi,
         }
 
     first_day = points[0].on.toordinal()
@@ -146,12 +149,14 @@ def spark(points: list[Point], width: int = 320, height: int = 56, pad: int = 6)
         for p in points
     ]
     path = "M " + " L ".join(f"{x} {y}" for x, y in coords)
-    area = (
-        f"{path} L {coords[-1][0]} {height - pad} L {coords[0][0]} {height - pad} Z"
-    )
+    area = f"{path} L {coords[-1][0]} {height - pad} L {coords[0][0]} {height - pad} Z"
     return {
-        "points": len(points), "width": width, "height": height,
-        "path": path, "area": area,
+        "points": len(points),
+        "width": width,
+        "height": height,
+        "path": path,
+        "area": area,
         "dot": {"x": coords[-1][0], "y": coords[-1][1]},
-        "lo": lo, "hi": hi,
+        "lo": lo,
+        "hi": hi,
     }

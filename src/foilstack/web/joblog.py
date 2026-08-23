@@ -15,9 +15,7 @@ _EVENTS: deque[dict[str, str]] = deque(maxlen=12)
 
 
 def add(message: str) -> None:
-    _EVENTS.appendleft(
-        {"t": dt.datetime.now().strftime("%H:%M:%S"), "msg": message}
-    )
+    _EVENTS.appendleft({"t": dt.datetime.now().strftime("%H:%M:%S"), "msg": message})
 
 
 def entries() -> list[dict[str, str]]:

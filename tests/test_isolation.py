@@ -50,9 +50,10 @@ def database_url():
     yield url
 
     with _admin_engine().connect() as conn:
-        conn.execute(text(
-            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-            "WHERE datname = :n"), {"n": name})
+        conn.execute(
+            text("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = :n"),
+            {"n": name},
+        )
         conn.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
 
 
@@ -95,8 +96,11 @@ def app_and_data(database_url, tmp_path_factory):
     session.commit()
 
     scan = db.Scan(
-        job_id=job.id, user_id=owner.id, filename="card.jpg",
-        stored_path="1/card.jpg", status="pending",
+        job_id=job.id,
+        user_id=owner.id,
+        filename="card.jpg",
+        stored_path="1/card.jpg",
+        status="pending",
     )
     session.add(scan)
     session.commit()
@@ -244,9 +248,15 @@ def test_owner_can_edit_mark_sold_and_the_row_leaves_stock(app_and_data):
     client = TestClient(app)
     client.post("/login", data={"email": "owner@example.com", "password": "owner-long-password"})
 
-    ok = client.post(f"/api/inventory/{ids['item']}", json={
-        "condition": "LP", "finish": "foil", "cost": "4.50", "notes": "edge wear",
-    })
+    ok = client.post(
+        f"/api/inventory/{ids['item']}",
+        json={
+            "condition": "LP",
+            "finish": "foil",
+            "cost": "4.50",
+            "notes": "edge wear",
+        },
+    )
     assert ok.status_code == 200
     panel = client.get(f"/api/inventory/{ids['item']}").text
     assert "edge wear" in panel
@@ -278,10 +288,19 @@ def test_committing_clears_the_queue_and_fills_inventory(app_and_data):
     assert queue_before == 1, "fixture scan should be waiting"
 
     stock_before = client.get("/inventory?show=stock").text.count("<tr data-row")
-    r = client.post("/api/scans/commit", json={"rows": [{
-        "scan_id": ids["scan"], "card_id": ids["card"],
-        "condition": "NM", "finish": "foil",
-    }]})
+    r = client.post(
+        "/api/scans/commit",
+        json={
+            "rows": [
+                {
+                    "scan_id": ids["scan"],
+                    "card_id": ids["card"],
+                    "condition": "NM",
+                    "finish": "foil",
+                }
+            ]
+        },
+    )
     assert r.status_code == 200
 
     assert client.get("/app").text.count('class="qrow') == 0
@@ -298,12 +317,20 @@ def test_commit_rejects_an_unknown_finish(app_and_data):
     app, ids = app_and_data
     client = TestClient(app)
     client.post("/login", data={"email": "owner@example.com", "password": "owner-long-password"})
-    r = client.post("/api/scans/commit", json={"rows": [{
-        "scan_id": ids["scan"], "card_id": ids["card"],
-        "condition": "NM", "finish": "prismatic",
-    }]})
+    r = client.post(
+        "/api/scans/commit",
+        json={
+            "rows": [
+                {
+                    "scan_id": ids["scan"],
+                    "card_id": ids["card"],
+                    "condition": "NM",
+                    "finish": "prismatic",
+                }
+            ]
+        },
+    )
     assert r.status_code == 400
-
 
 
 def _fresh_line(source_id: str, name: str, conditions: list[str]) -> dict:
@@ -318,16 +345,19 @@ def _fresh_line(source_id: str, name: str, conditions: list[str]) -> dict:
     from foilstack import db
 
     session = db.session()
-    owner = session.scalars(
-        sa_select(db.User).where(db.User.email == "owner@example.com")
-    ).one()
+    owner = session.scalars(sa_select(db.User).where(db.User.email == "owner@example.com")).one()
     card = db.Card(source="t", source_id=source_id, name=name, game="mtg", market=10.0)
     session.add(card)
     session.commit()
     for condition in conditions:
-        session.add(db.InventoryItem(
-            user_id=owner.id, card_id=card.id, condition=condition, finish="nonfoil",
-        ))
+        session.add(
+            db.InventoryItem(
+                user_id=owner.id,
+                card_id=card.id,
+                condition=condition,
+                finish="nonfoil",
+            )
+        )
     session.commit()
     out = {"card_id": card.id}
     session.close()
@@ -338,9 +368,7 @@ def _signed_in(app):
     from fastapi.testclient import TestClient
 
     client = TestClient(app)
-    client.post(
-        "/login", data={"email": "owner@example.com", "password": "owner-long-password"}
-    )
+    client.post("/login", data={"email": "owner@example.com", "password": "owner-long-password"})
     return client
 
 
@@ -412,9 +440,7 @@ def test_naming_a_printing_prices_the_card_at_it(app_and_data):
 
     app, _ = app_and_data
     session = db.session()
-    owner = session.scalars(
-        sa_select(db.User).where(db.User.email == "owner@example.com")
-    ).one()
+    owner = session.scalars(sa_select(db.User).where(db.User.email == "owner@example.com")).one()
     card = db.Card(source="t", source_id="t:zard", name="Pricey", game="mtg", market=855.0)
     session.add(card)
     session.commit()
@@ -458,9 +484,7 @@ def test_a_printing_the_card_does_not_have_is_refused(app_and_data):
 
     app, _ = app_and_data
     session = db.session()
-    owner = session.scalars(
-        sa_select(db.User).where(db.User.email == "owner@example.com")
-    ).one()
+    owner = session.scalars(sa_select(db.User).where(db.User.email == "owner@example.com")).one()
     item = session.scalars(
         sa_select(db.InventoryItem).where(db.InventoryItem.user_id == owner.id)
     ).first()
@@ -482,9 +506,7 @@ def test_committing_reports_how_many_need_a_printing(app_and_data):
 
     app, _ = app_and_data
     session = db.session()
-    owner = session.scalars(
-        sa_select(db.User).where(db.User.email == "owner@example.com")
-    ).one()
+    owner = session.scalars(sa_select(db.User).where(db.User.email == "owner@example.com")).one()
     card = db.Card(source="t", source_id="t:ambig", name="Ambiguous", game="mtg", market=5.0)
     session.add(card)
     session.commit()
@@ -493,17 +515,32 @@ def test_committing_reports_how_many_need_a_printing(app_and_data):
     job = db.ImportJob(user_id=owner.id, filename="b.zip", status="done", total=1, processed=1)
     session.add(job)
     session.commit()
-    scan = db.Scan(job_id=job.id, user_id=owner.id, filename="a.jpg",
-                   stored_path="1/card.jpg", status="pending")
+    scan = db.Scan(
+        job_id=job.id,
+        user_id=owner.id,
+        filename="a.jpg",
+        stored_path="1/card.jpg",
+        status="pending",
+    )
     session.add(scan)
     session.commit()
     scan_id, card_id = scan.id, card.id
     session.close()
 
     client = _signed_in(app)
-    r = client.post("/api/scans/commit", json={"rows": [{
-        "scan_id": scan_id, "card_id": card_id, "condition": "NM", "finish": "foil",
-    }]})
+    r = client.post(
+        "/api/scans/commit",
+        json={
+            "rows": [
+                {
+                    "scan_id": scan_id,
+                    "card_id": card_id,
+                    "condition": "NM",
+                    "finish": "foil",
+                }
+            ]
+        },
+    )
     assert r.status_code == 200
     assert r.json()["needs_printing"] >= 1
 
@@ -527,9 +564,7 @@ def test_the_topbar_total_agrees_with_the_inventory_table(app_and_data):
     page = client.get("/inventory").text
 
     session = db.session()
-    owner = session.scalars(
-        sa_select(db.User).where(db.User.email == "owner@example.com")
-    ).one()
+    owner = session.scalars(sa_select(db.User).where(db.User.email == "owner@example.com")).one()
     rows = inventory.items(session, owner.id, status="stock")
     expected = sum(r["market"] or 0 for r in rows)
     session.close()
@@ -548,14 +583,15 @@ def _stock_item(email: str, name: str, source_id: str, sold: bool = False) -> tu
     from foilstack import db
 
     session = db.session()
-    owner = session.scalars(
-        sa_select(db.User).where(db.User.email == email)
-    ).one()
+    owner = session.scalars(sa_select(db.User).where(db.User.email == email)).one()
     card = db.Card(source="t", source_id=source_id, name=name, game="mtg", market=3.0)
     session.add(card)
     session.commit()
     item = db.InventoryItem(
-        user_id=owner.id, card_id=card.id, condition="NM", finish="nonfoil",
+        user_id=owner.id,
+        card_id=card.id,
+        condition="NM",
+        finish="nonfoil",
         status="sold" if sold else "stock",
         sold_price=2.0 if sold else None,
         sold_at=dt.datetime.now(dt.UTC) if sold else None,
@@ -622,21 +658,21 @@ def test_deleting_a_row_stops_its_scan_claiming_to_be_confirmed(app_and_data):
 
     app, _ = app_and_data
     session = db.session()
-    owner = session.scalars(
-        sa_select(db.User).where(db.User.email == "owner@example.com")
-    ).one()
+    owner = session.scalars(sa_select(db.User).where(db.User.email == "owner@example.com")).one()
     card = db.Card(source="t", source_id="t:orphan", name="Orphan", game="mtg", market=1.0)
     session.add(card)
     session.commit()
     job = db.ImportJob(user_id=owner.id, filename="o.zip", status="done")
     session.add(job)
     session.commit()
-    scan = db.Scan(job_id=job.id, user_id=owner.id, filename="o.jpg",
-                   stored_path="1/o.jpg", status="confirmed")
+    scan = db.Scan(
+        job_id=job.id, user_id=owner.id, filename="o.jpg", stored_path="1/o.jpg", status="confirmed"
+    )
     session.add(scan)
     session.commit()
-    item = db.InventoryItem(user_id=owner.id, card_id=card.id, scan_id=scan.id,
-                            condition="NM", finish="nonfoil")
+    item = db.InventoryItem(
+        user_id=owner.id, card_id=card.id, scan_id=scan.id, condition="NM", finish="nonfoil"
+    )
     session.add(item)
     session.commit()
     item_id, scan_id = item.id, scan.id

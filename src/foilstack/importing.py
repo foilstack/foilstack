@@ -48,7 +48,6 @@ PRICE_GAP_TOLERANCE = 0.20
 MIN_ABSOLUTE_GAP = 1.00
 
 
-
 class ImportError_(RuntimeError):
     pass
 
@@ -73,8 +72,8 @@ def scan_path(stored_path: str, scans_dir: Path) -> Path | None:
     raw = Path(stored_path)
     if raw.is_absolute():
         parts = raw.parts
-        target = raw if raw.exists() else (
-            scans_dir.joinpath(*parts[-2:]) if len(parts) >= 2 else None
+        target = (
+            raw if raw.exists() else (scans_dir.joinpath(*parts[-2:]) if len(parts) >= 2 else None)
         )
     else:
         target = scans_dir / raw
@@ -172,7 +171,9 @@ async def run_import(job_id: int, archive_path: Path, settings: Settings) -> Non
 
         for path in files:
             scan = db.Scan(
-                job_id=job.id, user_id=job.user_id, filename=path.name,
+                job_id=job.id,
+                user_id=job.user_id,
+                filename=path.name,
                 stored_path=str(path.relative_to(settings.scans_dir)),
             )
             session.add(scan)
@@ -202,9 +203,7 @@ async def run_import(job_id: int, archive_path: Path, settings: Settings) -> Non
         archive_path.unlink(missing_ok=True)
 
 
-async def _match_one(
-    session, scan, settings: Settings, job: db.ImportJob
-) -> None:
+async def _match_one(session, scan, settings: Settings, job: db.ImportJob) -> None:
     path = scan_path(scan.stored_path, settings.scans_dir)
     if path is None:
         raise ImportError_(f"stored scan is missing: {scan.filename}")
@@ -232,16 +231,18 @@ async def _match_one(
         scan.auto_accepted = 1
         session.flush()
         _add_to_inventory(
-            session, scan, hits[0][0], job.default_condition or "NM",
-            job.user_id, job.default_finish or "nonfoil",
+            session,
+            scan,
+            hits[0][0],
+            job.default_condition or "NM",
+            job.user_id,
+            job.default_finish or "nonfoil",
         )
     else:
         scan.status = "pending"
 
 
-def _may_auto_accept(
-    session, hits, settings: Settings, threshold: float | None = None
-) -> bool:
+def _may_auto_accept(session, hits, settings: Settings, threshold: float | None = None) -> bool:
     """Three conditions, not one. A high score by itself is not evidence.
 
     Measured on Base Set: a clean scan of Machop scores 1.000 against the
@@ -275,9 +276,7 @@ def _may_auto_accept(
         return False
 
     same_card = (
-        top.name == second.name
-        and top.number == second.number
-        and top.variant != second.variant
+        top.name == second.name and top.number == second.number and top.variant != second.variant
     )
     if not same_card:
         return True
@@ -309,10 +308,15 @@ def _prices_differ_materially(a: float | None, b: float | None) -> bool:
 def _add_to_inventory(
     session, scan, card_id: int, condition: str, user_id: int, finish: str
 ) -> None:
-    session.add(db.InventoryItem(
-        user_id=user_id, card_id=card_id, scan_id=scan.id,
-        condition=condition, finish=finish,
-    ))
+    session.add(
+        db.InventoryItem(
+            user_id=user_id,
+            card_id=card_id,
+            scan_id=scan.id,
+            condition=condition,
+            finish=finish,
+        )
+    )
 
 
 async def rematch_scan(session, scan, settings: Settings) -> bool:

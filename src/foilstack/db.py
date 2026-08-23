@@ -303,7 +303,8 @@ class Scan(Base):
 
     job: Mapped[ImportJob] = relationship(back_populates="scans")
     candidates: Mapped[list[Candidate]] = relationship(
-        back_populates="scan", cascade="all, delete-orphan",
+        back_populates="scan",
+        cascade="all, delete-orphan",
         order_by="Candidate.rank",
     )
 
@@ -324,9 +325,7 @@ class Candidate(Base):
     __tablename__ = "candidates"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    scan_id: Mapped[int] = mapped_column(
-        ForeignKey("scans.id", ondelete="CASCADE"), nullable=False
-    )
+    scan_id: Mapped[int] = mapped_column(ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
     card_id: Mapped[int] = mapped_column(ForeignKey("cards.id"), nullable=False)
     score: Mapped[float] = mapped_column(Float, nullable=False)
     rank: Mapped[int] = mapped_column(Integer, nullable=False)

@@ -38,9 +38,16 @@ def test_secret_check_blocks_multi_user_with_the_shipped_key():
 
     def make(multi_user, secret):
         return Settings(
-            data_dir=".", database_url="", embedder_url="", embed_model="",
-            auto_accept=0.9, auto_accept_margin=0.04, max_archive_mb=1,
-            multi_user=multi_user, secret_key=secret, support_url="",
+            data_dir=".",
+            database_url="",
+            embedder_url="",
+            embed_model="",
+            auto_accept=0.9,
+            auto_accept_margin=0.04,
+            max_archive_mb=1,
+            multi_user=multi_user,
+            secret_key=secret,
+            support_url="",
         )
 
     # Single-user never asks for a cookie to be trustworthy, so the default is fine.

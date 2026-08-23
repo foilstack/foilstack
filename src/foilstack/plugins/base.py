@@ -43,8 +43,8 @@ class PriceRecord:
     would lose the printing along with the price.
     """
 
-    source_id: str          # matches CardRecord.source_id, before namespacing
-    sub_type: str           # "Normal", "Foil", "Reverse Holofoil", …
+    source_id: str  # matches CardRecord.source_id, before namespacing
+    sub_type: str  # "Normal", "Foil", "Reverse Holofoil", …
     market: float | None = None
     low: float | None = None
     mid: float | None = None
@@ -59,10 +59,10 @@ class PriceRecord:
 class CardRecord:
     """One printing, as a source plugin sees it."""
 
-    source_id: str          # unique within the plugin; namespaced on the way in
+    source_id: str  # unique within the plugin; namespaced on the way in
     name: str
     game: str
-    image_url: str          # required: no image, no matching
+    image_url: str  # required: no image, no matching
     set_name: str | None = None
     number: str | None = None
     variant: str | None = None
@@ -90,5 +90,4 @@ class SourcePlugin(Protocol):
     name: str
     games: list[str]
 
-    def fetch(self, limit: int | None = None) -> AsyncIterator[CardRecord]:
-        ...
+    def fetch(self, limit: int | None = None) -> AsyncIterator[CardRecord]: ...

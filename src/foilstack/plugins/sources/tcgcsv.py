@@ -23,6 +23,7 @@ from foilstack.plugins.base import CardRecord, PriceRecord
 class RateLimited(RuntimeError):
     """Upstream asked us to slow down."""
 
+
 BASE = "https://tcgcsv.com/tcgplayer"
 LAST_UPDATED = "https://tcgcsv.com/last-updated.txt"
 
@@ -97,7 +98,7 @@ class TCGCSVSource:
         category = CATEGORIES[self.game]
         async with httpx.AsyncClient(timeout=60.0, headers=HEADERS) as client:
             groups = await self._get(client, f"{BASE}/{category}/groups")
-        groups.sort(key=lambda g: (g.get("publishedOn") or ""), reverse=True)
+        groups.sort(key=lambda g: g.get("publishedOn") or "", reverse=True)
         return [
             {
                 "group_id": g.get("groupId"),
@@ -159,8 +160,7 @@ class TCGCSVSource:
                     # forget which printing it was.
                     existing = by_product.get(pid)
                     if existing is None or (
-                        existing.get("marketPrice") is None
-                        and row.get("marketPrice") is not None
+                        existing.get("marketPrice") is None and row.get("marketPrice") is not None
                     ):
                         by_product[pid] = row
 

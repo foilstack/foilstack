@@ -112,11 +112,13 @@ async def cmd_embed(args) -> int:
                 log.warning("  skip %s (%s)", card.name, type(exc).__name__)
                 failed += 1
                 continue
-            session.merge(db.CardEmbedding(
-                card_id=card.id,
-                embedding=[float(x) for x in vector],
-                model=settings.embed_model,
-            ))
+            session.merge(
+                db.CardEmbedding(
+                    card_id=card.id,
+                    embedding=[float(x) for x in vector],
+                    model=settings.embed_model,
+                )
+            )
             written += 1
             # Committed in batches so an interrupted run keeps its work: the
             # point of resumability is lost if everything lives in one
@@ -279,10 +281,14 @@ async def cmd_sync_prices(args) -> int:
         if moved:
             # `merge` rather than `add`: a second run on the same day should
             # correct that day's reading, not collide with it.
-            session.merge(db.CardPriceHistory(
-                card_id=card_id, sub_type=record.sub_type,
-                recorded_on=today, **incoming,
-            ))
+            session.merge(
+                db.CardPriceHistory(
+                    card_id=card_id,
+                    sub_type=record.sub_type,
+                    recorded_on=today,
+                    **incoming,
+                )
+            )
             changed += 1
         if seen % 500 == 0:
             session.commit()
@@ -292,7 +298,8 @@ async def cmd_sync_prices(args) -> int:
     # a printing has no row of its own, and left alone it would still hold
     # whatever `ingest` saw months ago — a stale number quietly standing in for
     # a fresh one is worse than no number at all.
-    session.execute(text("""
+    session.execute(
+        text("""
         UPDATE cards c SET market = p.market, updated_at = now()
           FROM (
             SELECT DISTINCT ON (card_id) card_id, market
@@ -302,13 +309,20 @@ async def cmd_sync_prices(args) -> int:
           ) p
          WHERE p.card_id = c.id AND c.source = :source
            AND (c.market IS DISTINCT FROM p.market)
-    """), {"source": plugin.name})
+    """),
+        {"source": plugin.name},
+    )
 
-    session.merge(db.SyncState(
-        source=plugin.name, kind=kind, upstream_stamp=stamp,
-        last_run_at=_now(), rows_changed=changed,
-        message=f"{seen} printings, {changed} changed",
-    ))
+    session.merge(
+        db.SyncState(
+            source=plugin.name,
+            kind=kind,
+            upstream_stamp=stamp,
+            last_run_at=_now(),
+            rows_changed=changed,
+            message=f"{seen} printings, {changed} changed",
+        )
+    )
     session.commit()
     log.info("synced %s printings, %s price changes recorded", seen, changed)
     return 0
@@ -338,7 +352,8 @@ def main(argv: list[str] | None = None) -> int:
     p_ingest.add_argument("--source", default="tcgcsv")
     p_ingest.add_argument("--game", default=None)
     p_ingest.add_argument(
-        "--set", default=None,
+        "--set",
+        default=None,
         help="one set only, by code or name (see `foilstack sets`)",
     )
     p_ingest.add_argument("--limit", type=int, default=None)
@@ -347,7 +362,8 @@ def main(argv: list[str] | None = None) -> int:
     p_embed = sub.add_parser("embed", help="encode catalogue images into vectors")
     p_embed.add_argument("--limit", type=int, default=None)
     p_embed.add_argument(
-        "--all", action="store_true",
+        "--all",
+        action="store_true",
         help="re-encode cards that already have a vector for this model",
     )
     p_embed.set_defaults(fn=cmd_embed, is_async=True)
@@ -359,10 +375,12 @@ def main(argv: list[str] | None = None) -> int:
     p_sets.set_defaults(fn=cmd_sets, is_async=True)
 
     p_rematch = sub.add_parser(
-        "rematch", help="re-run matching over scans already imported",
+        "rematch",
+        help="re-run matching over scans already imported",
     )
     p_rematch.add_argument(
-        "--status", default="unmatched",
+        "--status",
+        default="unmatched",
         choices=["unmatched", "pending", "error", "all"],
         help="which scans to redo (default: unmatched)",
     )
@@ -377,7 +395,8 @@ def main(argv: list[str] | None = None) -> int:
     p_sync.add_argument("--game", default="magic")
     p_sync.add_argument("--set", default=None, help="one set only")
     p_sync.add_argument(
-        "--force", action="store_true",
+        "--force",
+        action="store_true",
         help="sync even if upstream reports no new build",
     )
     p_sync.set_defaults(fn=cmd_sync_prices, is_async=True)

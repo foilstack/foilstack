@@ -41,15 +41,21 @@ def test_floor_survives_the_rules():
 
 def test_sku_is_stable_and_distinct_per_row():
     from foilstack.inventory import sku
+
     assert sku(1) == "FS-10001"
     assert sku(1) != sku(2)
 
 
 def _row(**kw):
     base = {
-        "card_id": 1, "condition": "NM", "finish": "nonfoil",
-        "market": 10.0, "cost": None, "list_price": 10.0,
-        "sold": False, "sold_price": None,
+        "card_id": 1,
+        "condition": "NM",
+        "finish": "nonfoil",
+        "market": 10.0,
+        "cost": None,
+        "list_price": 10.0,
+        "sold": False,
+        "sold_price": None,
     }
     base.update(kw)
     return base
@@ -59,12 +65,15 @@ def test_sold_rows_are_excluded_from_position():
     """A sold card left in inventory value is a number a seller would act on."""
     from foilstack.inventory import totals
 
-    t = totals([
-        _row(market=10.0), _row(market=10.0),
-        _row(card_id=2, market=50.0, sold=True, sold_price=45.0),
-    ])
-    assert t["count"] == 2          # the sold one is gone from stock
-    assert t["market"] == 20.0      # and gone from the value
+    t = totals(
+        [
+            _row(market=10.0),
+            _row(market=10.0),
+            _row(card_id=2, market=50.0, sold=True, sold_price=45.0),
+        ]
+    )
+    assert t["count"] == 2  # the sold one is gone from stock
+    assert t["market"] == 20.0  # and gone from the value
     assert t["sold_rows"] == 1
     assert t["realised"] == 45.0
 

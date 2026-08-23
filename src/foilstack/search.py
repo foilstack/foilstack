@@ -59,19 +59,17 @@ def search(session, vector, model: str, k: int = 5) -> list[tuple[int, float]]:
     literal = as_literal(vector)
 
     session.execute(text(f"SET LOCAL hnsw.ef_search = {int(EF_SEARCH)}"))
-    rows = session.execute(
-        _SEARCH, {"v": literal, "model": model, "k": int(k)}
-    ).all()
+    rows = session.execute(_SEARCH, {"v": literal, "model": model, "k": int(k)}).all()
     return [(int(card_id), float(score)) for card_id, score in rows]
 
 
 def count(session, model: str | None = None) -> int:
     """How many reference images are encoded, for the status line."""
     if model is None:
-        return int(session.execute(
-            text("SELECT count(*) FROM card_embeddings")
-        ).scalar_one())
-    return int(session.execute(
-        text("SELECT count(*) FROM card_embeddings WHERE model = :model"),
-        {"model": model},
-    ).scalar_one())
+        return int(session.execute(text("SELECT count(*) FROM card_embeddings")).scalar_one())
+    return int(
+        session.execute(
+            text("SELECT count(*) FROM card_embeddings WHERE model = :model"),
+            {"model": model},
+        ).scalar_one()
+    )

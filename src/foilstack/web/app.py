@@ -164,9 +164,7 @@ def _chrome(session, request: Request, user: db.User) -> dict:
     """The values every page's shell needs, for this account only."""
     # One row is one card, and only cards still in stock count as "held".
     mine = (db.InventoryItem.user_id == user.id, db.InventoryItem.status == "stock")
-    held = session.scalar(
-        select(func.count(db.InventoryItem.id)).where(*mine)
-    ) or 0
+    held = session.scalar(select(func.count(db.InventoryItem.id)).where(*mine)) or 0
     # Priced the same way the inventory screen prices it — per printing, with
     # any printing the seller named taking precedence. Summing `cards.market`
     # here was cheaper and wrong: that column is the plain printing's price, so
@@ -185,17 +183,19 @@ def _chrome(session, request: Request, user: db.User) -> dict:
         "catalog_cards": session.scalar(select(func.count(db.Card.id))) or 0,
         "vector_count": search.count(session, settings.embed_model),
         "pending": session.scalar(
-            select(func.count(db.Scan.id))
-            .where(db.Scan.user_id == user.id, db.Scan.status == "pending")
-        ) or 0,
+            select(func.count(db.Scan.id)).where(
+                db.Scan.user_id == user.id, db.Scan.status == "pending"
+            )
+        )
+        or 0,
         "inventory_rows": held,
         "inventory_count": held,
         "inventory_value": _money(value),
         "needs_printing": needs_printing,
         "listed_count": session.scalar(
-            select(func.count(db.InventoryItem.id))
-            .where(*mine, db.InventoryItem.listed == 1)
-        ) or 0,
+            select(func.count(db.InventoryItem.id)).where(*mine, db.InventoryItem.listed == 1)
+        )
+        or 0,
         "host_label": request.url.netloc or "localhost",
         "user": user,
         "multi_user": settings.multi_user,
@@ -205,17 +205,21 @@ def _chrome(session, request: Request, user: db.User) -> dict:
     }
 
 
-
-
 @app.get("/", response_class=HTMLResponse)
 def page_landing(request: Request):
     """The front door. Deliberately not the tool: someone arriving cold needs to
     know what this is and that they can run it themselves before being handed a
     file picker."""
     return templates.TemplateResponse(
-        request, "landing.html",
-        {"nav": "landing", "version": "0.1.0", "asset_v": _asset_version(),
-         "support_url": settings.support_url, "multi_user": settings.multi_user},
+        request,
+        "landing.html",
+        {
+            "nav": "landing",
+            "version": "0.1.0",
+            "asset_v": _asset_version(),
+            "support_url": settings.support_url,
+            "multi_user": settings.multi_user,
+        },
     )
 
 
@@ -243,9 +247,7 @@ def _queue_rows(session, user_id: int) -> list[dict]:
         .limit(400)
     ).all()
 
-    priced = inventory._prices_for(
-        session, {c.card_id for s in scans for c in s.candidates}
-    )
+    priced = inventory._prices_for(session, {c.card_id for s in scans for c in s.candidates})
     rows = []
     for scan in scans:
         top = scan.candidates[0] if scan.candidates else None
@@ -270,44 +272,52 @@ def _queue_rows(session, user_id: int) -> list[dict]:
             alt = "low confidence — check the printing before committing"
 
         card = top.card if top else None
-        rows.append({
-            "scan_id": scan.id,
-            "filename": scan.filename,
-            "needs_review": needs_review,
-            "card_id": card.id if card else None,
-            "name": card.name if card else "Unidentified",
-            "image_url": card.image_url if card else None,
-            "market": (card.market or 0.0) if card else 0.0,
-            # What this card costs in each printing, so the queue can show the
-            # price for the finish that is actually selected. Before this the
-            # row showed the plain printing's price whatever the toggle said.
-            "prices": {
-                name: row.market
-                for name, row in (priced.get(card.id, {}) if card else {}).items()
-                if row.market is not None
-            },
-            "meta": " · ".join(p for p in [
-                card.game if card else None,
-                card.set_name if card else None,
-                f"#{card.number}" if card and card.number else None,
-                _money(card.market) if card and card.market is not None else None,
-            ] if p) if card else scan.filename,
-            "alt": alt,
-            "score": top.score if top else 0.0,
-            "pct": f"{(top.score if top else 0) * 100:.0f}%",
-            "ambiguous": card is not None and len([
-                n for n in priced.get(card.id, {}) if "foil" in n.lower()
-            ]) > 1,
-            "alternates": [
-                {"card_id": c.card.id, "name": c.card.name,
-                 "variant": c.card.variant or "",
-                 "pct": f"{c.score * 100:.0f}%"}
-                for c in scan.candidates[1:]
-            ],
-        })
+        rows.append(
+            {
+                "scan_id": scan.id,
+                "filename": scan.filename,
+                "needs_review": needs_review,
+                "card_id": card.id if card else None,
+                "name": card.name if card else "Unidentified",
+                "image_url": card.image_url if card else None,
+                "market": (card.market or 0.0) if card else 0.0,
+                # What this card costs in each printing, so the queue can show the
+                # price for the finish that is actually selected. Before this the
+                # row showed the plain printing's price whatever the toggle said.
+                "prices": {
+                    name: row.market
+                    for name, row in (priced.get(card.id, {}) if card else {}).items()
+                    if row.market is not None
+                },
+                "meta": " · ".join(
+                    p
+                    for p in [
+                        card.game if card else None,
+                        card.set_name if card else None,
+                        f"#{card.number}" if card and card.number else None,
+                        _money(card.market) if card and card.market is not None else None,
+                    ]
+                    if p
+                )
+                if card
+                else scan.filename,
+                "alt": alt,
+                "score": top.score if top else 0.0,
+                "pct": f"{(top.score if top else 0) * 100:.0f}%",
+                "ambiguous": card is not None
+                and len([n for n in priced.get(card.id, {}) if "foil" in n.lower()]) > 1,
+                "alternates": [
+                    {
+                        "card_id": c.card.id,
+                        "name": c.card.name,
+                        "variant": c.card.variant or "",
+                        "pct": f"{c.score * 100:.0f}%",
+                    }
+                    for c in scan.candidates[1:]
+                ],
+            }
+        )
     return rows
-
-
 
 
 # ==========================================================================
@@ -320,10 +330,17 @@ def page_login(request: Request, next: str = "/app"):
     if not settings.multi_user:
         return RedirectResponse("/app", status_code=303)
     return templates.TemplateResponse(
-        request, "login.html",
-        {"mode": "login", "next": next, "error": None, "email": "",
-         "version": "0.1.0", "asset_v": _asset_version(),
-         "support_url": settings.support_url},
+        request,
+        "login.html",
+        {
+            "mode": "login",
+            "next": next,
+            "error": None,
+            "email": "",
+            "version": "0.1.0",
+            "asset_v": _asset_version(),
+            "support_url": settings.support_url,
+        },
     )
 
 
@@ -341,10 +358,17 @@ def do_login(
         user = auth.authenticate(session, email, password)
     except auth.AuthError as exc:
         return templates.TemplateResponse(
-            request, "login.html",
-            {"mode": "login", "next": next, "error": str(exc), "email": email,
-             "version": "0.1.0", "asset_v": _asset_version(),
-             "support_url": settings.support_url},
+            request,
+            "login.html",
+            {
+                "mode": "login",
+                "next": next,
+                "error": str(exc),
+                "email": email,
+                "version": "0.1.0",
+                "asset_v": _asset_version(),
+                "support_url": settings.support_url,
+            },
             status_code=400,
         )
     auth.touch_login(session, user)
@@ -358,10 +382,17 @@ def page_register(request: Request):
     if not settings.multi_user:
         return RedirectResponse("/app", status_code=303)
     return templates.TemplateResponse(
-        request, "login.html",
-        {"mode": "register", "next": "/app", "error": None, "email": "",
-         "version": "0.1.0", "asset_v": _asset_version(),
-         "support_url": settings.support_url},
+        request,
+        "login.html",
+        {
+            "mode": "register",
+            "next": "/app",
+            "error": None,
+            "email": "",
+            "version": "0.1.0",
+            "asset_v": _asset_version(),
+            "support_url": settings.support_url,
+        },
     )
 
 
@@ -378,10 +409,17 @@ def do_register(
         user = auth.register(session, settings, email, password)
     except auth.AuthError as exc:
         return templates.TemplateResponse(
-            request, "login.html",
-            {"mode": "register", "next": "/app", "error": str(exc), "email": email,
-             "version": "0.1.0", "asset_v": _asset_version(),
-             "support_url": settings.support_url},
+            request,
+            "login.html",
+            {
+                "mode": "register",
+                "next": "/app",
+                "error": str(exc),
+                "email": email,
+                "version": "0.1.0",
+                "asset_v": _asset_version(),
+                "support_url": settings.support_url,
+            },
             status_code=400,
         )
     response = RedirectResponse("/app", status_code=303)
@@ -442,16 +480,23 @@ def page_import(
         rows = everything
 
     return templates.TemplateResponse(
-        request, "import.html",
-        {"nav": "import", "jobs": jobs, "active": active,
-         "rows": rows, "counts": counts, "filter": filter,
-         "queue_value": sum(r["market"] for r in rows),
-         "auto_accept": settings.auto_accept,
-         "thresholds": [0.88, 0.92, 0.96],
-         "max_images": int(os.getenv("FOILSTACK_MAX_IMAGES", "5000")),
-         "max_mb": settings.max_archive_mb,
-         "conditions": inventory.CONDITIONS,
-         **_chrome(session, request, user)},
+        request,
+        "import.html",
+        {
+            "nav": "import",
+            "jobs": jobs,
+            "active": active,
+            "rows": rows,
+            "counts": counts,
+            "filter": filter,
+            "queue_value": sum(r["market"] for r in rows),
+            "auto_accept": settings.auto_accept,
+            "thresholds": [0.88, 0.92, 0.96],
+            "max_images": int(os.getenv("FOILSTACK_MAX_IMAGES", "5000")),
+            "max_mb": settings.max_archive_mb,
+            "conditions": inventory.CONDITIONS,
+            **_chrome(session, request, user),
+        },
     )
 
 
@@ -485,24 +530,39 @@ def page_inventory(
     if show == "printing":
         # The pass to make after an import: every line still priced on a guess
         # between printings, in one place, instead of hunting for the `?`.
-        rows = [r for r in inventory.groups(session, user.id, rule, status="stock")
-                if r["guessed"]]
+        rows = [r for r in inventory.groups(session, user.id, rule, status="stock") if r["guessed"]]
     needle = q.strip().lower()
     if needle:
         rows = [
-            r for r in rows
-            if needle in " ".join(str(x) for x in (
-                r["name"], r["game"], r["set_name"] or "",
-                r["conditions"], r["finishes"], r["number"] or ""
-            )).lower()
+            r
+            for r in rows
+            if needle
+            in " ".join(
+                str(x)
+                for x in (
+                    r["name"],
+                    r["game"],
+                    r["set_name"] or "",
+                    r["conditions"],
+                    r["finishes"],
+                    r["number"] or "",
+                )
+            ).lower()
         ]
     return templates.TemplateResponse(
-        request, "inventory.html",
-        {"nav": "inventory", "rows": rows, "q": q, "rule": rule,
-         "show": show, "counts": counts,
-         "totals": inventory.totals(copies),
-         "exporters": export_plugins().values(),
-         **_chrome(session, request, user)},
+        request,
+        "inventory.html",
+        {
+            "nav": "inventory",
+            "rows": rows,
+            "q": q,
+            "rule": rule,
+            "show": show,
+            "counts": counts,
+            "totals": inventory.totals(copies),
+            "exporters": export_plugins().values(),
+            **_chrome(session, request, user),
+        },
     )
 
 
@@ -529,15 +589,10 @@ def page_card(
         raise HTTPException(404, "nothing in your inventory for that card")
 
     jobs = {
-        j.id: j for j in session.scalars(
-            select(db.ImportJob).where(db.ImportJob.user_id == user.id)
-        )
+        j.id: j
+        for j in session.scalars(select(db.ImportJob).where(db.ImportJob.user_id == user.id))
     }
-    scans = {
-        sc.id: sc for sc in session.scalars(
-            select(db.Scan).where(db.Scan.user_id == user.id)
-        )
-    }
+    scans = {sc.id: sc for sc in session.scalars(select(db.Scan).where(db.Scan.user_id == user.id))}
 
     # Grouped by the archive they arrived in, because "where did these come
     # from" is the question the quantity raises.
@@ -579,15 +634,21 @@ def page_card(
     ]
 
     return templates.TemplateResponse(
-        request, "card.html",
-        {"nav": "inventory", "line": line, "batches": ordered, "rule": rule,
-         "charts": charts,
-         # Other printings of this card we hold a price for but the seller has
-         # not claimed. Named so the page can say what it did not pick.
-         "other_printings": [
-             pr for pr in (line["copies"][0].get("printings") or []) if pr not in held
-         ],
-         **_chrome(session, request, user)},
+        request,
+        "card.html",
+        {
+            "nav": "inventory",
+            "line": line,
+            "batches": ordered,
+            "rule": rule,
+            "charts": charts,
+            # Other printings of this card we hold a price for but the seller has
+            # not claimed. Named so the page can say what it did not pick.
+            "other_printings": [
+                pr for pr in (line["copies"][0].get("printings") or []) if pr not in held
+            ],
+            **_chrome(session, request, user),
+        },
     )
 
 
@@ -612,32 +673,44 @@ def page_listings(
     chans = "".join(f"&channel={c}" for c in sorted(picked))
     exporters = export_plugins()
     return templates.TemplateResponse(
-        request, "listings.html",
-        {"nav": "listings", "rows": rows, "rule": rule,
-         "rules": [
-             {**r, "on": r["id"] == rule,
-              "href": f"/listings?rule={r['id']}{chans}{ids}"}
-             for r in inventory.RULES
-         ],
-         "rule_obj": inventory.rule_by_id(rule),
-         "channels": [
-             {**c, "on": c["key"] in picked,
-              "exporter": exporters.get(c["key"]),
-              "csv_href": f"/export/{c['key']}?rule={rule}{ids}",
-              "href": "/listings?rule=" + rule + "".join(
-                  f"&channel={k}" for k in sorted(
-                      picked - {c["key"]} if c["key"] in picked else picked | {c["key"]}
-                  )
-              ) + ids}
-             for c in CHANNELS
-         ],
-         "picked": sorted(picked),
-         "selected_ids": sorted(chosen),
-         "run_value": run_value, "market_value": market_value,
-         "delta": run_value - market_value,
-         "floor": inventory.FLOOR,
-         "log": joblog.entries(),
-         **_chrome(session, request, user)},
+        request,
+        "listings.html",
+        {
+            "nav": "listings",
+            "rows": rows,
+            "rule": rule,
+            "rules": [
+                {**r, "on": r["id"] == rule, "href": f"/listings?rule={r['id']}{chans}{ids}"}
+                for r in inventory.RULES
+            ],
+            "rule_obj": inventory.rule_by_id(rule),
+            "channels": [
+                {
+                    **c,
+                    "on": c["key"] in picked,
+                    "exporter": exporters.get(c["key"]),
+                    "csv_href": f"/export/{c['key']}?rule={rule}{ids}",
+                    "href": "/listings?rule="
+                    + rule
+                    + "".join(
+                        f"&channel={k}"
+                        for k in sorted(
+                            picked - {c["key"]} if c["key"] in picked else picked | {c["key"]}
+                        )
+                    )
+                    + ids,
+                }
+                for c in CHANNELS
+            ],
+            "picked": sorted(picked),
+            "selected_ids": sorted(chosen),
+            "run_value": run_value,
+            "market_value": market_value,
+            "delta": run_value - market_value,
+            "floor": inventory.FLOOR,
+            "log": joblog.entries(),
+            **_chrome(session, request, user),
+        },
     )
 
 
@@ -669,13 +742,11 @@ def page_analytics(
     # invented here — they are named as missing on the screen instead.
     sold = [r for r in rows if r["sold"]]
     horizon = dt.datetime.now(dt.UTC) - dt.timedelta(days=30)
-    recent = [
-        r for r in sold
-        if r["sold_at"] and _aware(r["sold_at"]) >= horizon
-    ]
+    recent = [r for r in sold if r["sold_at"] and _aware(r["sold_at"]) >= horizon]
     held_days = [
         (_aware(r["sold_at"]) - _aware(r["created_at"])).days
-        for r in sold if r["sold_at"] and r.get("created_at")
+        for r in sold
+        if r["sold_at"] and r.get("created_at")
     ]
     sale_stats = {
         "sold_30d": len(recent),
@@ -685,22 +756,26 @@ def page_analytics(
         "profit_all": totals["realised_profit"],
         "sell_through": (
             round(100 * len(sold) / (len(sold) + totals["count"]))
-            if (len(sold) + totals["count"]) else None
+            if (len(sold) + totals["count"])
+            else None
         ),
         "avg_days": round(sum(held_days) / len(held_days), 1) if held_days else None,
         "costed": sum(1 for r in sold if r["cost"] is not None),
     }
 
     return templates.TemplateResponse(
-        request, "analytics.html",
-        {"nav": "analytics", "rows": rows, "totals": totals, "sales": sale_stats,
-         "by_game": [
-             {"label": g, "value": v, "pct": f"{100 * v / peak:.0f}%"}
-             for g, v in top
-         ],
-         "listed_value": listed_value,
-         "unlisted_value": totals["market"] - listed_value,
-         **_chrome(session, request, user)},
+        request,
+        "analytics.html",
+        {
+            "nav": "analytics",
+            "rows": rows,
+            "totals": totals,
+            "sales": sale_stats,
+            "by_game": [{"label": g, "value": v, "pct": f"{100 * v / peak:.0f}%"} for g, v in top],
+            "listed_value": listed_value,
+            "unlisted_value": totals["market"] - listed_value,
+            **_chrome(session, request, user),
+        },
     )
 
 
@@ -712,13 +787,17 @@ async def page_plugins(
 ):
     health = await encoder_health(settings.embedder_url)
     return templates.TemplateResponse(
-        request, "plugins.html",
-        {"nav": "plugins",
-         "sources": source_plugins().values(),
-         "exporters": export_plugins().values(),
-         "encoder": health, "encoder_url": settings.embedder_url,
-         "embed_model": settings.embed_model,
-         **_chrome(session, request, user)},
+        request,
+        "plugins.html",
+        {
+            "nav": "plugins",
+            "sources": source_plugins().values(),
+            "exporters": export_plugins().values(),
+            "encoder": health,
+            "encoder_url": settings.embedder_url,
+            "embed_model": settings.embed_model,
+            **_chrome(session, request, user),
+        },
     )
 
 
@@ -757,9 +836,12 @@ async def api_import(
             out.write(chunk)
 
     job = db.ImportJob(
-        user_id=user.id, filename=archive.filename or "archive.zip",
-        status="pending", auto_accept=auto_accept,
-        default_condition=default_condition, default_finish=default_finish,
+        user_id=user.id,
+        filename=archive.filename or "archive.zip",
+        status="pending",
+        auto_accept=auto_accept,
+        default_condition=default_condition,
+        default_finish=default_finish,
     )
     session.add(job)
     session.commit()
@@ -781,23 +863,32 @@ def api_job(
     if job is None or job.user_id != user.id:
         raise HTTPException(404, "no such job")
     return {
-        "id": job.id, "status": job.status, "total": job.total,
-        "processed": job.processed, "message": job.message,
+        "id": job.id,
+        "status": job.status,
+        "total": job.total,
+        "processed": job.processed,
+        "message": job.message,
     }
 
 
-def _confirm(session, user_id: int, scan_id: int, card_id: int,
-             condition: str, finish: str = "nonfoil") -> None:
+def _confirm(
+    session, user_id: int, scan_id: int, card_id: int, condition: str, finish: str = "nonfoil"
+) -> None:
     scan = session.get(db.Scan, scan_id)
     if scan is None or scan.user_id != user_id:
         raise HTTPException(404, "no such scan")
     if session.get(db.Card, card_id) is None:
         raise HTTPException(400, "no such card")
     scan.status = "confirmed"
-    session.add(db.InventoryItem(
-        user_id=user_id, card_id=card_id, scan_id=scan.id,
-        condition=condition, finish=finish,
-    ))
+    session.add(
+        db.InventoryItem(
+            user_id=user_id,
+            card_id=card_id,
+            scan_id=scan.id,
+            condition=condition,
+            finish=finish,
+        )
+    )
 
 
 @app.post("/api/scans/{scan_id}/confirm")
@@ -843,13 +934,16 @@ async def api_commit(
         if finish not in inventory.FINISHES:
             raise HTTPException(400, "unknown finish")
         _confirm(
-            session, user.id, int(row["scan_id"]), int(row["card_id"]),
-            condition, finish,
+            session,
+            user.id,
+            int(row["scan_id"]),
+            int(row["card_id"]),
+            condition,
+            finish,
         )
     session.commit()
     guessed = sum(
-        1 for r in inventory.items(session, user.id, status="stock")
-        if r["printing_guessed"]
+        1 for r in inventory.items(session, user.id, status="stock") if r["printing_guessed"]
     )
     joblog.add(f"committed {len(rows)} scans to inventory")
     # Told, not buried. A card priced on a guess between printings looks
@@ -906,10 +1000,7 @@ async def api_mark_listed(
     """
     payload = await request.json()
     ids = [int(i) for i in (payload.get("ids") or [])]
-    channels = [
-        c for c in (payload.get("channels") or [])
-        if c in {c2["key"] for c2 in CHANNELS}
-    ]
+    channels = [c for c in (payload.get("channels") or []) if c in {c2["key"] for c2 in CHANNELS}]
     if not ids:
         raise HTTPException(400, "no rows selected")
     if not channels:
@@ -1005,10 +1096,14 @@ def api_inventory_panel(
     if row is None:
         raise HTTPException(404, "no such row")
     return templates.TemplateResponse(
-        request, "_card_panel.html",
-        {"r": row, "conditions": inventory.CONDITIONS,
-         "finishes": inventory.FINISHES,
-         "finish_label": inventory.FINISH_LABEL},
+        request,
+        "_card_panel.html",
+        {
+            "r": row,
+            "conditions": inventory.CONDITIONS,
+            "finishes": inventory.FINISHES,
+            "finish_label": inventory.FINISH_LABEL,
+        },
     )
 
 
@@ -1040,7 +1135,8 @@ async def api_inventory_update(
             # a typo silently price the card off the guess forever, looking for
             # all the world like a deliberate choice.
             known = {
-                row.sub_type for row in session.scalars(
+                row.sub_type
+                for row in session.scalars(
                     select(db.CardPrice).where(db.CardPrice.card_id == item.card_id)
                 )
             }
@@ -1120,9 +1216,7 @@ def _delete_items(session, items: list[db.InventoryItem]) -> None:
         session.delete(item)
     session.flush()
     if scan_ids:
-        for scan in session.scalars(
-            select(db.Scan).where(db.Scan.id.in_(scan_ids))
-        ):
+        for scan in session.scalars(select(db.Scan).where(db.Scan.id.in_(scan_ids))):
             scan.status = "discarded"
 
 
@@ -1223,7 +1317,8 @@ async def card_image(
         cache.write_bytes(body)
 
     return FileResponse(
-        cache, media_type="image/jpeg",
+        cache,
+        media_type="image/jpeg",
         headers={"Cache-Control": "private, max-age=86400"},
     )
 
