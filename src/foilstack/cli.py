@@ -15,6 +15,7 @@ import datetime as dt
 import logging
 import os
 import sys
+from pathlib import Path
 
 import httpx
 from sqlalchemy import func, select, text
@@ -496,6 +497,37 @@ def _now() -> dt.datetime:
     return dt.datetime.now(dt.UTC)
 
 
+def cmd_migrate(args) -> int:
+    """Bring the database up to the current schema.
+
+    Exists so a pip-installed foilstack can create its own tables. The compose
+    deployment runs `alembic upgrade head` from the repository, which needs
+    `alembic.ini` and a migrations directory beside it — neither of which a
+    wheel installed into site-packages has any reason to have.
+
+    The revisions therefore live inside the package, at
+    `foilstack/migrations`, and this points alembic at wherever that turned out
+    to be. `env.py` already reads the URL from `foilstack.config`, so there is
+    nothing for a config file to carry.
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    settings = get_settings()
+    here = Path(__file__).resolve().parent / "migrations"
+    if not here.is_dir():
+        log.error("migrations are missing from the installed package (%s)", here)
+        return 2
+
+    cfg = Config()
+    cfg.set_main_option("script_location", str(here))
+    cfg.set_main_option("sqlalchemy.url", settings.database_url)
+    log.info("migrating %s", settings.database_url.rsplit("@", 1)[-1])
+    command.upgrade(cfg, args.revision)
+    log.info("schema is up to date")
+    return 0
+
+
 def cmd_plugins(_args) -> int:
     sources = source_plugins()
     exports = export_plugins()
@@ -579,6 +611,15 @@ def main(argv: list[str] | None = None) -> int:
         help="sync even if upstream reports no new build",
     )
     p_sync.set_defaults(fn=cmd_sync_prices, is_async=True)
+
+    p_migrate = sub.add_parser("migrate", help="create or update the database schema")
+    p_migrate.add_argument(
+        "revision",
+        nargs="?",
+        default="head",
+        help="target revision (default: head)",
+    )
+    p_migrate.set_defaults(fn=cmd_migrate, is_async=False)
 
     p_plugins = sub.add_parser("plugins", help="list installed plugins")
     p_plugins.set_defaults(fn=cmd_plugins, is_async=False)

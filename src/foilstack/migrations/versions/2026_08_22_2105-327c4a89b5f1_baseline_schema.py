@@ -17,10 +17,9 @@ Revises: 04a130322022
 
 from __future__ import annotations
 
-from alembic import op
-import sqlalchemy as sa
 import pgvector.sqlalchemy
-
+import sqlalchemy as sa
+from alembic import op
 
 revision = "327c4a89b5f1"
 down_revision = "04a130322022"

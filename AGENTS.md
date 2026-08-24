@@ -22,7 +22,9 @@ src/foilstack/
   images.py       display-sized copies of scans
   web/app.py      every route
   web/auth.py     accounts, sessions, the single-user escape hatch
-migrations/       alembic. The schema lives here, not in create_all
+src/foilstack/migrations/  alembic. The schema lives here, not in
+                  create_all — and inside the package so a pip install can
+                  run `foilstack migrate` and build its own
 scripts/          preview.py (throwaway instance), shots.py, restore.sh
 ```
 

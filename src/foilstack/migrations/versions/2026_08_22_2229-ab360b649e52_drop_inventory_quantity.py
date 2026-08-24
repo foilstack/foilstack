@@ -18,9 +18,8 @@ Revises: fd1c94a2fc8f
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "ab360b649e52"
 down_revision = "fd1c94a2fc8f"
