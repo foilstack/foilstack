@@ -215,6 +215,13 @@ It catches staged and unstaged edits, not untracked files, which do still reach
 the build context. Committing first is the habit; the suffix is the safety net
 for when you forget.
 
+**Do not name a service in the build.** `web` and `prices` are separate images
+built from the same `Dockerfile.web`, so `docker compose build web` leaves the
+price sidecar running whatever code it was last built with — and it fails
+quietly, because a sidecar that rejects a game just logs and loops. That is how
+a corrected category map sat in `web` for a day while `prices` still refused
+`dragonballfusion` as an unknown game. `--build` with no service rebuilds both.
+
 `docker compose up -d` runs `alembic upgrade head` before uvicorn, so a deploy
 applies its own migrations. The `backup` service dumps on a schedule and writes
 `BACKUP_FAILING` into the backup directory when a run produces nothing usable —

@@ -16,7 +16,7 @@ import re
 import uuid
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, text
 
 ADMIN_URL = os.getenv(
     "FOILSTACK_TEST_DATABASE_URL",
@@ -272,6 +272,39 @@ def test_the_owner_can_open_the_match_panel_and_search(app_and_data):
 
     miss = client.get("/api/cards/search?q=nothingcalledthis")
     assert "no card by that name" in miss.text
+
+
+def test_a_game_with_no_price_sync_is_named_in_the_status_bar(app_and_data):
+    """The bug that made "synced 4 hr ago" a lie.
+
+    `max(last_run_at)` reported the freshest game and asked nothing about the
+    rest, so a catalogue that had never been price-synced once was invisible
+    behind a healthy-looking footer. The claim the line makes is about all of
+    the prices on screen, so the figure has to be the oldest, and a game with
+    no sync at all has to be said out loud.
+    """
+    from fastapi.testclient import TestClient
+
+    from foilstack import db
+
+    app, _ = app_and_data
+    session = db.session()
+    session.add(
+        db.Card(source="t", source_id="t:unpriced", name="Unpriced", game="neverpriced", market=1.0)
+    )
+    session.commit()
+    session.close()
+
+    client = TestClient(app)
+    client.post("/login", data={"email": "owner@example.com", "password": "owner-long-password"})
+    body = client.get("/inventory").text
+    assert "neverpriced" in body
+    assert "no prices:" in body
+
+    session = db.session()
+    session.delete(session.scalars(select(db.Card).where(db.Card.game == "neverpriced")).one())
+    session.commit()
+    session.close()
 
 
 def test_a_chosen_card_survives_a_reload(app_and_data):

@@ -239,9 +239,28 @@ def _chrome(session, request: Request, user: db.User) -> dict:
     # stalled job. It sent someone to check whether the service was broken,
     # which is the opposite of what a status line is for. `sync_state` records
     # every run, including the ones that correctly did nothing.
-    synced = session.scalar(
-        select(func.max(db.SyncState.last_run_at)).where(db.SyncState.kind.like("prices%"))
-    ) or session.scalar(select(func.max(db.Card.updated_at)))
+    # The *oldest* run among games that have been ingested, not the newest.
+    #
+    # `max` was flattering to the point of being wrong: a deployment syncing
+    # Magic every six hours and never syncing Dragon Ball at all reported
+    # "synced 4 hr ago", because the Magic row was the newest one and nothing
+    # asked whether every game had a row. The footer read as healthy while a
+    # whole catalogue sat frozen at its ingest-day prices.
+    #
+    # `min` answers the question the line is actually making a claim about:
+    # everything you can see a price for is at least this fresh.
+    ingested = set(session.scalars(select(db.Card.game).distinct()).all())
+    runs = {
+        kind.split(":", 1)[-1]: at
+        for kind, at in session.execute(
+            select(db.SyncState.kind, db.SyncState.last_run_at).where(
+                db.SyncState.kind.like("prices:%")
+            )
+        ).all()
+    }
+    unsynced = sorted(g for g in ingested if g not in runs)
+    covered = [at for g, at in runs.items() if g in ingested and at is not None]
+    synced = min(covered) if covered else session.scalar(select(func.max(db.Card.updated_at)))
     sources = session.scalars(select(db.Card.source).distinct()).all()
 
     return {
@@ -272,6 +291,9 @@ def _chrome(session, request: Request, user: db.User) -> dict:
         "support_url": settings.support_url,
         "price_source": ", ".join(sources) if sources else "no catalogue",
         "synced_ago": _ago(synced),
+        # Named in the footer rather than left to be discovered by noticing a
+        # card's price never moves.
+        "unsynced_games": unsynced,
     }
 
 

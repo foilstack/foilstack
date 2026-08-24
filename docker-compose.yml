@@ -286,7 +286,11 @@ services:
       FOILSTACK_DATA_DIR: /data
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-foilstack}:${POSTGRES_PASSWORD:-foilstack}@postgres:5432/${POSTGRES_DB:-foilstack}
       TZ: ${TZ:-UTC}
-      SYNC_GAMES: ${FOILSTACK_SYNC_GAMES:-magic pokemon}
+      # "all" means every game in the catalogue, resolved at run time. A
+      # hardcoded list here is a list someone has to remember to update after
+      # each ingest, and forgetting leaves that game priced at whatever it was
+      # first ingested with, permanently and silently.
+      SYNC_GAMES: ${FOILSTACK_SYNC_GAMES:-all}
       SYNC_CHECK_EVERY: ${FOILSTACK_SYNC_CHECK_EVERY:-21600}
     volumes:
       - ${FOILSTACK_DATA_DIR:-./data}:/data
