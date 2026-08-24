@@ -301,12 +301,25 @@ class Scan(Base):
     # nearly found it" are the same row, and the match floor cannot be tuned
     # from data.
     best_score: Mapped[float | None] = mapped_column(Float)
+    # The card a person picked when the encoder's ranking was wrong.
+    #
+    # Separate from `candidates` rather than reordering them: the candidate
+    # list is what the encoder said, and rewriting it to record a human
+    # decision destroys the evidence of how the miss happened. This is a
+    # different claim — not "the nearest neighbour" but "the seller looked at
+    # the card and says it is this one" — so it is a different column.
+    #
+    # `SET NULL` on delete because a re-ingested catalogue can drop rows. A
+    # choice pointing at a card that no longer exists should fall back to the
+    # encoder's guesses, not break the queue.
+    chosen_card_id: Mapped[int | None] = mapped_column(ForeignKey("cards.id", ondelete="SET NULL"))
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
     job: Mapped[ImportJob] = relationship(back_populates="scans")
+    chosen_card: Mapped[Card | None] = relationship()
     candidates: Mapped[list[Candidate]] = relationship(
         back_populates="scan",
         cascade="all, delete-orphan",

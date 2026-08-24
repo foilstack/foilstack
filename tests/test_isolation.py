@@ -217,6 +217,171 @@ def test_stranger_cannot_mark_someone_elses_rows_listed(stranger, app_and_data):
     assert r.json()["marked"] == 0
 
 
+def test_stranger_cannot_open_the_match_panel(stranger, app_and_data):
+    """The panel names the scan's candidates, which is a statement about what
+    someone else photographed."""
+    _, ids = app_and_data
+    assert stranger.get(f"/api/scans/{ids['scan']}/match-panel").status_code == 404
+
+
+def test_stranger_cannot_repoint_someone_elses_row(stranger, app_and_data):
+    """Correcting a match is an edit, and edits stop at the account boundary.
+
+    Worth its own test because `card_id` was added to an endpoint that already
+    existed and already had a scoping check — the kind of change that is
+    covered by accident until the day it is not.
+    """
+    _, ids = app_and_data
+    r = stranger.post(f"/api/inventory/{ids['item']}", json={"card_id": ids["card"]})
+    assert r.status_code == 404
+
+
+def test_stranger_cannot_search_the_catalogue_anonymously(app_and_data):
+    """The catalogue is public reference data, so this is not about secrecy:
+    an unauthenticated substring search is a free table scan for anyone who
+    finds the URL."""
+    from fastapi.testclient import TestClient
+
+    app, _ = app_and_data
+    anon = TestClient(app, follow_redirects=False)
+    assert anon.get("/api/cards/search?q=test").status_code in (302, 303, 307, 401)
+
+
+def test_the_owner_can_open_the_match_panel_and_search(app_and_data):
+    """Renders the two fragments nothing else in the suite reaches.
+
+    The stranger tests above only prove these endpoints return 404 to the
+    wrong account, which a template with a syntax error does too.
+    """
+    from fastapi.testclient import TestClient
+
+    app, ids = app_and_data
+    client = TestClient(app)
+    client.post("/login", data={"email": "owner@example.com", "password": "owner-long-password"})
+
+    panel = client.get(f"/api/scans/{ids['scan']}/match-panel")
+    assert panel.status_code == 200
+    assert "Search the catalogue" in panel.text
+    # Seeded from the top match, so the search opens one edit from the answer
+    # rather than empty.
+    assert 'value="Test Card"' in panel.text
+
+    hit = client.get("/api/cards/search?q=Test")
+    assert hit.status_code == 200
+    assert f'data-pick="{ids["card"]}"' in hit.text
+
+    miss = client.get("/api/cards/search?q=nothingcalledthis")
+    assert "no card by that name" in miss.text
+
+
+def test_a_chosen_card_survives_a_reload(app_and_data):
+    """The bug this column exists to fix.
+
+    Picking a card used to update the browser and nothing else, so the row
+    looked corrected until the page was reloaded and the encoder's guess came
+    back. A choice that does not outlive a refresh is not a choice.
+    """
+    from fastapi.testclient import TestClient
+
+    from foilstack import db
+
+    app, ids = app_and_data
+    session = db.session()
+    other = db.Card(source="t", source_id="t:chosen", name="Chosen Card", game="mtg", market=7.0)
+    session.add(other)
+    session.commit()
+    other_id = other.id
+    session.close()
+
+    client = TestClient(app)
+    client.post("/login", data={"email": "owner@example.com", "password": "owner-long-password"})
+
+    r = client.post(f"/api/scans/{ids['scan']}/choose", data={"card_id": other_id})
+    assert r.status_code == 200
+
+    # Read back through the page the seller actually reloads, not the column.
+    queue = client.get("/app?filter=review").text
+    assert "Chosen Card" in queue
+    assert f'data-scan="{ids["scan"]}" data-card="{other_id}"' in queue
+
+    # And it is a choice, not a commitment: nothing entered inventory.
+    session = db.session()
+    scan = session.get(db.Scan, ids["scan"])
+    assert scan.chosen_card_id == other_id
+    assert scan.status == "pending"
+    session.close()
+
+    # Put it back, so later tests in this module see the fixture they expect.
+    client.post(f"/api/scans/{ids['scan']}/choose", data={"card_id": ids["card"]})
+    session = db.session()
+    session.get(db.Scan, ids["scan"]).chosen_card_id = None
+    session.commit()
+    session.close()
+
+
+def test_stranger_cannot_choose_a_card_for_someone_elses_scan(stranger, app_and_data):
+    _, ids = app_and_data
+    r = stranger.post(f"/api/scans/{ids['scan']}/choose", data={"card_id": ids["card"]})
+    assert r.status_code == 404
+
+
+def test_a_row_can_be_corrected_to_another_card(app_and_data):
+    """The point of the feature: a row pointing at the wrong card is fixable
+    without deleting it, which would take the scan with it.
+
+    On its own account and its own row rather than the shared fixture's. The
+    other tests in this module read that row and count that account's job-log
+    entries, so mutating either from here fails two unrelated tests several
+    hundred lines away.
+    """
+    from fastapi.testclient import TestClient
+
+    from foilstack import db
+    from foilstack.web import auth
+
+    app, _ = app_and_data
+    session = db.session()
+    user = db.User(
+        email="fixer@example.com",
+        password_hash=auth.hash_password("fixer-long-password"),
+    )
+    wrong = db.Card(source="t", source_id="t:wrong", name="Wrong Card", game="mtg", market=1.0)
+    right = db.Card(source="t", source_id="t:right", name="Right Card", game="mtg", market=4.0)
+    session.add_all([user, wrong, right])
+    session.commit()
+    # A printing chosen on the card being replaced. It must not survive the
+    # correction: it would price the new card by a name that may not exist in
+    # its price rows, and look deliberate while doing it.
+    item = db.InventoryItem(user_id=user.id, card_id=wrong.id, condition="NM", sub_type="Holofoil")
+    session.add(item)
+    session.commit()
+    item_id, right_id = item.id, right.id
+    session.close()
+
+    client = TestClient(app)
+    client.post("/login", data={"email": "fixer@example.com", "password": "fixer-long-password"})
+    assert client.post(f"/api/inventory/{item_id}", json={"card_id": right_id}).status_code == 200
+
+    session = db.session()
+    fixed = session.get(db.InventoryItem, item_id)
+    assert fixed.card_id == right_id
+    assert fixed.sub_type is None
+    session.close()
+
+
+def test_correcting_to_a_card_that_does_not_exist_is_refused(app_and_data):
+    from fastapi.testclient import TestClient
+
+    app, ids = app_and_data
+    client = TestClient(app)
+    client.post(
+        "/login",
+        data={"email": "owner@example.com", "password": "owner-long-password"},
+    )
+    r = client.post(f"/api/inventory/{ids['item']}", json={"card_id": 10_000_000})
+    assert r.status_code == 400
+
+
 def test_stranger_exports_an_empty_csv(stranger):
     """Header only. An unscoped export is a one-click dump of everyone's
     inventory, and it looks like a working feature."""

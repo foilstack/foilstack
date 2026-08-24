@@ -335,7 +335,11 @@ def _queue_rows(session, user_id: int) -> list[dict]:
         .limit(400)
     ).all()
 
-    priced = inventory._prices_for(session, {c.card_id for s in scans for c in s.candidates})
+    priced = inventory._prices_for(
+        session,
+        {c.card_id for s in scans for c in s.candidates}
+        | {s.chosen_card_id for s in scans if s.chosen_card_id},
+    )
     rows = []
     for scan in scans:
         top = scan.candidates[0] if scan.candidates else None
@@ -359,12 +363,26 @@ def _queue_rows(session, user_id: int) -> list[dict]:
             # means something.
             alt = "low confidence — check the printing before committing"
 
-        card = top.card if top else None
+        # A person's choice outranks the encoder's ranking, and survives a
+        # reload because it is a column rather than a state the browser is
+        # holding. `chosen_card` may be None despite an id if the catalogue
+        # was re-ingested underneath it, which falls back to the guesses.
+        chosen = scan.chosen_card if scan.chosen_card_id else None
+        card = chosen or (top.card if top else None)
+        if chosen is not None:
+            # What was overruled, kept in view. Useful when a seller returns to
+            # a row later and wants to know whether they changed it on purpose.
+            alt = (
+                f"encoder said: {top.card.name} {top.score * 100:.0f}%"
+                if top is not None and top.card_id != chosen.id
+                else ""
+            )
         rows.append(
             {
                 "scan_id": scan.id,
                 "filename": scan.filename,
                 "needs_review": needs_review,
+                "chosen": chosen is not None,
                 "card_id": card.id if card else None,
                 "name": card.name if card else "Unidentified",
                 "image_url": card.image_url if card else None,
@@ -394,15 +412,30 @@ def _queue_rows(session, user_id: int) -> list[dict]:
                 "pct": f"{(top.score if top else 0) * 100:.0f}%",
                 "ambiguous": card is not None
                 and len([n for n in priced.get(card.id, {}) if "foil" in n.lower()]) > 1,
+                # Every runner-up, not just the first. The encoder stores five
+                # and the queue used to offer one, so a scan whose right answer
+                # sat at rank three was indistinguishable from one with no
+                # right answer at all.
                 "alternates": [
                     {
                         "card_id": c.card.id,
                         "name": c.card.name,
                         "variant": c.card.variant or "",
+                        "set_name": c.card.set_name or "",
+                        "game": c.card.game,
                         "pct": f"{c.score * 100:.0f}%",
                     }
-                    for c in scan.candidates[1:]
+                    # Once a person has chosen, the encoder's top guess is a
+                    # runner-up like any other — it has to stay reachable, or
+                    # correcting a good match by mistake is a one-way door.
+                    for c in (scan.candidates if chosen else scan.candidates[1:])
                 ],
+                # What the top match calls itself, as the opening query for the
+                # search box. A wrong match is usually wrong about the printing
+                # rather than the name, so the search starts one edit away from
+                # the answer instead of empty.
+                "query": card.name if card else "",
+                "game": card.game if card else "",
             }
         )
     return rows
@@ -1012,6 +1045,113 @@ def api_job(
     }
 
 
+def _catalogue_games(session) -> list[str]:
+    """Every game with cards in this catalogue, for the search filter."""
+    return [
+        g for (g,) in session.execute(select(db.Card.game).distinct().order_by(db.Card.game)).all()
+    ]
+
+
+@app.get("/api/scans/{scan_id}/match-panel", response_class=HTMLResponse)
+def api_match_panel(
+    scan_id: int,
+    request: Request,
+    session=Depends(db_session),
+    user: db.User = Depends(owner),
+):
+    """ "This is the wrong card" — the panel that lets a seller say so.
+
+    Nearest-neighbour search answers with the five cards whose artwork is
+    closest. When it is wrong about all five there was previously nothing left
+    to click: confirm something untrue, or discard the scan and lose the card.
+    """
+    scan = session.get(db.Scan, scan_id)
+    if scan is None or scan.user_id != user.id:
+        raise HTTPException(404, "no such scan")
+    top = scan.candidates[0].card if scan.candidates else None
+    return templates.TemplateResponse(
+        request,
+        "_match_panel.html",
+        {
+            "options": [
+                {
+                    "card_id": c.card.id,
+                    "name": c.card.name,
+                    "variant": c.card.variant or "",
+                    "game": c.card.game,
+                    "set_name": c.card.set_name or "",
+                    "number": c.card.number or "",
+                    "note": f"{c.score * 100:.0f}%",
+                }
+                for c in scan.candidates[1:]
+            ],
+            "empty": "",
+            "games": _catalogue_games(session),
+            # The search starts on the top match's name and game rather than
+            # empty. A wrong match is usually wrong about the printing, not the
+            # name, so this opens one click from the answer.
+            "query": top.name if top else "",
+            "game": top.game if top else "",
+        },
+    )
+
+
+@app.get("/api/cards/search", response_class=HTMLResponse)
+def api_card_search(
+    request: Request,
+    q: str = "",
+    game: str = "",
+    session=Depends(db_session),
+    user: db.User = Depends(owner),
+):
+    """Search the catalogue by name.
+
+    Returns the same fragment the match panel draws its runners-up with, so a
+    searched result and a suggested one are the same object on screen and in
+    the code.
+
+    Authenticated, though the catalogue is public reference data shared across
+    accounts. Not because the rows are secret but because an unauthenticated
+    substring search over every card is a free table scan for anyone who finds
+    the URL.
+    """
+    results = search.by_name(session, q, game=game)
+    return templates.TemplateResponse(
+        request,
+        "_match_options.html",
+        {
+            "options": [{**r, "note": _money(r["market"]) if r["market"] else ""} for r in results],
+            "empty": "no card by that name" if (q or "").strip() else "type a card name",
+        },
+    )
+
+
+@app.post("/api/scans/{scan_id}/choose")
+def api_choose(
+    scan_id: int,
+    card_id: int = Form(...),
+    session=Depends(db_session),
+    user: db.User = Depends(api_owner),
+):
+    """Record which card a person says this scan is, without committing it.
+
+    Deliberately not the same thing as confirming. Confirming creates an
+    inventory row; this only says what the card *is*, so the seller can still
+    set condition and finish, look at it again, and change their mind — and
+    find their correction still there after a reload, which is the part that
+    made this a column rather than a variable in the browser.
+    """
+    scan = session.get(db.Scan, scan_id)
+    if scan is None or scan.user_id != user.id:
+        raise HTTPException(404, "no such scan")
+    card = session.get(db.Card, card_id)
+    if card is None:
+        raise HTTPException(400, "no such card")
+    scan.chosen_card_id = card.id
+    session.commit()
+    return {"ok": True, "card_id": card.id}
+
+
 def _confirm(
     session, user_id: int, scan_id: int, card_id: int, condition: str, finish: str = "nonfoil"
 ) -> None:
@@ -1244,6 +1384,7 @@ def api_inventory_panel(
             "conditions": inventory.CONDITIONS,
             "finishes": inventory.FINISHES,
             "finish_label": inventory.FINISH_LABEL,
+            "games": _catalogue_games(session),
         },
     )
 
@@ -1260,6 +1401,22 @@ async def api_inventory_update(
     if item is None or item.user_id != user.id:
         raise HTTPException(404, "no such row")
     payload = await request.json()
+
+    if "card_id" in payload:
+        # The row is pointing at the wrong card. Until this existed the only
+        # remedy was to delete the row — which discards the scan with it, so
+        # correcting a mistake cost you the evidence of what you actually
+        # photographed.
+        card = session.get(db.Card, int(payload["card_id"]))
+        if card is None:
+            raise HTTPException(400, "no such card")
+        if card.id != item.card_id:
+            item.card_id = card.id
+            # A declared printing belongs to the card it was declared on. Kept
+            # across a correction it would price the new card by a name that
+            # may not exist in its price rows, which is worse than the guess it
+            # replaced because it looks deliberate.
+            item.sub_type = None
 
     if "condition" in payload:
         if payload["condition"] not in inventory.CONDITIONS:

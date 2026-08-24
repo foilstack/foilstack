@@ -1,0 +1,17 @@
+{# One list of catalogue cards to choose between. Shared by the scan's own
+   runners-up and by search results, so the two cannot drift into looking like
+   different kinds of thing — they are the same choice made two ways. #}
+{% for o in options %}
+<button class="qfix-card" type="button" data-pick="{{ o.card_id }}"
+        data-name="{{ o.name }}"
+        data-sub="{{ o.game }}{% if o.set_name %} · {{ o.set_name }}{% endif %}{% if o.number %} · #{{ o.number }}{% endif %}">
+  <span class="thumb ref"><img src="/card/{{ o.card_id }}/image" alt="" loading="lazy"></span>
+  <span class="qfix-body">
+    <span class="qfix-name">{{ o.name }}{% if o.variant %} <span class="qfix-var">{{ o.variant }}</span>{% endif %}</span>
+    <span class="qfix-sub">{{ o.game }}{% if o.set_name %} · {{ o.set_name }}{% endif %}{% if o.number %} · #{{ o.number }}{% endif %}</span>
+  </span>
+  {% if o.note %}<span class="qfix-note">{{ o.note }}</span>{% endif %}
+</button>
+{% else %}
+<div class="qfix-none">{{ empty }}</div>
+{% endfor %}

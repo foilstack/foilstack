@@ -350,6 +350,11 @@ async def rematch_scan(session, scan, settings: Settings) -> bool:
     The scan's review state is deliberately *not* reset if it was already
     confirmed — a card someone has accepted into inventory is settled, and
     quietly re-deciding it behind their back is worse than leaving it alone.
+
+    `chosen_card_id` survives for the same reason. The candidate list beneath
+    it is replaced, so a re-match against a bigger catalogue still improves the
+    runners-up on offer; what it must not do is overwrite the answer a person
+    already gave with a fresh guess.
     """
     if scan.status == "confirmed":
         return False

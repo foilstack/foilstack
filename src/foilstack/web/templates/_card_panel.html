@@ -16,6 +16,32 @@
   <div class="thumb ref panel-thumb"><img src="/card/{{ r.card_id }}/image" alt="catalogue reference"><span class="thumb-tag">catalogue</span></div>
 </div>
 
+{# Deleting the row used to be the only remedy for a wrong match, and it takes
+   the scan with it. Re-pointing keeps the photograph — which is the evidence
+   of what was actually in the box. #}
+<div class="panel-wrong">
+  <button class="btn-quiet panel-wrong-open" type="button" data-wrong>Not this card?</button>
+  <div class="qfix" hidden>
+    <div class="qfix-label">Search the catalogue</div>
+    <div class="qfix-search">
+      <input class="input" type="search" data-fix-q value="{{ r.name }}"
+             placeholder="Card name" autocomplete="off" spellcheck="false">
+      <select class="input" data-fix-game aria-label="Game">
+        <option value="">All games</option>
+        {% for g in games %}
+        <option value="{{ g }}" {{ 'selected' if g == r.game }}>{{ g }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="qfix-list" data-fix-results></div>
+    <p class="panel-note">
+      Picking a card re-points this row and keeps your scan, cost and notes.
+      The chosen printing resets, because printings belong to the card they
+      were chosen on.
+    </p>
+  </div>
+</div>
+
 <form id="card-form" data-id="{{ r.id }}">
   <div class="panel-grid">
     <div>
@@ -111,5 +137,5 @@
     <button class="btn btn-primary btn-tall btn-block" type="submit">Save changes</button>
     <button class="btn btn-tall btn-danger" type="button" data-delete>Delete</button>
   </div>
-  <p class="panel-note">Delete is for a card that should never have been here — a scan matched to the wrong printing. It cannot be undone.</p>
+  <p class="panel-note">Delete is for a copy you never had. If the scan is right and the card it matched is wrong, use <b>Not this card?</b> above instead — it keeps the scan. Delete cannot be undone.</p>
 </form>

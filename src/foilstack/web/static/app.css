@@ -491,19 +491,79 @@ body.app {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .qalt {
+  display: flex; align-items: baseline; gap: 8px; min-width: 0;
   font-family: var(--mono); font-size: 10.5px; color: var(--faint);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .qalt button {
   border: none; background: none; padding: 0; cursor: pointer;
   font: inherit; color: var(--faint); text-align: left;
 }
 .qalt button:hover { color: var(--ink); }
+/* The runner-up is the long half and truncates; "wrong card?" is the short
+   half and must never be the thing that disappears — it is the only exit from
+   a match that is wrong about all five candidates. */
+.qalt-swap, .qalt-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qalt-fix {
+  flex: 0 0 auto; text-decoration: underline; text-underline-offset: 2px;
+  text-decoration-style: dotted;
+}
+
+/* ---------- correcting a bad match ---------- */
+.qfix {
+  flex: 1 1 100%; margin-top: 8px; padding: 10px 12px;
+  border: 1px solid var(--rule); border-radius: 3px; background: var(--surface-2);
+}
+.qfix-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.qfix-title { font-size: 12px; font-weight: 600; }
+.qfix-head .btn-quiet { margin-left: auto; }
+.qfix-label {
+  font-family: var(--mono); font-size: 10px; color: var(--faint);
+  text-transform: uppercase; letter-spacing: .04em; margin: 10px 0 5px;
+}
+.qfix-label:first-of-type { margin-top: 0; }
+.qfix-search { display: flex; gap: 6px; }
+.qfix-search input { flex: 1 1 auto; min-width: 0; }
+.qfix-search select { flex: 0 0 150px; }
+.qfix-list {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); gap: 4px;
+  max-height: 260px; overflow: auto;
+}
+.qfix-card {
+  display: flex; align-items: center; gap: 8px; text-align: left;
+  padding: 4px 6px; border: 1px solid transparent; border-radius: 3px;
+  background: none; cursor: pointer; font: inherit; color: var(--ink);
+}
+.qfix-card:hover { border-color: var(--edge); background: var(--surface); }
+.qfix-card .thumb { width: 30px; height: 42px; flex: 0 0 30px; }
+.qfix-body { min-width: 0; flex: 1 1 auto; }
+.qfix-name {
+  display: block; font-size: 12px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.qfix-var { font-weight: 500; color: var(--muted); }
+.qfix-sub {
+  display: block; font-family: var(--mono); font-size: 10px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.qfix-note { flex: 0 0 auto; font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
+.qfix-none {
+  grid-column: 1 / -1; padding: 10px 2px;
+  font-family: var(--mono); font-size: 10.5px; color: var(--faint);
+}
 .qconf { width: 68px; flex: 0 0 68px; }
 .qconf .track { margin-top: 0; }
 .qconf .track i.low { background: var(--warn); }
 .qconf .lbl {
   font-family: var(--mono); font-size: 10.5px; color: var(--muted); margin-top: 3px;
+}
+/* A row corrected by hand, where the match bar used to be. The encoder had a
+   score; a person does not. Sized and coloured to sit as quietly as the
+   percentage it replaces — this marks a decision, it does not raise an alarm. */
+.qchose { display: flex; align-items: center; height: 100%; color: var(--muted); }
+.qchose svg {
+  width: 17px; height: 17px;
+  fill: none; stroke: currentColor; stroke-width: 1.5;
+  stroke-linecap: round; stroke-linejoin: round;
 }
 .qcond { width: 112px; flex: 0 0 112px; display: flex; gap: 3px; }
 .stepper {
@@ -1089,3 +1149,9 @@ body.site { background: var(--paper); }
 @media (max-width: 720px) {
   .hero h1 { font-size: 32px; }
 }
+
+/* ---------- re-pointing an inventory row ---------- */
+.panel-wrong { margin: -4px 0 12px; }
+.panel-wrong-open { font-size: 11.5px; text-decoration: underline; text-underline-offset: 2px; text-decoration-style: dotted; }
+.panel-wrong .qfix { margin-top: 8px; }
+.panel-wrong .qfix-list { grid-template-columns: 1fr; max-height: 220px; }

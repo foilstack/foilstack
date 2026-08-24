@@ -38,6 +38,11 @@ presented as an answer. The auto-accept threshold defaults to `0.92` and is
 deliberately conservative: a missed auto-accept costs you one click, a wrong one
 puts a real card on sale at another card's price.
 
+When the catalogue is wrong about all of its guesses, **search it by name and
+pick the right card yourself** — from the queue before committing, or from the
+inventory row afterwards. You are holding the card and can read the name off
+it, which is information the encoder never had.
+
 ## Quick start
 
 ```bash

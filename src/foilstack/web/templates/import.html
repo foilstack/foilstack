@@ -1,4 +1,11 @@
 {% extends "base.html" %}
+{% macro chosen_icon() -%}
+<span class="qchose" title="You picked this card">
+  <svg viewBox="0 0 16 16" role="img" aria-label="picked by you">
+    <circle cx="8" cy="5.2" r="2.7"/><path d="M2.7 14c0-3 2.4-4.7 5.3-4.7s5.3 1.7 5.3 4.7"/>
+  </svg>
+</span>
+{%- endmacro %}
 {% block title %}Import scans · foilstack{% endblock %}
 {% block status %}{% if active %}import running · {{ active.processed }}/{{ active.total }}{% elif counts.all %}{{ counts.all }} scans waiting · {{ counts.nomatch }} with no match{% else %}queue clear · drop a .zip to begin{% endif %}{% endblock %}
 
@@ -123,6 +130,7 @@
       <button class="btn btn-primary" type="button" id="commit">Commit {{ counts.all }} to inventory</button>
     </div>
 
+    <template id="tpl-chosen">{{ chosen_icon() }}</template>
     <div class="screen-scroll" id="queue">
       {% for r in rows %}
       <div class="qrow {{ 'review' if r.needs_review }}" id="scan-{{ r.scan_id }}"
@@ -143,16 +151,26 @@
           <div class="qname {{ 'faint' if not r.card_id }}">{{ r.name }}</div>
           <div class="qmeta"><span class="qprice"></span>{{ r.meta }}</div>
           <div class="qalt">
-            {% if r.needs_review and r.alternates %}
-            <button type="button" data-alt="{{ r.alternates[0].card_id }}">
+            {# No one-click swap on a row someone has already decided: that
+               button commits on the spot, and putting a commit-to-the-guess
+               control beside a deliberate choice is a trap. The panel behind
+               "wrong card?" still lists every candidate, and picking there
+               does not commit. #}
+            {% if r.needs_review and r.alternates and not r.chosen %}
+            <button class="qalt-swap" type="button" data-alt="{{ r.alternates[0].card_id }}">
               also matched: {{ r.alternates[0].name }}{% if r.alternates[0].variant %} ({{ r.alternates[0].variant }}){% endif %} {{ r.alternates[0].pct }}
             </button>
-            {% else %}{{ r.alt }}{% endif %}
+            {% else %}<span class="qalt-note">{{ r.alt }}</span>{% endif %}
+            {% if r.needs_review %}
+            <button class="qalt-fix" type="button" data-fix>wrong card?</button>
+            {% endif %}
           </div>
         </div>
         <div class="qconf">
+          {% if r.chosen %}{{ chosen_icon() }}{% else %}
           <div class="track"><i class="{{ '' if r.score >= 0.9 else 'low' }}" style="width: {{ r.pct }}"></i></div>
           <div class="lbl">{{ r.pct }} match</div>
+          {% endif %}
         </div>
         <div class="qcond">
           {% for c in conditions[:4] %}
@@ -171,6 +189,9 @@
           {% endif %}
           <button class="qdrop" type="button" data-drop title="Discard this scan" aria-label="Discard this scan">×</button>
         </div>
+        {# Full-width, so it wraps onto its own line inside the flex row rather
+           than squeezing the columns beside it. Filled on first open. #}
+        <div class="qfix" hidden></div>
       </div>
       {% endfor %}
       {% if not rows %}
@@ -299,15 +320,118 @@ $$('.qrow').forEach(row => {
   setFoil(settings.finish);
   foil.addEventListener('click', () => setFoil(row.dataset.finish === 'foil' ? 'nonfoil' : 'foil'));
 
-  const alt = $('.qalt button', row);
+  // The one-click runner-up stays a fast path: a glance, a click, committed.
+  const alt = $('.qalt-swap', row);
   if (alt) alt.addEventListener('click', () => {
     row.dataset.card = alt.dataset.alt;
     confirmRow(row);
   });
+
+  // "Wrong card?" is the slow path, and deliberately does not commit. The
+  // seller has just gone looking for this card; letting them see the swap
+  // land before it becomes inventory is the whole point of the feature.
+  const fix = $('.qalt-fix', row);
+  if (fix) fix.addEventListener('click', () => toggleFix(row));
   const ok = $('[data-confirm]', row);
   if (ok) ok.addEventListener('click', () => confirmRow(row));
   $('[data-drop]', row).addEventListener('click', () => discardRow(row));
 });
+
+// ---- correcting a bad match ------------------------------------------------
+
+async function toggleFix(row) {
+  const box = $('.qfix', row);
+  if (!box.hidden) { box.hidden = true; return; }
+  if (!box.dataset.loaded) {
+    box.innerHTML = '<div class="qfix-none">loading…</div>';
+    box.hidden = false;
+    const res = await fetch('/api/scans/' + row.dataset.scan + '/match-panel');
+    if (!res.ok) { box.innerHTML = '<div class="qfix-none">could not load</div>'; return; }
+    box.innerHTML = await res.text();
+    box.dataset.loaded = '1';
+    wireFix(row, box);
+  }
+  box.hidden = false;
+}
+
+function wireFix(row, box) {
+  $('[data-fix-close]', box).addEventListener('click', () => { box.hidden = true; });
+
+  const q = $('[data-fix-q]', box);
+  const game = $('[data-fix-game]', box);
+  const out = $('[data-fix-results]', box);
+
+  // Debounced, because every keystroke is a substring search over the whole
+  // catalogue. 200ms is below the point a search box feels laggy and well
+  // above typing speed.
+  let timer = null, seq = 0;
+  async function run() {
+    const mine = ++seq;
+    const url = '/api/cards/search?q=' + encodeURIComponent(q.value) +
+                '&game=' + encodeURIComponent(game.value);
+    const res = await fetch(url);
+    if (!res.ok || mine !== seq) return;  // a later keystroke already won
+    out.innerHTML = await res.text();
+  }
+  const later = () => { clearTimeout(timer); timer = setTimeout(run, 200); };
+  q.addEventListener('input', later);
+  game.addEventListener('change', run);
+
+  box.addEventListener('click', ev => {
+    const pick = ev.target.closest('[data-pick]');
+    if (pick) applyPick(row, box, pick);
+  });
+  run();
+}
+
+async function applyPick(row, box, pick) {
+  // Saved before anything on screen changes. A pick that only updated the DOM
+  // looked identical to one that had been recorded, right up until a reload
+  // threw it away — so the write happens first and the row is only redrawn
+  // once the server has it.
+  const body = new URLSearchParams({ card_id: pick.dataset.pick });
+  const res = await fetch('/api/scans/' + row.dataset.scan + '/choose', { method: 'POST', body });
+  if (!res.ok) { alert('could not save that choice'); return; }
+
+  row.dataset.card = pick.dataset.pick;
+  $('.qname', row).textContent = pick.dataset.name;
+  $('.qname', row).classList.remove('faint');
+  $('.qmeta', row).innerHTML = '<span class="qprice"></span>' + pick.dataset.sub;
+
+  const ref = $('.thumb.ref img', row);
+  if (ref) ref.src = '/card/' + pick.dataset.pick + '/image';
+
+  // The stored per-printing prices belonged to the card that was replaced.
+  // Blanking them shows no price rather than the wrong one; the real figure
+  // is computed against the corrected card once it is inventory.
+  row.dataset.prices = '{}';
+
+  // The match bar measured the encoder's confidence in a card that is no
+  // longer on this row. A chosen card has no score — it has a person, which
+  // is what the figure says. The counterpart to the `auto` badge a card wears
+  // when the encoder decided on its own.
+  //
+  // Cloned from the template the server renders the same figure from, rather
+  // than a second copy of the SVG written out in JavaScript.
+  const conf = $('.qconf', row);
+  if (conf) {
+    conf.textContent = '';
+    conf.appendChild(document.getElementById('tpl-chosen').content.cloneNode(true));
+  }
+
+  // A row corrected by hand always has something to confirm, even if the
+  // scan matched nothing at all and never had a Confirm button drawn.
+  if (!$('[data-confirm]', row)) {
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-dark';
+    btn.type = 'button';
+    btn.setAttribute('data-confirm', '');
+    btn.textContent = 'Confirm';
+    btn.addEventListener('click', () => confirmRow(row));
+    $('.qactions', row).prepend(btn);
+  }
+  box.hidden = true;
+}
 
 async function confirmRow(row) {
   if (!row.dataset.card) return;
