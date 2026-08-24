@@ -71,3 +71,36 @@ def test_compose_price_sync_calls_a_command_that_exists():
 
     default = re.search(r"SYNC_GAMES: \$\{FOILSTACK_SYNC_GAMES:-([^}]*)\}", compose)
     assert default and default.group(1).strip() == "all"
+
+
+# ---------------------------------------------------------------------------
+# Which upstream answers are permanent, and which are worth another go.
+# ---------------------------------------------------------------------------
+
+
+def test_a_4xx_means_there_is_no_image_and_never_will_be():
+    """Promo and staff entries answer 403 or 404 forever. Retrying one four
+    times with backoff costs seven seconds to learn nothing, and there are
+    thousands of them."""
+    assert cli.image_is_permanently_missing(404, b"")
+    assert cli.image_is_permanently_missing(403, b"some body")
+
+
+def test_an_empty_200_is_permanent_too():
+    """Found on the live catalogue: `Treecko 016 Target Promo` answers 200 with
+    `image/jpeg` and zero bytes.
+
+    It looks like success, so it fell past the 4xx check, past
+    `raise_for_status`, and into the encoder — which cannot decode nothing. It
+    was then retried four times with backoff, on every run, forever.
+    """
+    assert cli.image_is_permanently_missing(200, b"")
+
+
+def test_a_real_image_and_a_server_error_are_not_permanent():
+    """The distinction the whole retry policy rests on: a 5xx or a timeout is
+    worth another go, and marking it missing would write off a card over a
+    blip."""
+    assert not cli.image_is_permanently_missing(200, b"\xff\xd8\xff jpeg bytes")
+    assert not cli.image_is_permanently_missing(503, b"")
+    assert not cli.image_is_permanently_missing(429, b"")
