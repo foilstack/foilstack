@@ -12,7 +12,6 @@ through stays on screen while you decide about one card.
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import logging
 import mimetypes
 import os
@@ -40,8 +39,7 @@ from fastapi.responses import (
     Response,
 )
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from foilstack import __version__, db, importing, inventory, prices, search
 from foilstack.config import Settings, get_settings
@@ -49,12 +47,19 @@ from foilstack.embedding import encoder_health
 from foilstack.importing import run_import
 from foilstack.plugins import export_plugins, source_plugins
 from foilstack.web import auth, joblog, proof, ratelimit
+from foilstack.web.chrome import (
+    BASE_DIR,
+    CHANNELS,
+    _asset_version,
+    _aware,
+    _chrome,
+    _money,
+    templates,
+)
 from foilstack.web.deps import api_owner, db_session, owner, settings_dep
 from foilstack.web.routes import media
 
 logger = logging.getLogger(__name__)
-
-BASE_DIR = Path(__file__).parent
 
 
 def _register_mime_types(db: mimetypes.MimeTypes | None = None) -> None:
@@ -81,20 +86,11 @@ _register_mime_types()
 app = FastAPI(title="foilstack", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 app.include_router(media.router)
-templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 # Read once, at import, and used for exactly one thing: the size of the rate
 # limiter windows below, which are a property of the process rather than of a
 # request. Everything else takes `settings_dep` — see web/deps.py.
 _boot = get_settings()
-
-# The channels offered on the listing screen. Every one of them is a CSV you
-# upload yourself: there is no API client behind any of these names, and the
-# screen says so rather than implying a connection that does not exist.
-CHANNELS = [
-    {"key": "tcgplayer", "name": "TCGplayer", "note": "csv upload · no api key held"},
-    {"key": "ebay", "name": "eBay", "note": "csv upload · no oauth held"},
-]
 
 
 # Two budgets, both of which must allow an attempt through. The address budget
@@ -106,50 +102,6 @@ _login_account = ratelimit.Limiter(_boot.login_attempts, _boot.login_window_s)
 # Registration is cheaper to abuse than login — every attempt that succeeds
 # costs a row and a slot — so it gets a tighter budget on the address alone.
 _register_ip = ratelimit.Limiter(max(3, _boot.login_attempts // 2), _boot.login_window_s)
-
-
-def _money(n: float | None) -> str:
-    if n is None:
-        return "—"
-    return ("-$" if n < 0 else "$") + f"{abs(n):,.2f}"
-
-
-templates.env.filters["money"] = _money
-
-
-def _asset_version() -> str:
-    """A short hash of the static assets, appended to their URLs.
-
-    Without it a CDN happily serves last week's CSS against today's HTML, and
-    the page arrives with every new class name unstyled — which looks like
-    broken CSS rather than a cache, and cost an hour to spot the first time.
-
-    Every file that carries this query string has to be hashed into it. The
-    stylesheet alone was enough until there was a script too: a JS change with
-    no CSS change would have shipped a stale script behind an unchanged
-    version, which is the same bug wearing a different hat.
-    """
-    digest = hashlib.sha256()
-    for name in ("app.css", "zoom.js", "brand/mark.svg", "brand/favicon.svg"):
-        try:
-            digest.update((BASE_DIR / "static" / name).read_bytes())
-        except OSError:
-            return "0"
-
-    # The demo, by size and mtime rather than by content. It carries the same
-    # query string, so it has to be in the hash — a CDN held a stale
-    # `application/octet-stream` copy of it through a deploy that fixed exactly
-    # that, because the URL never changed. Reading three megabytes on every
-    # request to learn something `stat` already knows would be the wrong way to
-    # fix it.
-    for name in ("demo/foilstack.webp", "demo/foilstack.gif"):
-        try:
-            info = (BASE_DIR / "static" / name).stat()
-        except OSError:
-            continue
-        digest.update(f"{name}:{info.st_size}:{info.st_mtime_ns}".encode())
-
-    return digest.hexdigest()[:10]
 
 
 @asynccontextmanager
@@ -204,103 +156,6 @@ async def _security_headers(request: Request, call_next):
             "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
         )
     return response
-
-
-def _aware(when: dt.datetime) -> dt.datetime:
-    """Postgres hands these back tz-aware; a stray naive one must not crash a page."""
-    return when if when.tzinfo else when.replace(tzinfo=dt.UTC)
-
-
-def _ago(then: dt.datetime | None) -> str:
-    if then is None:
-        return "never"
-    if then.tzinfo is None:
-        then = then.replace(tzinfo=dt.UTC)
-    seconds = (dt.datetime.now(dt.UTC) - then).total_seconds()
-    if seconds < 90:
-        return "just now"
-    for unit, size in (("min", 60), ("hr", 3600), ("d", 86400)):
-        if seconds < size * 60 or unit == "d":
-            return f"{int(seconds // size)} {unit} ago"
-    return "a while ago"
-
-
-def _chrome(session, request: Request, user: db.User, settings: Settings) -> dict:
-    """The values every page's shell needs, for this account only."""
-    # One row is one card, and only cards still in stock count as "held".
-    mine = (db.InventoryItem.user_id == user.id, db.InventoryItem.status == "stock")
-    held = session.scalar(select(func.count(db.InventoryItem.id)).where(*mine)) or 0
-    # Priced the same way the inventory screen prices it — per printing, with
-    # any printing the seller named taking precedence. Summing `cards.market`
-    # here was cheaper and wrong: that column is the plain printing's price, so
-    # the topbar quoted one total while the table below it showed another.
-    rows = inventory.items(session, user.id, status="stock")
-    value = sum(r["market"] or 0 for r in rows)
-    needs_printing = sum(1 for r in rows if r["printing_guessed"])
-    # When the sync last *ran*, not when a price last moved.
-    #
-    # This read `max(cards.updated_at)`, which only advances when a number
-    # actually changes — so a sync that ran ten minutes ago against an unchanged
-    # upstream still reported "synced 10 hr ago", and the footer looked like a
-    # stalled job. It sent someone to check whether the service was broken,
-    # which is the opposite of what a status line is for. `sync_state` records
-    # every run, including the ones that correctly did nothing.
-    # The *oldest* run among games that have been ingested, not the newest.
-    #
-    # `max` was flattering to the point of being wrong: a deployment syncing
-    # Magic every six hours and never syncing Dragon Ball at all reported
-    # "synced 4 hr ago", because the Magic row was the newest one and nothing
-    # asked whether every game had a row. The footer read as healthy while a
-    # whole catalogue sat frozen at its ingest-day prices.
-    #
-    # `min` answers the question the line is actually making a claim about:
-    # everything you can see a price for is at least this fresh.
-    ingested = set(session.scalars(select(db.Card.game).distinct()).all())
-    runs = {
-        kind.split(":", 1)[-1]: at
-        for kind, at in session.execute(
-            select(db.SyncState.kind, db.SyncState.last_run_at).where(
-                db.SyncState.kind.like("prices:%")
-            )
-        ).all()
-    }
-    unsynced = sorted(g for g in ingested if g not in runs)
-    covered = [at for g, at in runs.items() if g in ingested and at is not None]
-    synced = min(covered) if covered else session.scalar(select(func.max(db.Card.updated_at)))
-    sources = session.scalars(select(db.Card.source).distinct()).all()
-
-    return {
-        "version": __version__,
-        "git_sha": settings.git_sha,
-        # Recomputed per request: the stylesheet is bind-mounted during
-        # development, so caching this would defeat the point of having it.
-        "asset_v": _asset_version(),
-        "catalog_cards": session.scalar(select(func.count(db.Card.id))) or 0,
-        "vector_count": search.count(session, settings.embed_model),
-        "pending": session.scalar(
-            select(func.count(db.Scan.id)).where(
-                db.Scan.user_id == user.id, db.Scan.status == "pending"
-            )
-        )
-        or 0,
-        "inventory_rows": held,
-        "inventory_count": held,
-        "inventory_value": _money(value),
-        "needs_printing": needs_printing,
-        "listed_count": session.scalar(
-            select(func.count(db.InventoryItem.id)).where(*mine, db.InventoryItem.listed == 1)
-        )
-        or 0,
-        "host_label": request.url.netloc or "localhost",
-        "user": user,
-        "multi_user": settings.multi_user,
-        "support_url": settings.support_url,
-        "price_source": ", ".join(sources) if sources else "no catalogue",
-        "synced_ago": _ago(synced),
-        # Named in the footer rather than left to be discovered by noticing a
-        # card's price never moves.
-        "unsynced_games": unsynced,
-    }
 
 
 @app.get("/", response_class=HTMLResponse)
