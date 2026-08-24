@@ -144,10 +144,13 @@
           <div class="qmeta"><span class="qprice"></span>{{ r.meta }}</div>
           <div class="qalt">
             {% if r.needs_review and r.alternates %}
-            <button type="button" data-alt="{{ r.alternates[0].card_id }}">
+            <button class="qalt-swap" type="button" data-alt="{{ r.alternates[0].card_id }}">
               also matched: {{ r.alternates[0].name }}{% if r.alternates[0].variant %} ({{ r.alternates[0].variant }}){% endif %} {{ r.alternates[0].pct }}
             </button>
-            {% else %}{{ r.alt }}{% endif %}
+            {% else %}<span class="qalt-note">{{ r.alt }}</span>{% endif %}
+            {% if r.needs_review %}
+            <button class="qalt-fix" type="button" data-fix>wrong card?</button>
+            {% endif %}
           </div>
         </div>
         <div class="qconf">
@@ -171,6 +174,9 @@
           {% endif %}
           <button class="qdrop" type="button" data-drop title="Discard this scan" aria-label="Discard this scan">×</button>
         </div>
+        {# Full-width, so it wraps onto its own line inside the flex row rather
+           than squeezing the columns beside it. Filled on first open. #}
+        <div class="qfix" hidden></div>
       </div>
       {% endfor %}
       {% if not rows %}
@@ -299,15 +305,102 @@ $$('.qrow').forEach(row => {
   setFoil(settings.finish);
   foil.addEventListener('click', () => setFoil(row.dataset.finish === 'foil' ? 'nonfoil' : 'foil'));
 
-  const alt = $('.qalt button', row);
+  // The one-click runner-up stays a fast path: a glance, a click, committed.
+  const alt = $('.qalt-swap', row);
   if (alt) alt.addEventListener('click', () => {
     row.dataset.card = alt.dataset.alt;
     confirmRow(row);
   });
+
+  // "Wrong card?" is the slow path, and deliberately does not commit. The
+  // seller has just gone looking for this card; letting them see the swap
+  // land before it becomes inventory is the whole point of the feature.
+  const fix = $('.qalt-fix', row);
+  if (fix) fix.addEventListener('click', () => toggleFix(row));
   const ok = $('[data-confirm]', row);
   if (ok) ok.addEventListener('click', () => confirmRow(row));
   $('[data-drop]', row).addEventListener('click', () => discardRow(row));
 });
+
+// ---- correcting a bad match ------------------------------------------------
+
+async function toggleFix(row) {
+  const box = $('.qfix', row);
+  if (!box.hidden) { box.hidden = true; return; }
+  if (!box.dataset.loaded) {
+    box.innerHTML = '<div class="qfix-none">loading…</div>';
+    box.hidden = false;
+    const res = await fetch('/api/scans/' + row.dataset.scan + '/match-panel');
+    if (!res.ok) { box.innerHTML = '<div class="qfix-none">could not load</div>'; return; }
+    box.innerHTML = await res.text();
+    box.dataset.loaded = '1';
+    wireFix(row, box);
+  }
+  box.hidden = false;
+}
+
+function wireFix(row, box) {
+  $('[data-fix-close]', box).addEventListener('click', () => { box.hidden = true; });
+
+  const q = $('[data-fix-q]', box);
+  const game = $('[data-fix-game]', box);
+  const out = $('[data-fix-results]', box);
+
+  // Debounced, because every keystroke is a substring search over the whole
+  // catalogue. 200ms is below the point a search box feels laggy and well
+  // above typing speed.
+  let timer = null, seq = 0;
+  async function run() {
+    const mine = ++seq;
+    const url = '/api/cards/search?q=' + encodeURIComponent(q.value) +
+                '&game=' + encodeURIComponent(game.value);
+    const res = await fetch(url);
+    if (!res.ok || mine !== seq) return;  // a later keystroke already won
+    out.innerHTML = await res.text();
+  }
+  const later = () => { clearTimeout(timer); timer = setTimeout(run, 200); };
+  q.addEventListener('input', later);
+  game.addEventListener('change', run);
+
+  box.addEventListener('click', ev => {
+    const pick = ev.target.closest('[data-pick]');
+    if (pick) applyPick(row, box, pick);
+  });
+  run();
+}
+
+function applyPick(row, box, pick) {
+  row.dataset.card = pick.dataset.pick;
+  $('.qname', row).textContent = pick.dataset.name;
+  $('.qname', row).classList.remove('faint');
+  $('.qmeta', row).innerHTML = '<span class="qprice"></span>' + pick.dataset.sub;
+
+  const ref = $('.thumb.ref img', row);
+  if (ref) ref.src = '/card/' + pick.dataset.pick + '/image';
+
+  // The stored per-printing prices belonged to the card that was replaced.
+  // Blanking them shows no price rather than the wrong one; the real figure
+  // is computed against the corrected card once it is inventory.
+  row.dataset.prices = '{}';
+
+  // The match bar measured the encoder's confidence in a card that is no
+  // longer on this row. A chosen card has no score — it has a person.
+  const conf = $('.qconf', row);
+  if (conf) conf.innerHTML = '<div class="lbl">you chose this</div>';
+
+  // A row corrected by hand always has something to confirm, even if the
+  // scan matched nothing at all and never had a Confirm button drawn.
+  if (!$('[data-confirm]', row)) {
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-dark';
+    btn.type = 'button';
+    btn.setAttribute('data-confirm', '');
+    btn.textContent = 'Confirm';
+    btn.addEventListener('click', () => confirmRow(row));
+    $('.qactions', row).prepend(btn);
+  }
+  box.hidden = true;
+}
 
 async function confirmRow(row) {
   if (!row.dataset.card) return;

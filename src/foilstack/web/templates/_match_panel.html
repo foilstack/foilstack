@@ -1,0 +1,28 @@
+{# "This is the wrong card" — the way out of a bad match.
+
+   Fetched on demand rather than rendered into all 400 queue rows: the panel
+   carries a thumbnail per candidate and a list of every game in the
+   catalogue, and paying for that on every row to serve the handful the seller
+   actually opens is how a queue page gets slow. #}
+<div class="qfix-head">
+  <span class="qfix-title">Pick the right card</span>
+  <button class="btn-quiet" type="button" data-fix-close aria-label="Close">×</button>
+</div>
+
+{% if options %}
+<div class="qfix-label">Also matched this scan</div>
+<div class="qfix-list">{% include "_match_options.html" %}</div>
+{% endif %}
+
+<div class="qfix-label">Search the catalogue</div>
+<div class="qfix-search">
+  <input class="input" type="search" data-fix-q value="{{ query }}"
+         placeholder="Card name" autocomplete="off" spellcheck="false">
+  <select class="input" data-fix-game aria-label="Game">
+    <option value="">All games</option>
+    {% for g in games %}
+    <option value="{{ g }}" {{ 'selected' if g == game }}>{{ g }}</option>
+    {% endfor %}
+  </select>
+</div>
+<div class="qfix-list" data-fix-results></div>

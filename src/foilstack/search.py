@@ -73,3 +73,60 @@ def count(session, model: str | None = None) -> int:
             {"model": model},
         ).scalar_one()
     )
+
+
+_BY_NAME = text(
+    """
+    SELECT c.id, c.name, c.game, c.set_name, c.number, c.variant, c.market
+      FROM cards c
+     WHERE c.name ILIKE :q
+       AND (:game = '' OR c.game = :game)
+     ORDER BY (lower(c.name) = lower(:exact)) DESC,
+              (lower(c.name) LIKE lower(:prefix)) DESC,
+              length(c.name),
+              c.name,
+              c.set_name
+     LIMIT :k
+    """
+)
+
+
+def by_name(session, q: str, *, game: str = "", k: int = 24) -> list[dict]:
+    """Find catalogue cards by name, for correcting a bad match.
+
+    The ordering is the whole value of this function. A substring search for
+    "goku" against a real catalogue returns hundreds of rows, and the one the
+    seller wants is almost never the longest. Exact matches come first, then
+    prefix matches, then shortest name — which puts `Son Goku` above
+    `Son Goku Judge Pack Store Judge` without either being special-cased.
+
+    Names are matched, not sets or numbers: the seller is holding the card and
+    reading the name off it. Narrowing by game is the one filter that pays,
+    because the failure this exists to fix is a Dragon Ball scan that matched
+    a Magic card.
+    """
+    q = (q or "").strip()
+    if len(q) < 2:
+        return []
+    rows = session.execute(
+        _BY_NAME,
+        {
+            "q": f"%{q}%",
+            "exact": q,
+            "prefix": f"{q}%",
+            "game": game or "",
+            "k": int(k),
+        },
+    ).all()
+    return [
+        {
+            "card_id": int(r.id),
+            "name": r.name,
+            "game": r.game,
+            "set_name": r.set_name or "",
+            "number": r.number or "",
+            "variant": r.variant or "",
+            "market": float(r.market) if r.market is not None else None,
+        }
+        for r in rows
+    ]

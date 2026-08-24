@@ -59,3 +59,42 @@ def test_vector_literal_is_plain_floats():
 
 def test_vector_literal_accepts_a_plain_list():
     assert search.as_literal([1.0, -2.5]) == "[1.0,-2.5]"
+
+
+# ---------------------------------------------------------------------------
+# Catalogue search by name — the way out of a bad match.
+# ---------------------------------------------------------------------------
+
+
+def test_by_name_ignores_a_query_too_short_to_mean_anything():
+    """One character matches most of the catalogue, so it is not a search.
+
+    Guarded here rather than in the browser because the endpoint is reachable
+    without it, and `%a%` over 150k rows is a table scan per keystroke.
+    """
+    assert search.by_name(None, "a") == []
+    assert search.by_name(None, " ") == []
+    assert search.by_name(None, "") == []
+
+
+def test_by_name_ranks_exact_then_prefix_then_shortest():
+    """The whole value of this function is the ordering.
+
+    A substring search for "goku" against a real catalogue returns hundreds of
+    rows, and the one in the seller's hand is never the longest. Without this
+    clause `Son Goku` sorts below `Son Goku Judge Pack Store Judge` and the
+    picker is useless exactly when it is needed.
+    """
+    sql = str(search._BY_NAME)
+    order = sql.index("ORDER BY")
+    assert sql.index("lower(c.name) = lower(:exact)") > order
+    assert sql.index("lower(c.name) LIKE lower(:prefix)") > order
+    assert sql.index("length(c.name)") > order
+    assert sql.index("lower(c.name) = lower(:exact)") < sql.index("length(c.name)")
+
+
+def test_by_name_can_narrow_to_one_game():
+    """The failure this exists to fix is a Dragon Ball scan matching a Magic
+    card, so filtering by game is the filter that pays."""
+    sql = str(search._BY_NAME)
+    assert ":game = ''" in sql and "c.game = :game" in sql
