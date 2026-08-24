@@ -130,3 +130,15 @@ def by_name(session, q: str, *, game: str = "", k: int = 24) -> list[dict]:
         }
         for r in rows
     ]
+
+
+def games(session) -> list[str]:
+    """Every game with cards in this catalogue.
+
+    Here rather than in a route module because two of them need it — the match
+    panel and the inventory panel both offer it as a search filter — and a
+    catalogue query is what this module is.
+    """
+    return [
+        g for (g,) in session.execute(text("SELECT DISTINCT game FROM cards ORDER BY game")).all()
+    ]

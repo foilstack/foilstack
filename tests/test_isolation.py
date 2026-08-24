@@ -90,12 +90,12 @@ def app_and_data(database_url, tmp_path_factory):
 
     app = web.app
 
-    # `web.settings` is bound once, when the module is first imported. If any
-    # earlier test module imported it, that binding already happened against
-    # the developer's own database and clearing the cache above does not undo
-    # it — the app then talks to the wrong database and every test here fails
-    # on a password error that names nothing to do with test ordering.
-    web.settings = get_settings()
+    # Nothing to rebind any more: routes take settings through `settings_dep`,
+    # which calls the cached `get_settings()` per request, so the cache_clear
+    # above is enough. This used to need `web.settings = get_settings()`,
+    # because a module global bound at import kept whichever database the first
+    # importing module saw — and every test here then failed on a password
+    # error that named nothing to do with test ordering. That cost hours twice.
 
     db.init(database_url)
     session = db.session()
@@ -272,6 +272,30 @@ def test_the_owner_can_open_the_match_panel_and_search(app_and_data):
 
     miss = client.get("/api/cards/search?q=nothingcalledthis")
     assert "no card by that name" in miss.text
+
+
+def test_bulk_delete_is_not_shadowed_by_the_single_item_route(app_and_data):
+    """`/api/inventory/delete` and `/api/inventory/{item_id}` are the same
+    shape, and FastAPI matches in declaration order.
+
+    Declared the other way round, a POST to `delete` is captured by the
+    `{item_id}` route, `"delete"` fails to parse as an integer, and bulk delete
+    answers 422 — a routing bug that reads as a validation error. The other
+    bulk-delete tests would catch it, but none of them says that is what they
+    are for, so moving these routes between files looks safe right up until it
+    is not.
+    """
+    from fastapi.testclient import TestClient
+
+    app, _ = app_and_data
+    client = TestClient(app)
+    client.post("/login", data={"email": "owner@example.com", "password": "owner-long-password"})
+
+    # Empty list: reaches the handler, which rejects it on its own terms. A 422
+    # here would mean the path never got there at all.
+    r = client.post("/api/inventory/delete", json={"ids": []})
+    assert r.status_code != 422, "the {item_id} route is shadowing bulk delete"
+    assert r.status_code == 400
 
 
 def test_a_game_with_no_price_sync_is_named_in_the_status_bar(app_and_data):
@@ -946,11 +970,11 @@ def test_login_starts_refusing_after_a_run_of_wrong_passwords(app_and_data):
     does."""
     from fastapi.testclient import TestClient
 
-    from foilstack.web import app as web
-
     app, _ = app_and_data
-    web._login_ip.clear()
-    web._login_account.clear()
+    from foilstack.web.routes import accounts
+
+    accounts._login_ip.clear()
+    accounts._login_account.clear()
 
     client = TestClient(app)
     codes = [
@@ -970,17 +994,20 @@ def test_login_starts_refusing_after_a_run_of_wrong_passwords(app_and_data):
     )
     assert blocked.status_code == 429
 
-    web._login_ip.clear()
-    web._login_account.clear()
+    from foilstack.web.routes import accounts
+
+    accounts._login_ip.clear()
+    accounts._login_account.clear()
 
 
 def test_a_good_password_still_works_once_the_window_is_clear(app_and_data):
     """The limiter must not be a way to lock the real owner out for good."""
-    from foilstack.web import app as web
 
     app, _ = app_and_data
-    web._login_ip.clear()
-    web._login_account.clear()
+    from foilstack.web.routes import accounts
+
+    accounts._login_ip.clear()
+    accounts._login_account.clear()
     client = _signed_in(app)
     assert client.get("/app", follow_redirects=False).status_code == 200
 
@@ -992,7 +1019,9 @@ def test_registration_can_be_closed(app_and_data, monkeypatch):
 
     app, _ = app_and_data
     _with_setting(monkeypatch, web, allow_registration=False)
-    web._register_ip.clear()
+    from foilstack.web.routes import accounts
+
+    accounts._register_ip.clear()
 
     with TestClient(app) as anon:
         assert anon.get("/register").status_code == 403
@@ -1019,7 +1048,9 @@ def test_an_invite_code_is_required_when_one_is_set(app_and_data, monkeypatch):
 
     app, _ = app_and_data
     _with_setting(monkeypatch, web, invite_code="open-sesame")
-    web._register_ip.clear()
+    from foilstack.web.routes import accounts
+
+    accounts._register_ip.clear()
 
     with TestClient(app) as anon:
         refused = anon.post(
@@ -1039,7 +1070,9 @@ def test_an_invite_code_is_required_when_one_is_set(app_and_data, monkeypatch):
         )
         assert allowed.status_code == 303
 
-    web._register_ip.clear()
+    from foilstack.web.routes import accounts
+
+    accounts._register_ip.clear()
 
 
 def test_the_security_headers_are_on_every_response(app_and_data):
@@ -1104,15 +1137,28 @@ def test_the_quota_is_off_by_default(app_and_data):
 
 
 def _with_setting(monkeypatch, web, **changes):
-    """Swap the module's Settings for one with `changes` applied.
+    """Run the app with `changes` applied to its Settings.
 
-    Settings is frozen, which is the right call for a value read once at boot
-    and never meant to drift underneath a running request. It does mean a test
-    replaces the whole object rather than poking a field.
+    Overrides the `settings_dep` dependency rather than reassigning a module
+    global. The global only ever reached routes that lived in the same module
+    as it, so this stopped working the moment a route moved to its own file —
+    and it failed by silently using the real settings rather than by erroring.
+
+    Settings is frozen, which is right for a value read at boot and never meant
+    to drift under a running request, so a test replaces the whole object
+    rather than poking a field.
     """
     import dataclasses
 
-    monkeypatch.setattr(web, "settings", dataclasses.replace(web.settings, **changes))
+    from foilstack.config import get_settings
+    from foilstack.web import deps
+
+    changed = dataclasses.replace(get_settings(), **changes)
+    # `setitem`, not a plain assignment: monkeypatch undoes it at the end of
+    # the test. An override left in the dict applies to every later test in
+    # the module, and the failure then surfaces somewhere unrelated.
+    monkeypatch.setitem(web.app.dependency_overrides, deps.settings_dep, lambda: changed)
+    return changed
 
 
 def test_the_landing_page_knows_who_is_reading_it(app_and_data):
