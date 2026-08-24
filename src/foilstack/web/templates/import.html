@@ -1,4 +1,11 @@
 {% extends "base.html" %}
+{% macro chosen_icon() -%}
+<span class="qchose" title="You picked this card">
+  <svg viewBox="0 0 16 16" role="img" aria-label="picked by you">
+    <circle cx="8" cy="5.2" r="2.7"/><path d="M2.7 14c0-3 2.4-4.7 5.3-4.7s5.3 1.7 5.3 4.7"/>
+  </svg>
+</span>
+{%- endmacro %}
 {% block title %}Import scans · foilstack{% endblock %}
 {% block status %}{% if active %}import running · {{ active.processed }}/{{ active.total }}{% elif counts.all %}{{ counts.all }} scans waiting · {{ counts.nomatch }} with no match{% else %}queue clear · drop a .zip to begin{% endif %}{% endblock %}
 
@@ -123,6 +130,7 @@
       <button class="btn btn-primary" type="button" id="commit">Commit {{ counts.all }} to inventory</button>
     </div>
 
+    <template id="tpl-chosen">{{ chosen_icon() }}</template>
     <div class="screen-scroll" id="queue">
       {% for r in rows %}
       <div class="qrow {{ 'review' if r.needs_review }}" id="scan-{{ r.scan_id }}"
@@ -143,7 +151,12 @@
           <div class="qname {{ 'faint' if not r.card_id }}">{{ r.name }}</div>
           <div class="qmeta"><span class="qprice"></span>{{ r.meta }}</div>
           <div class="qalt">
-            {% if r.needs_review and r.alternates %}
+            {# No one-click swap on a row someone has already decided: that
+               button commits on the spot, and putting a commit-to-the-guess
+               control beside a deliberate choice is a trap. The panel behind
+               "wrong card?" still lists every candidate, and picking there
+               does not commit. #}
+            {% if r.needs_review and r.alternates and not r.chosen %}
             <button class="qalt-swap" type="button" data-alt="{{ r.alternates[0].card_id }}">
               also matched: {{ r.alternates[0].name }}{% if r.alternates[0].variant %} ({{ r.alternates[0].variant }}){% endif %} {{ r.alternates[0].pct }}
             </button>
@@ -154,8 +167,10 @@
           </div>
         </div>
         <div class="qconf">
+          {% if r.chosen %}{{ chosen_icon() }}{% else %}
           <div class="track"><i class="{{ '' if r.score >= 0.9 else 'low' }}" style="width: {{ r.pct }}"></i></div>
           <div class="lbl">{{ r.pct }} match</div>
+          {% endif %}
         </div>
         <div class="qcond">
           {% for c in conditions[:4] %}
@@ -369,7 +384,15 @@ function wireFix(row, box) {
   run();
 }
 
-function applyPick(row, box, pick) {
+async function applyPick(row, box, pick) {
+  // Saved before anything on screen changes. A pick that only updated the DOM
+  // looked identical to one that had been recorded, right up until a reload
+  // threw it away — so the write happens first and the row is only redrawn
+  // once the server has it.
+  const body = new URLSearchParams({ card_id: pick.dataset.pick });
+  const res = await fetch('/api/scans/' + row.dataset.scan + '/choose', { method: 'POST', body });
+  if (!res.ok) { alert('could not save that choice'); return; }
+
   row.dataset.card = pick.dataset.pick;
   $('.qname', row).textContent = pick.dataset.name;
   $('.qname', row).classList.remove('faint');
@@ -387,12 +410,14 @@ function applyPick(row, box, pick) {
   // longer on this row. A chosen card has no score — it has a person, which
   // is what the figure says. The counterpart to the `auto` badge a card wears
   // when the encoder decided on its own.
+  //
+  // Cloned from the template the server renders the same figure from, rather
+  // than a second copy of the SVG written out in JavaScript.
   const conf = $('.qconf', row);
-  if (conf) conf.innerHTML =
-    '<span class="qchose" title="You picked this card">' +
-    '<svg viewBox="0 0 16 16" role="img" aria-label="picked by you">' +
-    '<circle cx="8" cy="5.2" r="2.7"/><path d="M2.7 14c0-3 2.4-4.7 5.3-4.7s5.3 1.7 5.3 4.7"/>' +
-    '</svg></span>';
+  if (conf) {
+    conf.textContent = '';
+    conf.appendChild(document.getElementById('tpl-chosen').content.cloneNode(true));
+  }
 
   // A row corrected by hand always has something to confirm, even if the
   // scan matched nothing at all and never had a Confirm button drawn.

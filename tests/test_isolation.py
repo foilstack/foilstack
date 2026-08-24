@@ -274,6 +274,57 @@ def test_the_owner_can_open_the_match_panel_and_search(app_and_data):
     assert "no card by that name" in miss.text
 
 
+def test_a_chosen_card_survives_a_reload(app_and_data):
+    """The bug this column exists to fix.
+
+    Picking a card used to update the browser and nothing else, so the row
+    looked corrected until the page was reloaded and the encoder's guess came
+    back. A choice that does not outlive a refresh is not a choice.
+    """
+    from fastapi.testclient import TestClient
+
+    from foilstack import db
+
+    app, ids = app_and_data
+    session = db.session()
+    other = db.Card(source="t", source_id="t:chosen", name="Chosen Card", game="mtg", market=7.0)
+    session.add(other)
+    session.commit()
+    other_id = other.id
+    session.close()
+
+    client = TestClient(app)
+    client.post("/login", data={"email": "owner@example.com", "password": "owner-long-password"})
+
+    r = client.post(f"/api/scans/{ids['scan']}/choose", data={"card_id": other_id})
+    assert r.status_code == 200
+
+    # Read back through the page the seller actually reloads, not the column.
+    queue = client.get("/app?filter=review").text
+    assert "Chosen Card" in queue
+    assert f'data-scan="{ids["scan"]}" data-card="{other_id}"' in queue
+
+    # And it is a choice, not a commitment: nothing entered inventory.
+    session = db.session()
+    scan = session.get(db.Scan, ids["scan"])
+    assert scan.chosen_card_id == other_id
+    assert scan.status == "pending"
+    session.close()
+
+    # Put it back, so later tests in this module see the fixture they expect.
+    client.post(f"/api/scans/{ids['scan']}/choose", data={"card_id": ids["card"]})
+    session = db.session()
+    session.get(db.Scan, ids["scan"]).chosen_card_id = None
+    session.commit()
+    session.close()
+
+
+def test_stranger_cannot_choose_a_card_for_someone_elses_scan(stranger, app_and_data):
+    _, ids = app_and_data
+    r = stranger.post(f"/api/scans/{ids['scan']}/choose", data={"card_id": ids["card"]})
+    assert r.status_code == 404
+
+
 def test_a_row_can_be_corrected_to_another_card(app_and_data):
     """The point of the feature: a row pointing at the wrong card is fixable
     without deleting it, which would take the scan with it.
