@@ -946,11 +946,11 @@ def test_login_starts_refusing_after_a_run_of_wrong_passwords(app_and_data):
     does."""
     from fastapi.testclient import TestClient
 
-    from foilstack.web import app as web
-
     app, _ = app_and_data
-    web._login_ip.clear()
-    web._login_account.clear()
+    from foilstack.web.routes import accounts
+
+    accounts._login_ip.clear()
+    accounts._login_account.clear()
 
     client = TestClient(app)
     codes = [
@@ -970,17 +970,20 @@ def test_login_starts_refusing_after_a_run_of_wrong_passwords(app_and_data):
     )
     assert blocked.status_code == 429
 
-    web._login_ip.clear()
-    web._login_account.clear()
+    from foilstack.web.routes import accounts
+
+    accounts._login_ip.clear()
+    accounts._login_account.clear()
 
 
 def test_a_good_password_still_works_once_the_window_is_clear(app_and_data):
     """The limiter must not be a way to lock the real owner out for good."""
-    from foilstack.web import app as web
 
     app, _ = app_and_data
-    web._login_ip.clear()
-    web._login_account.clear()
+    from foilstack.web.routes import accounts
+
+    accounts._login_ip.clear()
+    accounts._login_account.clear()
     client = _signed_in(app)
     assert client.get("/app", follow_redirects=False).status_code == 200
 
@@ -992,7 +995,9 @@ def test_registration_can_be_closed(app_and_data, monkeypatch):
 
     app, _ = app_and_data
     _with_setting(monkeypatch, web, allow_registration=False)
-    web._register_ip.clear()
+    from foilstack.web.routes import accounts
+
+    accounts._register_ip.clear()
 
     with TestClient(app) as anon:
         assert anon.get("/register").status_code == 403
@@ -1019,7 +1024,9 @@ def test_an_invite_code_is_required_when_one_is_set(app_and_data, monkeypatch):
 
     app, _ = app_and_data
     _with_setting(monkeypatch, web, invite_code="open-sesame")
-    web._register_ip.clear()
+    from foilstack.web.routes import accounts
+
+    accounts._register_ip.clear()
 
     with TestClient(app) as anon:
         refused = anon.post(
@@ -1039,7 +1046,9 @@ def test_an_invite_code_is_required_when_one_is_set(app_and_data, monkeypatch):
         )
         assert allowed.status_code == 303
 
-    web._register_ip.clear()
+    from foilstack.web.routes import accounts
+
+    accounts._register_ip.clear()
 
 
 def test_the_security_headers_are_on_every_response(app_and_data):
