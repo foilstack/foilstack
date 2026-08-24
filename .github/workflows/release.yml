@@ -41,6 +41,23 @@ jobs:
           print(f"{whl}: {len(names)} files, {len(versions)} migrations")
           PY
 
+      # The tag is a claim about what is inside the wheel, and nothing else
+      # checks it. Hatchling reads the version from
+      # `src/foilstack/__init__.py`, so tagging v0.2.0 against a source that
+      # still says 0.1.21 publishes 0.1.21 — under a tag that says otherwise,
+      # to an index where that number can never be corrected.
+      - name: the tag has to match the version in the wheel
+        if: github.ref_type == 'tag'
+        run: |
+          python - <<'PY'
+          import glob, os, sys
+          built = os.path.basename(glob.glob("dist/*.whl")[0]).split("-")[1]
+          tagged = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          if built != tagged:
+              sys.exit(f"tag says {tagged}, wheel says {built} — refusing to publish")
+          print(f"tag and wheel agree on {built}")
+          PY
+
       - uses: actions/upload-artifact@v4
         with:
           name: dist
