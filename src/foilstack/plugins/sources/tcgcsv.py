@@ -42,7 +42,19 @@ REQUEST_DELAY = 0.1
 USER_AGENT = f"foilstack/{__version__} (+https://github.com/foilstack/foilstack)"
 HEADERS = {"User-Agent": USER_AGENT, "Accept": "*/*"}
 
-# TCGplayer category ids, read from the categories endpoint rather than guessed.
+# TCGplayer category ids.
+#
+# The comment here used to say these were read from the categories endpoint
+# rather than guessed. Three of them were guessed: `gundam` fetched hololive,
+# `dragonball` fetched Neopets Battledome, and `finalfantasy` fetched the
+# Godzilla Card Game. Nothing complained, because a category id that exists
+# returns a perfectly valid catalogue — of the wrong game. `scripts/check_categories.py`
+# now checks every one of these against upstream by name.
+#
+# Dragon Ball is three separate categories upstream, not one, and they are
+# different games rather than editions of the same one: the 2000s Score/Panini
+# game, the 2017 Bandai game, and Fusion World from 2024. A name that silently
+# picked one of them would be the same bug in a new hat.
 CATEGORIES: dict[str, int] = {
     "pokemon": 3,
     "magic": 1,
@@ -52,9 +64,11 @@ CATEGORIES: dict[str, int] = {
     "digimon": 63,
     "starwars": 79,
     "fleshandblood": 62,
-    "gundam": 87,
-    "dragonball": 84,
-    "finalfantasy": 88,
+    "gundam": 86,
+    "finalfantasy": 24,
+    "dragonballz": 23,
+    "dragonballsuper": 27,
+    "dragonballfusion": 80,
 }
 
 
