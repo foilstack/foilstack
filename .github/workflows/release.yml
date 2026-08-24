@@ -21,24 +21,53 @@ jobs:
       # included. Checked here rather than discovered by whoever pip-installs
       # the release: a package that imports fine and 500s on its first page is
       # worse than one that fails to build.
+      #
+      # The static files are derived from the templates rather than listed.
+      # A hand-kept list only covers what somebody remembered to add, and
+      # `app.js` — the file that holds every screen's shared behaviour — was
+      # missing from it for a whole release. A missing script is the quiet
+      # kind of broken, too: the pages render and every button is dead.
       - name: the wheel has to contain more than Python
         run: |
           python - <<'PY'
-          import zipfile, glob, sys
+          import glob, re, sys, zipfile
+
           whl = glob.glob("dist/*.whl")[0]
-          names = zipfile.ZipFile(whl).namelist()
+          zf = zipfile.ZipFile(whl)
+          names = set(zf.namelist())
+
           required = [
               "foilstack/web/templates/base.html",
-              "foilstack/web/static/app.css",
               "foilstack/migrations/env.py",
           ]
+
+          # Anything a packaged template asks for by URL has to be packaged
+          # too: `/static/app.css?v=...` -> foilstack/web/static/app.css
+          versioned = re.compile(rb"/static/([A-Za-z0-9_./-]+)\?v=")
+          wanted = set()
+          for name in names:
+              if name.startswith("foilstack/web/templates/") and name.endswith(".html"):
+                  wanted |= {m.decode() for m in versioned.findall(zf.read(name))}
+          required += [f"foilstack/web/static/{asset}" for asset in sorted(wanted)]
+
+          # A guard on the guard. If the templates stop matching — renamed
+          # directory, different query string — this check would pass by
+          # finding nothing to look for, which is the failure it exists to
+          # prevent wearing a disguise.
+          if len(wanted) < 3:
+              sys.exit(f"only {len(wanted)} versioned assets found in the templates; "
+                       "the pattern is probably no longer matching")
+
           missing = [r for r in required if r not in names]
-          versions = [n for n in names if "/migrations/versions/" in n and n.endswith(".py")]
+          revisions = [n for n in names if "/migrations/versions/" in n and n.endswith(".py")]
           if missing:
               sys.exit(f"missing from {whl}: {missing}")
-          if not versions:
+          if not revisions:
               sys.exit(f"no migration revisions in {whl}")
-          print(f"{whl}: {len(names)} files, {len(versions)} migrations")
+          print(f"{whl}: {len(names)} files, {len(revisions)} migrations, "
+                f"{len(wanted)} versioned assets")
+          for asset in sorted(wanted):
+              print(f"  static/{asset}")
           PY
 
       # The tag is a claim about what is inside the wheel, and nothing else
