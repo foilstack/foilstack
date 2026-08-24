@@ -274,6 +274,30 @@ def test_the_owner_can_open_the_match_panel_and_search(app_and_data):
     assert "no card by that name" in miss.text
 
 
+def test_bulk_delete_is_not_shadowed_by_the_single_item_route(app_and_data):
+    """`/api/inventory/delete` and `/api/inventory/{item_id}` are the same
+    shape, and FastAPI matches in declaration order.
+
+    Declared the other way round, a POST to `delete` is captured by the
+    `{item_id}` route, `"delete"` fails to parse as an integer, and bulk delete
+    answers 422 — a routing bug that reads as a validation error. The other
+    bulk-delete tests would catch it, but none of them says that is what they
+    are for, so moving these routes between files looks safe right up until it
+    is not.
+    """
+    from fastapi.testclient import TestClient
+
+    app, _ = app_and_data
+    client = TestClient(app)
+    client.post("/login", data={"email": "owner@example.com", "password": "owner-long-password"})
+
+    # Empty list: reaches the handler, which rejects it on its own terms. A 422
+    # here would mean the path never got there at all.
+    r = client.post("/api/inventory/delete", json={"ids": []})
+    assert r.status_code != 422, "the {item_id} route is shadowing bulk delete"
+    assert r.status_code == 400
+
+
 def test_a_game_with_no_price_sync_is_named_in_the_status_bar(app_and_data):
     """The bug that made "synced 4 hr ago" a lie.
 
