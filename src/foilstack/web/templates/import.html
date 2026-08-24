@@ -384,9 +384,15 @@ function applyPick(row, box, pick) {
   row.dataset.prices = '{}';
 
   // The match bar measured the encoder's confidence in a card that is no
-  // longer on this row. A chosen card has no score — it has a person.
+  // longer on this row. A chosen card has no score — it has a person, which
+  // is what the figure says. The counterpart to the `auto` badge a card wears
+  // when the encoder decided on its own.
   const conf = $('.qconf', row);
-  if (conf) conf.innerHTML = '<div class="lbl">you chose this</div>';
+  if (conf) conf.innerHTML =
+    '<span class="qchose" title="You picked this card">' +
+    '<svg viewBox="0 0 16 16" role="img" aria-label="picked by you">' +
+    '<circle cx="8" cy="5.2" r="2.7"/><path d="M2.7 14c0-3 2.4-4.7 5.3-4.7s5.3 1.7 5.3 4.7"/>' +
+    '</svg></span>';
 
   // A row corrected by hand always has something to confirm, even if the
   // scan matched nothing at all and never had a Confirm button drawn.
