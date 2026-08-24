@@ -5,12 +5,31 @@ description = "Open-source card scanning, inventory and listing export. Self-hos
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "AGPL-3.0-or-later" }
+keywords = ["tcg", "trading-cards", "inventory", "mtg", "pokemon", "self-hosted"]
+authors = [{ name = "foilstack contributors" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "Framework :: FastAPI",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Games/Entertainment",
+    "Topic :: Office/Business",
+]
+
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.2",
     "pgvector>=0.3.6",
+    # Runtime, not development. `foilstack migrate` is how an installed copy
+    # creates its schema, and without this it fails on an ImportError at the
+    # one moment a new user has nothing else to try.
     "alembic>=1.13",
     "argon2-cffi>=23.1",
     "itsdangerous>=2.2",
@@ -21,6 +40,11 @@ dependencies = [
     "pillow>=10.0",
     "pydantic>=2.7",
 ]
+
+[project.urls]
+Homepage = "https://foilstack.ai"
+Source = "https://github.com/foilstack/foilstack"
+Issues = "https://github.com/foilstack/foilstack/issues"
 
 [project.optional-dependencies]
 embedder = ["torch>=2.2", "transformers>=4.44"]
@@ -93,7 +117,7 @@ extend-immutable-calls = [
 [tool.ruff.lint.per-file-ignores]
 # Migrations are generated, then annotated by hand. Import order and line
 # length in them are alembic's business, not ours.
-"migrations/versions/*" = ["E501", "I001"]
+"src/foilstack/migrations/versions/*" = ["E501", "I001"]
 
 [tool.ruff.format]
 docstring-code-format = true

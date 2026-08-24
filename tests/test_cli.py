@@ -104,3 +104,42 @@ def test_a_real_image_and_a_server_error_are_not_permanent():
     assert not cli.image_is_permanently_missing(200, b"\xff\xd8\xff jpeg bytes")
     assert not cli.image_is_permanently_missing(503, b"")
     assert not cli.image_is_permanently_missing(429, b"")
+
+
+# ---------------------------------------------------------------------------
+# The distribution has to carry more than Python.
+# ---------------------------------------------------------------------------
+
+
+def test_migrations_live_inside_the_package():
+    """So that `foilstack migrate` works from a pip install.
+
+    They used to sit at the repository root beside `alembic.ini`, which the
+    Dockerfile copied in separately. That is fine for the compose deployment
+    and useless for anyone who installed the wheel: the revisions were simply
+    not there, and a fresh install had no way to create its schema.
+    """
+    from foilstack import cli
+
+    root = Path(cli.__file__).resolve().parent / "migrations"
+    assert (root / "env.py").is_file()
+    assert list((root / "versions").glob("*.py")), "no revisions found"
+
+
+def test_alembic_ini_points_at_the_packaged_migrations():
+    """The repository and the installed package must run the same revisions.
+
+    Two copies would drift, and the one that drifts is always the one you are
+    not looking at.
+    """
+    ini = (ROOT / "alembic.ini").read_text()
+    assert "src/foilstack/migrations" in ini
+
+
+def test_the_readme_image_resolves_off_github():
+    """PyPI renders the README standalone, so a repo-relative path shows a
+    broken image on the project page — the first thing anyone sees."""
+    readme = (ROOT / "README.md").read_text()
+    for line in readme.splitlines():
+        if "](" in line and (".gif" in line or ".png" in line or ".webp" in line):
+            assert "https://" in line, f"relative image will not render on PyPI: {line[:60]}"

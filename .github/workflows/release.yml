@@ -1,0 +1,62 @@
+name: release
+
+# Publishing is deliberately manual and tag-driven. A release on every push to
+# main would mean any merge burns a version number on PyPI, where versions
+# cannot be reused or deleted — only yanked.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build
+
+      # The wheel carries the templates, the static files and the migrations,
+      # none of which are Python and any of which can silently stop being
+      # included. Checked here rather than discovered by whoever pip-installs
+      # the release: a package that imports fine and 500s on its first page is
+      # worse than one that fails to build.
+      - name: the wheel has to contain more than Python
+        run: |
+          python - <<'PY'
+          import zipfile, glob, sys
+          whl = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(whl).namelist()
+          required = [
+              "foilstack/web/templates/base.html",
+              "foilstack/web/static/app.css",
+              "foilstack/migrations/env.py",
+          ]
+          missing = [r for r in required if r not in names]
+          versions = [n for n in names if "/migrations/versions/" in n and n.endswith(".py")]
+          if missing:
+              sys.exit(f"missing from {whl}: {missing}")
+          if not versions:
+              sys.exit(f"no migration revisions in {whl}")
+          print(f"{whl}: {len(names)} files, {len(versions)} migrations")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    # Trusted publishing: PyPI verifies this workflow's OIDC identity, so there
+    # is no API token to store, rotate or leak.
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
