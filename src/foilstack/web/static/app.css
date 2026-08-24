@@ -180,15 +180,6 @@ body.app {
 .nav-badge { font-family: var(--mono); font-size: 10px; color: var(--faint); }
 .nav-badge:empty { display: none; }
 .rail-spacer { flex: 1; }
-.railbox {
-  margin: 8px; padding: 8px;
-  border: 1px solid var(--rule); border-radius: 3px; background: var(--surface);
-}
-.railbox-lines {
-  font-family: var(--mono); font-size: 10px; color: var(--muted); line-height: 1.5;
-}
-.railbox-lines .strong { color: var(--ink); font-weight: 500; }
-.railbox-link { margin-top: 6px; font-size: 11px; }
 
 /* ---------- buy me a coffee ----------
    Sits at the foot of the rail on every install, self-hosted included. This is
@@ -566,21 +557,6 @@ body.app {
   stroke-linecap: round; stroke-linejoin: round;
 }
 .qcond { width: 112px; flex: 0 0 112px; display: flex; gap: 3px; }
-.stepper {
-  width: 74px; flex: 0 0 74px; display: flex; align-items: stretch;
-  border: 1px solid var(--rule); border-radius: 3px; overflow: hidden;
-  background: var(--surface);
-}
-.stepper button {
-  width: 24px; min-height: 28px; border: none; background: var(--surface-2);
-  cursor: pointer; font-size: 15px; color: var(--ink); padding: 0;
-}
-.stepper button:first-child { border-right: 1px solid var(--rule); }
-.stepper button:last-child { border-left: 1px solid var(--rule); }
-.stepper .n {
-  flex: 1; display: flex; align-items: center; justify-content: center;
-  font-family: var(--mono); font-size: 11px;
-}
 .qactions {
   flex: 0 1 auto; display: flex; gap: 4px; align-items: center; justify-content: flex-end;
 }
@@ -652,8 +628,6 @@ body.app {
 .dtable .strong { font-weight: 700; }
 .dtable .cbcol { width: 30px; }
 .dtable .refcol { padding: 4px 8px; }
-.refpair { display: flex; align-items: center; gap: 4px; }
-.refpair .sep { color: #c9c6bf; font-size: 9px; }
 .thumb-xs {
   /* `display` is not optional here. This is a <span>, so without it the box is
      inline, width/height/overflow are all ignored, and the reference image

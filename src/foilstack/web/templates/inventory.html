@@ -92,14 +92,16 @@
     {% endif %}
   </form>
 </div>
+{% endblock %}
 
+{% block scripts %}
 <script>
-const rows = Array.from(document.querySelectorAll('tr[data-row]'));
+const rows = $$('tr[data-row]');
 const boxes = rows.map(r => r.querySelector('.groupbox'));
-const all = document.getElementById('all');
-const listbtn = document.getElementById('listbtn');
-const delbtn = document.getElementById('delbtn');
-const label = document.getElementById('rowlabel');
+const all = $('#all');
+const listbtn = $('#listbtn');
+const delbtn = $('#delbtn');
+const label = $('#rowlabel');
 
 /* A checked line submits one hidden input per copy it holds. Disabled inputs
    are not submitted, so enabling them is the whole of "select this line" — and
@@ -157,12 +159,9 @@ delbtn.addEventListener('click', async () => {
   );
   if (!ok) return;
 
-  const res = await fetch('/api/inventory/delete', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ids }),
-  });
-  if (res.ok) { location.reload(); return; }
-  alert((await res.json()).detail || 'could not delete');
+  if (await postJSON('/api/inventory/delete', { ids }, { error: 'could not delete' })) {
+    location.reload();
+  }
 });
 
 boxes.forEach(b => b.addEventListener('change', sync));

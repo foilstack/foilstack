@@ -1,0 +1,25 @@
+{# The "search the catalogue" control, shared by the two screens that correct
+   a bad match: the review queue's match panel and the inventory drawer.
+
+   A macro rather than an include because the two need different starting
+   values — the queue seeds it with the scan's guessed name, the drawer with
+   the name the row currently carries — and passing those as arguments is
+   clearer than setting variables around an include.
+
+   The three data attributes are the contract with wireCardSearch() in
+   app.js. Renaming one here without renaming it there breaks both screens at
+   once, which is the intended failure mode: it used to break only one. #}
+{% macro card_search(query, game, games) %}
+<div class="qfix-label">Search the catalogue</div>
+<div class="qfix-search">
+  <input class="input" type="search" data-fix-q value="{{ query }}"
+         placeholder="Card name" autocomplete="off" spellcheck="false">
+  <select class="input" data-fix-game aria-label="Game">
+    <option value="">All games</option>
+    {% for g in games %}
+    <option value="{{ g }}" {{ 'selected' if g == game }}>{{ g }}</option>
+    {% endfor %}
+  </select>
+</div>
+<div class="qfix-list" data-fix-results></div>
+{% endmacro %}

@@ -107,18 +107,18 @@
     </div>
   </div>
 </div>
+{% endblock %}
 
+{% block scripts %}
 <script>
-document.getElementById('mark').addEventListener('click', async ev => {
+$('#mark').addEventListener('click', async ev => {
   const ids = {{ rows | map(attribute='ids') | sum(start=[]) | list | tojson }};
   const channels = {{ picked | tojson }};
   if (!ids.length) return;
   ev.target.disabled = true;
-  const res = await fetch('/api/listings/mark', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ids, channels }),
-  });
-  if (res.ok) location.reload(); else ev.target.disabled = false;
+  // `quiet`: the button coming back to life is the failure message here.
+  if (await postJSON('/api/listings/mark', { ids, channels }, { quiet: true })) location.reload();
+  else ev.target.disabled = false;
 });
 </script>
 {% endblock %}

@@ -1,3 +1,4 @@
+{% from "_search_box.html" import card_search %}
 {# The edit panel for one inventory row. Served as a fragment into the drawer. #}
 <div class="panel-head-row">
   <div>
@@ -22,18 +23,7 @@
 <div class="panel-wrong">
   <button class="btn-quiet panel-wrong-open" type="button" data-wrong>Not this card?</button>
   <div class="qfix" hidden>
-    <div class="qfix-label">Search the catalogue</div>
-    <div class="qfix-search">
-      <input class="input" type="search" data-fix-q value="{{ r.name }}"
-             placeholder="Card name" autocomplete="off" spellcheck="false">
-      <select class="input" data-fix-game aria-label="Game">
-        <option value="">All games</option>
-        {% for g in games %}
-        <option value="{{ g }}" {{ 'selected' if g == r.game }}>{{ g }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div class="qfix-list" data-fix-results></div>
+    {{ card_search(r.name, r.game, games) }}
     <p class="panel-note">
       Picking a card re-points this row and keeps your scan, cost and notes.
       The chosen printing resets, because printings belong to the card they

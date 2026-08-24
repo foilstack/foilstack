@@ -175,12 +175,14 @@
 <aside class="drawer" id="drawer" hidden>
   <div class="drawer-body" id="drawer-body"></div>
 </aside>
+{% endblock %}
 
+{% block scripts %}
 <script>
 /* The per-copy editor. Consolidation stops here: everything editable below
    belongs to one physical card rather than to the line. */
-const drawer = document.getElementById('drawer');
-const drawerBody = document.getElementById('drawer-body');
+const drawer = $('#drawer');
+const drawerBody = $('#drawer-body');
 
 async function openCard(id) {
   const res = await fetch('/api/inventory/' + id);
@@ -191,7 +193,7 @@ async function openCard(id) {
 }
 function closeCard() { drawer.hidden = true; drawerBody.innerHTML = ''; }
 
-document.querySelectorAll('[data-open]').forEach(b =>
+$$('[data-open]').forEach(b =>
   b.addEventListener('click', () => openCard(b.dataset.open)));
 document.addEventListener('keydown', ev => ev.key === 'Escape' && closeCard());
 
@@ -199,45 +201,34 @@ document.addEventListener('keydown', ev => ev.key === 'Escape' && closeCard());
 // into the form: the form carries a printing chosen for the card being
 // replaced, and sending that alongside a new card_id is rejected — correctly,
 // since the printing does not exist there.
+//
+// The search itself is wireCardSearch() in app.js, shared with the review
+// queue. Only the panel's toggle and what a pick means are local.
 function wireWrongCard(id) {
   const wrap = drawerBody.querySelector('.panel-wrong');
   if (!wrap) return;
   const box = wrap.querySelector('.qfix');
-  const q = wrap.querySelector('[data-fix-q]');
-  const game = wrap.querySelector('[data-fix-game]');
-  const out = wrap.querySelector('[data-fix-results]');
 
-  let timer = null, seq = 0;
-  async function run() {
-    const mine = ++seq;
-    const res = await fetch('/api/cards/search?q=' + encodeURIComponent(q.value) +
-                            '&game=' + encodeURIComponent(game.value));
-    if (!res.ok || mine !== seq) return;
-    out.innerHTML = await res.text();
-  }
-  q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 200); });
-  game.addEventListener('change', run);
-
+  // Wired on first open rather than on render: otherwise the drawer runs a
+  // catalogue search for every row the seller merely glances at.
+  let wired = false;
   wrap.querySelector('[data-wrong]').addEventListener('click', () => {
     box.hidden = !box.hidden;
-    if (!box.hidden && !out.innerHTML) run();
-  });
-
-  out.addEventListener('click', async ev => {
-    const pick = ev.target.closest('[data-pick]');
-    if (!pick) return;
-    if (!confirm('Re-point this row to “' + pick.dataset.name + '”?')) return;
-    const res = await fetch('/api/inventory/' + id, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ card_id: +pick.dataset.pick }),
+    if (box.hidden || wired) return;
+    wired = true;
+    wireCardSearch(box, {
+      confirmPick: pick => 'Re-point this row to “' + pick.dataset.name + '”?',
+      onPick: async pick => {
+        const saved = await postJSON('/api/inventory/' + id,
+          { card_id: +pick.dataset.pick }, { error: 'could not change the card' });
+        if (saved) location.reload();
+      },
     });
-    if (res.ok) location.reload();
-    else alert((await res.json()).detail || 'could not change the card');
   });
 }
 
 function wireCard(id) {
-  const form = document.getElementById('card-form');
+  const form = $('#card-form');
   const pick = {};
 
   drawerBody.querySelectorAll('.chip-set[data-field], .printings[data-field]').forEach(set => {
@@ -271,12 +262,9 @@ function wireCard(id) {
     }, extra || {});
   }
   async function save(extra) {
-    const res = await fetch('/api/inventory/' + id, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload(extra)),
-    });
-    if (res.ok) location.reload();
-    else alert((await res.json()).detail || 'could not save');
+    if (await postJSON('/api/inventory/' + id, payload(extra), { error: 'could not save' })) {
+      location.reload();
+    }
   }
 
   wireWrongCard(id);

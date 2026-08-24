@@ -86,6 +86,15 @@
   <span>AGPL-3.0</span>
 </div>
 
+{# Shared helpers first: the per-screen scripts in the block below call into
+   them. Both are loaded here rather than from inside a screen's own markup, so
+   that every page script runs against a fully parsed document and no screen
+   depends on where in the body its script happened to be written.
+
+   A Jinja comment, not an HTML one: Jinja parses its tags inside HTML
+   comments too, so naming a block in one opens a block. #}
+<script src="/static/app.js?v={{ asset_v }}"></script>
 <script src="/static/zoom.js?v={{ asset_v }}"></script>
+{% block scripts %}{% endblock %}
 </body>
 </html>
