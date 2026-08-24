@@ -29,6 +29,31 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 # permanent, from "we could not get it", which is worth another go later.
 MISSING = object()
 
+
+def image_is_permanently_missing(status_code: int, body: bytes) -> bool:
+    """Whether upstream has told us, for good, that there is no image here.
+
+    Two ways it says so. A 4xx is the obvious one. The other is a 200 carrying
+    an empty body — `image/jpeg`, zero bytes — which a handful of products
+    answer with and which is just as permanent, but arrives looking like
+    success. Untreated it reached the encoder, failed to decode, and was
+    retried four times with backoff on every run, forever.
+
+    429 is excluded even though it is a 4xx. The caller handles it before ever
+    reaching here, so in practice it never arrives — but "too many requests" is
+    the opposite of a permanent answer, and a policy function that is only
+    correct because of what its one caller happens to do first is a trap for
+    the second caller.
+
+    Deliberately not a method on anything: it is the whole retry policy for
+    catalogue images in two lines, and it is worth being able to read and test
+    it without a network.
+    """
+    if status_code == 429:
+        return False
+    return (400 <= status_code < 500) or (status_code == 200 and not body)
+
+
 IMAGE_HEADERS = {
     "User-Agent": f"foilstack/{__version__} (+https://github.com/foilstack/foilstack)",
     "Accept": "image/*,*/*",
@@ -150,6 +175,9 @@ async def cmd_embed(args) -> int:
         retrying one four times with backoff costs seven seconds to learn
         nothing. Thousands of them turned a run that should take an hour into
         one that had not finished a tenth of it.
+
+        "Will not work" includes a 200 carrying an empty body, which is the
+        same permanent answer dressed as success.
         """
         async with limiter:
             for attempt in range(4):
@@ -164,10 +192,10 @@ async def cmd_embed(args) -> int:
                         )
                         await asyncio.sleep(min(wait, 60))
                         continue
-                    if 400 <= image.status_code < 500:
-                        # Permanent. Not a warning either: on this catalogue it
-                        # is thousands of lines saying the same ordinary thing,
-                        # and the count at the end says it once.
+                    if image_is_permanently_missing(image.status_code, image.content):
+                        # Not a warning: on this catalogue it is thousands of
+                        # lines saying the same ordinary thing, and the count
+                        # at the end says it once.
                         log.debug("  no image upstream for %s (%s)", card.name, image.status_code)
                         return card.id, MISSING
                     image.raise_for_status()
