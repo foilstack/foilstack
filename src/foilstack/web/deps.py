@@ -17,8 +17,27 @@ from __future__ import annotations
 from fastapi import Depends, HTTPException, Request
 
 from foilstack import db
-from foilstack.config import get_settings
+from foilstack.config import Settings, get_settings
 from foilstack.web import auth
+
+
+def settings_dep() -> Settings:
+    """The configuration this request runs under.
+
+    A dependency rather than a module global, which is what let the routes
+    below it move out of app.py at all. A global bound at import belongs to
+    whichever module imported first, so every route reading it had to live
+    beside that binding — and a test wanting different settings had to reach
+    into the module and reassign the name, which only worked for routes that
+    happened to be in that same module.
+
+    As a dependency it is overridable the ordinary way:
+
+        app.dependency_overrides[settings_dep] = lambda: replace(s, x=1)
+
+    which works for every route regardless of which file it ended up in.
+    """
+    return get_settings()
 
 
 def db_session():

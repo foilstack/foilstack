@@ -44,12 +44,12 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 
 from foilstack import __version__, db, importing, inventory, prices, search
-from foilstack.config import get_settings
+from foilstack.config import Settings, get_settings
 from foilstack.embedding import encoder_health
 from foilstack.importing import run_import
 from foilstack.plugins import export_plugins, source_plugins
 from foilstack.web import auth, joblog, proof, ratelimit
-from foilstack.web.deps import api_owner, db_session, owner
+from foilstack.web.deps import api_owner, db_session, owner, settings_dep
 from foilstack.web.routes import media
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,10 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 app.include_router(media.router)
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
-settings = get_settings()
+# Read once, at import, and used for exactly one thing: the size of the rate
+# limiter windows below, which are a property of the process rather than of a
+# request. Everything else takes `settings_dep` — see web/deps.py.
+_boot = get_settings()
 
 # The channels offered on the listing screen. Every one of them is a CSV you
 # upload yourself: there is no API client behind any of these names, and the
@@ -97,12 +100,12 @@ CHANNELS = [
 # Two budgets, both of which must allow an attempt through. The address budget
 # stops one machine working through a password list; the account budget stops a
 # botnet doing the same thing from a thousand addresses against one seller.
-_login_ip = ratelimit.Limiter(settings.login_attempts, settings.login_window_s)
-_login_account = ratelimit.Limiter(settings.login_attempts, settings.login_window_s)
+_login_ip = ratelimit.Limiter(_boot.login_attempts, _boot.login_window_s)
+_login_account = ratelimit.Limiter(_boot.login_attempts, _boot.login_window_s)
 
 # Registration is cheaper to abuse than login — every attempt that succeeds
 # costs a row and a slot — so it gets a tighter budget on the address alone.
-_register_ip = ratelimit.Limiter(max(3, settings.login_attempts // 2), settings.login_window_s)
+_register_ip = ratelimit.Limiter(max(3, _boot.login_attempts // 2), _boot.login_window_s)
 
 
 def _money(n: float | None) -> str:
@@ -151,6 +154,9 @@ def _asset_version() -> str:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
+    # Resolved here rather than read from a module global: startup is the one
+    # place that genuinely wants the settings once, at boot.
+    settings = get_settings()
     # Fails the boot rather than the first login: a multi-user deployment
     # signing sessions with the published development key is one anybody can
     # forge a session against.
@@ -219,7 +225,7 @@ def _ago(then: dt.datetime | None) -> str:
     return "a while ago"
 
 
-def _chrome(session, request: Request, user: db.User) -> dict:
+def _chrome(session, request: Request, user: db.User, settings: Settings) -> dict:
     """The values every page's shell needs, for this account only."""
     # One row is one card, and only cards still in stock count as "held".
     mine = (db.InventoryItem.user_id == user.id, db.InventoryItem.status == "stock")
@@ -298,7 +304,11 @@ def _chrome(session, request: Request, user: db.User) -> dict:
 
 
 @app.get("/", response_class=HTMLResponse)
-def page_landing(request: Request, session=Depends(db_session)):
+def page_landing(
+    request: Request,
+    session=Depends(db_session),
+    settings: Settings = Depends(settings_dep),
+):
     """The front door. Deliberately not the tool: someone arriving cold needs to
     know what this is and that they can run it themselves before being handed a
     file picker.
@@ -471,6 +481,7 @@ def _queue_rows(session, user_id: int) -> list[dict]:
 def _auth_page(
     request: Request,
     mode: str,
+    settings: Settings,
     *,
     next: str = "/app",
     error: str | None = None,
@@ -499,10 +510,14 @@ def _auth_page(
 
 
 @app.get("/login", response_class=HTMLResponse)
-def page_login(request: Request, next: str = "/app"):
+def page_login(
+    request: Request,
+    next: str = "/app",
+    settings: Settings = Depends(settings_dep),
+):
     if not settings.multi_user:
         return RedirectResponse("/app", status_code=303)
-    return _auth_page(request, "login", next=next)
+    return _auth_page(request, "login", settings, next=next)
 
 
 @app.post("/login", response_class=HTMLResponse)
@@ -512,6 +527,7 @@ def do_login(
     password: str = Form(...),
     next: str = Form("/app"),
     session=Depends(db_session),
+    settings: Settings = Depends(settings_dep),
 ):
     if not settings.multi_user:
         return RedirectResponse("/app", status_code=303)
@@ -525,7 +541,13 @@ def do_login(
     wait = max(_login_ip.check(ip), _login_account.check(account))
     if wait > 0:
         return _auth_page(
-            request, "login", next=next, error=ratelimit.wait_message(wait), email=email, status=429
+            request,
+            "login",
+            settings,
+            next=next,
+            error=ratelimit.wait_message(wait),
+            email=email,
+            status=429,
         )
 
     try:
@@ -533,7 +555,9 @@ def do_login(
     except auth.AuthError as exc:
         _login_ip.record(ip)
         _login_account.record(account)
-        return _auth_page(request, "login", next=next, error=str(exc), email=email, status=400)
+        return _auth_page(
+            request, "login", settings, next=next, error=str(exc), email=email, status=400
+        )
 
     # A success clears both budgets. Someone who mistyped their password four
     # times and then remembered it should not carry those four into the rest
@@ -547,14 +571,14 @@ def do_login(
 
 
 @app.get("/register", response_class=HTMLResponse)
-def page_register(request: Request):
+def page_register(request: Request, settings: Settings = Depends(settings_dep)):
     if not settings.multi_user:
         return RedirectResponse("/app", status_code=303)
     if not settings.allow_registration:
         return _auth_page(
-            request, "login", error="registration is closed on this server", status=403
+            request, "login", settings, error="registration is closed on this server", status=403
         )
-    return _auth_page(request, "register")
+    return _auth_page(request, "register", settings)
 
 
 @app.post("/register", response_class=HTMLResponse)
@@ -564,19 +588,25 @@ def do_register(
     password: str = Form(...),
     invite: str = Form(""),
     session=Depends(db_session),
+    settings: Settings = Depends(settings_dep),
 ):
     if not settings.multi_user:
         return RedirectResponse("/app", status_code=303)
     if not settings.allow_registration:
         return _auth_page(
-            request, "login", error="registration is closed on this server", status=403
+            request, "login", settings, error="registration is closed on this server", status=403
         )
 
     ip = ratelimit.client_ip(request)
     wait = _register_ip.check(ip)
     if wait > 0:
         return _auth_page(
-            request, "register", error=ratelimit.wait_message(wait), email=email, status=429
+            request,
+            "register",
+            settings,
+            error=ratelimit.wait_message(wait),
+            email=email,
+            status=429,
         )
 
     if settings.invite_code and not compare_digest(invite.strip(), settings.invite_code):
@@ -584,14 +614,19 @@ def do_register(
         # guessable at whatever rate the network allows.
         _register_ip.record(ip)
         return _auth_page(
-            request, "register", error="that invite code is not valid", email=email, status=403
+            request,
+            "register",
+            settings,
+            error="that invite code is not valid",
+            email=email,
+            status=403,
         )
 
     try:
         user = auth.register(session, settings, email, password)
     except auth.AuthError as exc:
         _register_ip.record(ip)
-        return _auth_page(request, "register", error=str(exc), email=email, status=400)
+        return _auth_page(request, "register", settings, error=str(exc), email=email, status=400)
 
     response = RedirectResponse("/app", status_code=303)
     auth.issue(request, response, settings, user.id)
@@ -599,7 +634,11 @@ def do_register(
 
 
 @app.post("/logout")
-def do_logout(request: Request, session=Depends(db_session)):
+def do_logout(
+    request: Request,
+    session=Depends(db_session),
+    settings: Settings = Depends(settings_dep),
+):
     # Drop the activity log with the session. It is small and it is ephemeral,
     # but on a shared machine "sign out" has to mean the next person to use
     # this browser cannot read what the last one imported or exported.
@@ -634,6 +673,7 @@ def page_import(
     filter: str = "all",
     session=Depends(db_session),
     user: db.User = Depends(owner),
+    settings: Settings = Depends(settings_dep),
 ):
     jobs = session.scalars(
         select(db.ImportJob)
@@ -672,7 +712,7 @@ def page_import(
             "max_images": int(os.getenv("FOILSTACK_MAX_IMAGES", "5000")),
             "max_mb": settings.max_archive_mb,
             "conditions": inventory.CONDITIONS,
-            **_chrome(session, request, user),
+            **_chrome(session, request, user, settings),
         },
     )
 
@@ -692,6 +732,7 @@ def page_inventory(
     show: str = "stock",
     session=Depends(db_session),
     user: db.User = Depends(owner),
+    settings: Settings = Depends(settings_dep),
 ):
     rule = rule if rule in inventory.RULE_IDS else inventory.DEFAULT_RULE
     copies = inventory.items(session, user.id, rule)
@@ -738,7 +779,7 @@ def page_inventory(
             "counts": counts,
             "totals": inventory.totals(copies),
             "exporters": export_plugins().values(),
-            **_chrome(session, request, user),
+            **_chrome(session, request, user, settings),
         },
     )
 
@@ -750,6 +791,7 @@ def page_card(
     rule: str = inventory.DEFAULT_RULE,
     session=Depends(db_session),
     user: db.User = Depends(owner),
+    settings: Settings = Depends(settings_dep),
 ):
     """One card, and every copy of it you own, batched by the import it came in.
 
@@ -824,7 +866,7 @@ def page_card(
             "other_printings": [
                 pr for pr in (line["copies"][0].get("printings") or []) if pr not in held
             ],
-            **_chrome(session, request, user),
+            **_chrome(session, request, user, settings),
         },
     )
 
@@ -837,6 +879,7 @@ def page_listings(
     channel: list[str] | None = Query(None),
     session=Depends(db_session),
     user: db.User = Depends(owner),
+    settings: Settings = Depends(settings_dep),
 ):
     """A listing run: the selected rows, priced by one rule, for one or more
     marketplaces. It ends in a CSV — nothing here posts to a marketplace."""
@@ -886,7 +929,7 @@ def page_listings(
             "delta": run_value - market_value,
             "floor": inventory.FLOOR,
             "log": joblog.entries(user.id),
-            **_chrome(session, request, user),
+            **_chrome(session, request, user, settings),
         },
     )
 
@@ -896,6 +939,7 @@ def page_analytics(
     request: Request,
     session=Depends(db_session),
     user: db.User = Depends(owner),
+    settings: Settings = Depends(settings_dep),
 ):
     """Position, not performance.
 
@@ -951,7 +995,7 @@ def page_analytics(
             "by_game": [{"label": g, "value": v, "pct": f"{100 * v / peak:.0f}%"} for g, v in top],
             "listed_value": listed_value,
             "unlisted_value": totals["market"] - listed_value,
-            **_chrome(session, request, user),
+            **_chrome(session, request, user, settings),
         },
     )
 
@@ -961,6 +1005,7 @@ async def page_plugins(
     request: Request,
     session=Depends(db_session),
     user: db.User = Depends(owner),
+    settings: Settings = Depends(settings_dep),
 ):
     health = await encoder_health(settings.embedder_url)
     return templates.TemplateResponse(
@@ -973,7 +1018,7 @@ async def page_plugins(
             "encoder": health,
             "encoder_url": settings.embedder_url,
             "embed_model": settings.embed_model,
-            **_chrome(session, request, user),
+            **_chrome(session, request, user, settings),
         },
     )
 
@@ -992,6 +1037,7 @@ async def api_import(
     default_finish: str = Form("nonfoil"),
     session=Depends(db_session),
     user: db.User = Depends(api_owner),
+    settings: Settings = Depends(settings_dep),
 ):
     if not (archive.filename or "").lower().endswith(".zip"):
         raise HTTPException(400, "expected a .zip archive")
@@ -1569,7 +1615,7 @@ def export_csv(
 
 
 @app.get("/healthz", response_class=PlainTextResponse)
-def healthz() -> str:
+def healthz(settings: Settings = Depends(settings_dep)) -> str:
     """Liveness, and which build answered.
 
     The first line stays exactly `ok` so anything already watching this keeps

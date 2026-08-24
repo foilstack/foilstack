@@ -90,12 +90,12 @@ def app_and_data(database_url, tmp_path_factory):
 
     app = web.app
 
-    # `web.settings` is bound once, when the module is first imported. If any
-    # earlier test module imported it, that binding already happened against
-    # the developer's own database and clearing the cache above does not undo
-    # it — the app then talks to the wrong database and every test here fails
-    # on a password error that names nothing to do with test ordering.
-    web.settings = get_settings()
+    # Nothing to rebind any more: routes take settings through `settings_dep`,
+    # which calls the cached `get_settings()` per request, so the cache_clear
+    # above is enough. This used to need `web.settings = get_settings()`,
+    # because a module global bound at import kept whichever database the first
+    # importing module saw — and every test here then failed on a password
+    # error that named nothing to do with test ordering. That cost hours twice.
 
     db.init(database_url)
     session = db.session()
@@ -1104,15 +1104,28 @@ def test_the_quota_is_off_by_default(app_and_data):
 
 
 def _with_setting(monkeypatch, web, **changes):
-    """Swap the module's Settings for one with `changes` applied.
+    """Run the app with `changes` applied to its Settings.
 
-    Settings is frozen, which is the right call for a value read once at boot
-    and never meant to drift underneath a running request. It does mean a test
-    replaces the whole object rather than poking a field.
+    Overrides the `settings_dep` dependency rather than reassigning a module
+    global. The global only ever reached routes that lived in the same module
+    as it, so this stopped working the moment a route moved to its own file —
+    and it failed by silently using the real settings rather than by erroring.
+
+    Settings is frozen, which is right for a value read at boot and never meant
+    to drift under a running request, so a test replaces the whole object
+    rather than poking a field.
     """
     import dataclasses
 
-    monkeypatch.setattr(web, "settings", dataclasses.replace(web.settings, **changes))
+    from foilstack.config import get_settings
+    from foilstack.web import deps
+
+    changed = dataclasses.replace(get_settings(), **changes)
+    # `setitem`, not a plain assignment: monkeypatch undoes it at the end of
+    # the test. An override left in the dict applies to every later test in
+    # the module, and the failure then surfaces somewhere unrelated.
+    monkeypatch.setitem(web.app.dependency_overrides, deps.settings_dep, lambda: changed)
+    return changed
 
 
 def test_the_landing_page_knows_who_is_reading_it(app_and_data):
