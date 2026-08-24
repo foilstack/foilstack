@@ -99,6 +99,15 @@ class Card(Base):
     number: Mapped[str | None] = mapped_column(String(32))
     variant: Mapped[str | None] = mapped_column(String(64))
     image_url: Mapped[str | None] = mapped_column(Text)
+    # When upstream last answered 4xx for `image_url`.
+    #
+    # A catalogue this size is full of promo, staff and placeholder entries
+    # that have a URL and no image behind it — permanently. `embed` used to
+    # count those and forget them, so every subsequent run re-requested all of
+    # them to be told the same thing: ~2,900 pointless CDN requests per run on
+    # a 147k catalogue, growing with it. Recording the answer makes the second
+    # run cheap and keeps the daily request budget for cards that might work.
+    image_missing_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     market: Mapped[float | None] = mapped_column(Float)
     currency: Mapped[str] = mapped_column(String(8), default="USD")
     updated_at: Mapped[dt.datetime] = mapped_column(

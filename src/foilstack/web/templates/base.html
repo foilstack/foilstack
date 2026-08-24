@@ -80,7 +80,9 @@
 <div class="statusbar">
   <span>{% block status %}ready{% endblock %}</span>
   <div class="spacer"></div>
-  <span>price data: {{ price_source }} · synced {{ synced_ago }}</span>
+  <span>price data: {{ price_source }} · synced {{ synced_ago }}{% if unsynced_games %}
+    <span class="stale" title="Ingested but never price-synced — these hold the prices they were ingested with. Run `foilstack sync-prices --game all`.">no prices: {{ unsynced_games|join(', ') }}</span>
+  {% endif %}</span>
   <span>AGPL-3.0</span>
 </div>
 

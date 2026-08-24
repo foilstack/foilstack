@@ -94,6 +94,11 @@ async def cmd_embed(args) -> int:
     session = db.session()
 
     query = select(db.Card).where(db.Card.image_url.is_not(None))
+    if not args.retry_missing:
+        # Cards upstream has already said it has no image for. Skipped by
+        # default because that answer does not change: re-asking costs a
+        # request per card per run and returns the same 404.
+        query = query.where(db.Card.image_missing_at.is_(None))
     if not args.all:
         done = select(db.CardEmbedding.card_id).where(
             db.CardEmbedding.model == settings.embed_model
@@ -107,7 +112,18 @@ async def cmd_embed(args) -> int:
         if total == 0:
             log.error("no cards with images — run `ingest` first")
             return 2
+        skipped = (
+            session.scalar(
+                select(func.count(db.Card.id)).where(db.Card.image_missing_at.is_not(None))
+            )
+            or 0
+        )
         log.info("nothing to do — all %s cards are encoded with %s", total, settings.embed_model)
+        if skipped:
+            # Named rather than left as a silent gap between the catalogue
+            # count and the vector count, which otherwise looks like a
+            # half-finished encode that never finishes.
+            log.info("  (%s have no image upstream and are skipped)", skipped)
         return 0
 
     log.info(
@@ -172,6 +188,11 @@ async def cmd_embed(args) -> int:
             processed += 1
             if vector is MISSING:
                 missing += 1
+                # Recorded, not just counted. This is the whole point of the
+                # sentinel: a permanent answer is worth keeping.
+                card = session.get(db.Card, card_id)
+                if card is not None:
+                    card.image_missing_at = dt.datetime.now(dt.UTC)
             elif vector is None:
                 failed += 1
             else:
@@ -198,6 +219,8 @@ async def cmd_embed(args) -> int:
 
     session.commit()
     log.info("wrote %s vectors (%s have no image upstream, %s failed)", written, missing, failed)
+    if missing:
+        log.info("  those %s will be skipped from now on — `--retry-missing` to ask again", missing)
     # A batch where every remaining card simply has no image upstream is a
     # finished job, not a failed one — and on a resumed run over a large
     # catalogue that is exactly what the last batch looks like.
@@ -277,16 +300,14 @@ async def cmd_rematch(args) -> int:
 
 
 async def cmd_sync_prices(args) -> int:
-    """Refresh prices, and record the ones that moved.
+    """Refresh prices for one game, or for every game in the catalogue.
 
-    Follows TCGCSV's stated usage guidelines rather than polling blindly: their
-    files rebuild exactly once a day, they publish the build timestamp, and
-    they ask that a full sync run only when it is newer than your last pull.
-    So the first request is that timestamp, and on an unchanged one this exits
-    having made exactly one request.
-
-    History is appended only where a number actually changed. A catalogue that
-    has not moved writes nothing.
+    `--game all` exists because the alternative was a list someone has to
+    remember to update. Prices were synced for whatever games were named in an
+    environment variable, so ingesting a game and forgetting to add it there
+    left it priced at whatever `ingest` first saw — for good, with nothing
+    anywhere saying so. What should be synced is not a setting; it is whatever
+    has been ingested, which the database already knows.
     """
     settings = get_settings()
     db.init(settings.database_url)
@@ -297,39 +318,81 @@ async def cmd_sync_prices(args) -> int:
     if plugin is None:
         log.error("unknown source %r; available: %s", args.source, sorted(plugins))
         return 2
-    plugin = type(plugin)(game=args.game, set_code=args.set)
     if not hasattr(plugin, "fetch_prices"):
         log.error("%s does not publish prices", plugin.name)
         return 2
+
+    if args.game == "all":
+        games = list(
+            session.scalars(
+                select(db.Card.game)
+                .where(db.Card.source == plugin.name)
+                .distinct()
+                .order_by(db.Card.game)
+            ).all()
+        )
+        if not games:
+            log.error("no %s cards ingested yet — run `foilstack ingest` first", plugin.name)
+            return 2
+        log.info("syncing every ingested game: %s", " ".join(games))
+    else:
+        games = [args.game]
+
+    # Read once and shared across games. The build timestamp is one file
+    # covering the whole source, so asking for it per game would multiply the
+    # cheapest part of this by the number of catalogues for no new information.
+    stamp = None
+    probe = type(plugin)(game=games[0], set_code=args.set)
+    if hasattr(probe, "last_updated"):
+        try:
+            stamp = await probe.last_updated()
+        except Exception as exc:  # noqa: BLE001 - a missing stamp is not fatal
+            log.warning("could not read upstream timestamp (%s)", type(exc).__name__)
+
+    worst = 0
+    for game in games:
+        code = await _sync_one_game(session, plugin, game, stamp, args)
+        worst = max(worst, code)
+    return worst
+
+
+async def _sync_one_game(session, plugin, game: str, stamp: str | None, args) -> int:
+    """Refresh prices for one game.
+
+    Follows TCGCSV's stated usage guidelines rather than polling blindly: their
+    files rebuild exactly once a day, they publish the build timestamp, and
+    they ask that a full sync run only when it is newer than your last pull.
+    So on an unchanged stamp this returns having made no requests at all.
+
+    History is appended only where a number actually changed. A catalogue that
+    has not moved writes nothing.
+    """
+    plugin = type(plugin)(game=game, set_code=args.set)
 
     # Keyed per game, not per source. One row for the whole source meant a
     # successful Magic sync recorded the upstream stamp globally, and every
     # other catalogue then saw its own first run as "already up to date" and
     # never pulled a price.
-    kind = f"prices:{args.game}"
+    kind = f"prices:{game}"
     state = session.get(db.SyncState, (plugin.name, kind))
-    stamp = None
-    if hasattr(plugin, "last_updated"):
-        try:
-            stamp = await plugin.last_updated()
-        except Exception as exc:  # noqa: BLE001 - a missing stamp is not fatal
-            log.warning("could not read upstream timestamp (%s)", type(exc).__name__)
-        if stamp and state is not None and state.upstream_stamp == stamp and not args.force:
-            log.info("upstream unchanged since %s — nothing to do", stamp)
-            state.last_run_at = _now()
-            session.commit()
-            return 0
-    log.info("syncing %s prices (upstream build %s)", args.game, stamp or "unknown")
+    if stamp and state is not None and state.upstream_stamp == stamp and not args.force:
+        log.info("%s: upstream unchanged since %s — nothing to do", game, stamp)
+        state.last_run_at = _now()
+        session.commit()
+        return 0
+    log.info("syncing %s prices (upstream build %s)", game, stamp or "unknown")
 
     # Map upstream ids to our card rows once, rather than querying per price.
     cards = {
         source_id.split(":", 1)[-1]: card_id
         for card_id, source_id in session.execute(
-            select(db.Card.id, db.Card.source_id).where(db.Card.source == plugin.name)
+            select(db.Card.id, db.Card.source_id).where(
+                db.Card.source == plugin.name, db.Card.game == game
+            )
         ).all()
     }
     if not cards:
-        log.error("no %s cards ingested yet — run `foilstack ingest` first", plugin.name)
+        log.error("no %s %s cards ingested yet — run `foilstack ingest` first", plugin.name, game)
         return 2
 
     today = dt.date.today()
@@ -380,10 +443,10 @@ async def cmd_sync_prices(args) -> int:
              WHERE market IS NOT NULL
              ORDER BY card_id, (sub_type ILIKE '%foil%'), market
           ) p
-         WHERE p.card_id = c.id AND c.source = :source
+         WHERE p.card_id = c.id AND c.source = :source AND c.game = :game
            AND (c.market IS DISTINCT FROM p.market)
     """),
-        {"source": plugin.name},
+        {"source": plugin.name, "game": game},
     )
 
     session.merge(
@@ -397,7 +460,7 @@ async def cmd_sync_prices(args) -> int:
         )
     )
     session.commit()
-    log.info("synced %s printings, %s price changes recorded", seen, changed)
+    log.info("%s: synced %s printings, %s price changes recorded", game, seen, changed)
     return 0
 
 
@@ -445,6 +508,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="re-encode cards that already have a vector for this model",
     )
+    p_embed.add_argument(
+        "--retry-missing",
+        action="store_true",
+        help="also try cards upstream previously had no image for",
+    )
     p_embed.set_defaults(fn=cmd_embed, is_async=True)
 
     p_sets = sub.add_parser("sets", help="list the sets a source can fetch")
@@ -471,7 +539,11 @@ def main(argv: list[str] | None = None) -> int:
         help="refresh prices and record the ones that changed",
     )
     p_sync.add_argument("--source", default="tcgcsv")
-    p_sync.add_argument("--game", default="magic")
+    p_sync.add_argument(
+        "--game",
+        default="all",
+        help="one game, or 'all' for every game in the catalogue (default)",
+    )
     p_sync.add_argument("--set", default=None, help="one set only")
     p_sync.add_argument(
         "--force",

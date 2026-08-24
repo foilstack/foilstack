@@ -1155,3 +1155,11 @@ body.site { background: var(--paper); }
 .panel-wrong-open { font-size: 11.5px; text-decoration: underline; text-underline-offset: 2px; text-decoration-style: dotted; }
 .panel-wrong .qfix { margin-top: 8px; }
 .panel-wrong .qfix-list { grid-template-columns: 1fr; max-height: 220px; }
+
+/* A game that is ingested but has never been price-synced. Stated in the
+   status bar because the alternative is finding out from a card whose price
+   never moves. */
+.statusbar .stale {
+  margin-left: 6px; padding: 0 5px; border-radius: 2px;
+  border: 1px solid var(--warn-line); background: var(--warn-tint); color: var(--warn);
+}
