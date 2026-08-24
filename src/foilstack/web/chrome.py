@@ -56,10 +56,24 @@ def _asset_version() -> str:
     Every file that carries this query string has to be hashed into it. The
     stylesheet alone was enough until there was a script too: a JS change with
     no CSS change would have shipped a stale script behind an unchanged
-    version, which is the same bug wearing a different hat.
+    version, which is the same bug wearing a different hat. `app.js` joined
+    the list the moment it existed, for the same reason — it holds the code
+    the screens share, so it is the one script whose staleness breaks more
+    than one page.
     """
     digest = hashlib.sha256()
-    for name in ("app.css", "zoom.js", "brand/mark.svg", "brand/favicon.svg"):
+    for name in (
+        "app.css",
+        "app.js",
+        "zoom.js",
+        "brand/mark.svg",
+        "brand/favicon.svg",
+        # The two raster icons were served with `?v=` from the beginning and
+        # hashed into it by nobody, so a new favicon would have sat behind a
+        # version that never moved. Found by the test, not by a person.
+        "brand/favicon-32.png",
+        "brand/apple-touch-icon.png",
+    ):
         try:
             digest.update((BASE_DIR / "static" / name).read_bytes())
         except OSError:

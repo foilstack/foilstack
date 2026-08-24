@@ -152,7 +152,9 @@ Two habits worth keeping:
   shrink after wrapping, within a line.
 * **Bump `_asset_version()` inputs when you add a static file.** It hashes the
   files it knows about; one it does not know about ships behind a stale query
-  string.
+  string, and the deploy then looks like it did nothing. `tests/test_assets.py`
+  now walks the templates for `?v=` and fails on any asset missing from the
+  hash — it found two that had been wrong since the beginning.
 * **`finish` and `sub_type` are both on `inventory`, deliberately.** "Foil or
   not" is answerable once for a whole batch on the import screen; "1st Edition
   Holofoil or Holofoil" — $10,000 or $855 for the same Charizard — is not. The
@@ -195,6 +197,16 @@ Two habits worth keeping:
   shipping are absent rather than estimated, because foilstack never sees them.
 * Nothing posts to a marketplace. "Channels" are CSV formats, and the button
   that records a sale says `Mark sold`, not `Push`.
+* **Front end: no build step, no framework.** Behaviour shared by more than one
+  screen belongs in `static/app.js`, which exposes `$`, `$$`, `postJSON`,
+  `postForm` and `wireCardSearch` as plain globals. A page's own script goes in
+  a `scripts` block, which `base.html` emits *after* `app.js`; a script written
+  inline in a screen's markup instead runs before the helpers exist. Redeclaring
+  one of those names in a page script is a `SyntaxError`, not a shadow — two
+  top-level `const`s of one name in classic scripts collide.
+* Jinja parses its tags inside HTML comments, so an `<!-- -->` comment that
+  names a block opens one, and the template dies at the next `endblock`. Use a
+  `{# ... #}` comment when the text needs to mention a tag.
 
 ## Deployment
 

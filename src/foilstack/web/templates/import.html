@@ -205,10 +205,10 @@
   </div>
 
 </div>
+{% endblock %}
 
+{% block scripts %}
 <script>
-const $ = (s, r) => (r || document).querySelector(s);
-const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
 
 /* ---------- import pane ---------- */
 const drop = $('#drop'), fileInput = $('#file'), chip = $('#filechip');
@@ -356,32 +356,10 @@ async function toggleFix(row) {
 
 function wireFix(row, box) {
   $('[data-fix-close]', box).addEventListener('click', () => { box.hidden = true; });
-
-  const q = $('[data-fix-q]', box);
-  const game = $('[data-fix-game]', box);
-  const out = $('[data-fix-results]', box);
-
-  // Debounced, because every keystroke is a substring search over the whole
-  // catalogue. 200ms is below the point a search box feels laggy and well
-  // above typing speed.
-  let timer = null, seq = 0;
-  async function run() {
-    const mine = ++seq;
-    const url = '/api/cards/search?q=' + encodeURIComponent(q.value) +
-                '&game=' + encodeURIComponent(game.value);
-    const res = await fetch(url);
-    if (!res.ok || mine !== seq) return;  // a later keystroke already won
-    out.innerHTML = await res.text();
-  }
-  const later = () => { clearTimeout(timer); timer = setTimeout(run, 200); };
-  q.addEventListener('input', later);
-  game.addEventListener('change', run);
-
-  box.addEventListener('click', ev => {
-    const pick = ev.target.closest('[data-pick]');
-    if (pick) applyPick(row, box, pick);
-  });
-  run();
+  // Debounce, stale-response guard and pick delegation all live in
+  // wireCardSearch(); the inventory drawer opens the same panel. What is
+  // local to the queue is what a pick does to the row, below.
+  wireCardSearch(box, { onPick: pick => applyPick(row, box, pick) });
 }
 
 async function applyPick(row, box, pick) {
@@ -389,9 +367,9 @@ async function applyPick(row, box, pick) {
   // looked identical to one that had been recorded, right up until a reload
   // threw it away — so the write happens first and the row is only redrawn
   // once the server has it.
-  const body = new URLSearchParams({ card_id: pick.dataset.pick });
-  const res = await fetch('/api/scans/' + row.dataset.scan + '/choose', { method: 'POST', body });
-  if (!res.ok) { alert('could not save that choice'); return; }
+  const saved = await postForm('/api/scans/' + row.dataset.scan + '/choose',
+    { card_id: pick.dataset.pick }, { error: 'could not save that choice' });
+  if (!saved) return;
 
   row.dataset.card = pick.dataset.pick;
   $('.qname', row).textContent = pick.dataset.name;
@@ -416,7 +394,7 @@ async function applyPick(row, box, pick) {
   const conf = $('.qconf', row);
   if (conf) {
     conf.textContent = '';
-    conf.appendChild(document.getElementById('tpl-chosen').content.cloneNode(true));
+    conf.appendChild($('#tpl-chosen').content.cloneNode(true));
   }
 
   // A row corrected by hand always has something to confirm, even if the
@@ -435,17 +413,17 @@ async function applyPick(row, box, pick) {
 
 async function confirmRow(row) {
   if (!row.dataset.card) return;
-  const body = new URLSearchParams({
+  const saved = await postForm('/api/scans/' + row.dataset.scan + '/confirm', {
     card_id: row.dataset.card,
     condition: row.dataset.cond,
     finish: row.dataset.finish,
-  });
-  const res = await fetch('/api/scans/' + row.dataset.scan + '/confirm', { method: 'POST', body });
-  if (res.ok) fade(row);
+  }, { error: 'could not confirm that card' });
+  if (saved) fade(row);
 }
 async function discardRow(row) {
-  const res = await fetch('/api/scans/' + row.dataset.scan + '/discard', { method: 'POST' });
-  if (res.ok) fade(row);
+  const gone = await postForm('/api/scans/' + row.dataset.scan + '/discard', null,
+    { error: 'could not discard that scan' });
+  if (gone) fade(row);
 }
 function fade(row) {
   row.style.transition = 'opacity .15s';
@@ -459,26 +437,20 @@ $('#commit').addEventListener('click', async () => {
     condition: r.dataset.cond, finish: r.dataset.finish,
   }));
   if (!rows.length) return;
-  const res = await fetch('/api/scans/commit', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ rows }),
-  });
-  if (!res.ok) return;
+  const out = await postJSON('/api/scans/commit', { rows },
+    { error: 'could not add those cards to inventory' });
+  if (!out) return;
   // Land on the cards that still need a printing chosen, when there are any:
   // they are priced on a guess, and a guess that nobody is shown is a price
   // nobody checks.
-  const out = await res.json();
   location.href = out.needs_printing ? '/inventory?show=printing' : '/inventory';
 });
 
 $('#discard-all').addEventListener('click', async () => {
   const ids = $$('.qrow').filter(r => r.dataset.review === '1').map(r => +r.dataset.scan);
   if (!ids.length) return;
-  const res = await fetch('/api/scans/discard-all', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ scan_ids: ids }),
-  });
-  if (res.ok) location.reload();
+  if (await postJSON('/api/scans/discard-all', { scan_ids: ids },
+      { error: 'could not discard those scans' })) location.reload();
 });
 </script>
 {% endblock %}
