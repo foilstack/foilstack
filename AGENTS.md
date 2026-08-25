@@ -5,7 +5,11 @@ people deciding whether to run it; this is for people changing it.
 
 ## Shape of the thing
 
-A `.zip` of card photographs goes in. Each image is encoded by a DINOv3 service
+Card photographs go in — loose files, or a `.zip` of them. Loose uploads are
+packed into an archive in `api_import` before anything else touches them, so
+the traversal checks, the expansion ceiling, the duplicate-name suffixing and
+the image cap all stay in `extract_archive` with one implementation rather than
+two. Each image is encoded by a DINOv3 service
 and searched against a catalogue of reference images held in Postgres with
 pgvector. Confident matches go straight to inventory; everything else waits in a
 review queue. Inventory becomes a CSV the seller uploads to a marketplace

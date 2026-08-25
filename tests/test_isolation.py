@@ -1136,6 +1136,143 @@ def test_the_quota_is_off_by_default(app_and_data):
     assert Settings.max_account_mb == 0
 
 
+def _import(app, files):
+    """POST files to /api/import as the owner, and return the response."""
+    return _signed_in(app).post(
+        "/api/import",
+        files=[("archive", f) for f in files],
+        data={"default_condition": "NM", "default_finish": "nonfoil"},
+    )
+
+
+def _unpacked(job_id):
+    """The image filenames an import job actually landed on disk.
+
+    Read from the scans directory rather than from `scans` rows: run_import
+    unpacks the archive and records the count before it looks for catalogue
+    vectors, and there are none in this fixture, so it stops before writing a
+    single row. The files on disk are what the unpacking step produced.
+    """
+    from foilstack.config import get_settings
+
+    out = get_settings().scans_dir / str(job_id)
+    return sorted(p.name for p in out.iterdir()) if out.is_dir() else []
+
+
+def test_loose_images_import_without_being_zipped_first(app_and_data):
+    """The screen offers jpg/png/tif, so handing it a jpg has to work.
+
+    It used to accept nothing but a .zip while advertising the image formats
+    that go *inside* one, which read as a broken uploader rather than as a
+    label about archive contents.
+    """
+    app, _ = app_and_data
+    response = _import(
+        app,
+        [("front.jpg", b"x" * 64, "image/jpeg"), ("back.png", b"y" * 64, "image/png")],
+    )
+    assert response.status_code == 200, response.text
+
+    from foilstack import db
+
+    session = db.session()
+    job = session.get(db.ImportJob, response.json()["job_id"])
+    # `total` is committed by run_import once the archive is unpacked, before
+    # it gives up for want of catalogue vectors — so it proves the wrapping
+    # and the extraction both worked without needing an encoder here.
+    assert job.total == 2
+    assert job.filename == "2 images"
+    assert _unpacked(job.id) == ["back.png", "front.jpg"]
+    session.close()
+
+
+def test_one_loose_image_is_named_after_itself(app_and_data):
+    """A single scan should say what it is, not "1 images"."""
+    app, _ = app_and_data
+    response = _import(app, [("solo.jpg", b"x" * 64, "image/jpeg")])
+    assert response.status_code == 200, response.text
+
+    from foilstack import db
+
+    session = db.session()
+    assert session.get(db.ImportJob, response.json()["job_id"]).filename == "solo.jpg"
+    session.close()
+
+
+def test_loose_images_sharing_a_filename_both_survive(app_and_data):
+    """Two phone folders both hold IMG_0001.jpg, and both are real scans.
+
+    Packing loose uploads into an archive means the extractor's existing
+    de-duplication covers this case too, rather than one of them silently
+    overwriting the other.
+    """
+    app, _ = app_and_data
+    response = _import(
+        app,
+        [("IMG.jpg", b"aaaa", "image/jpeg"), ("IMG.jpg", b"bbbb", "image/jpeg")],
+    )
+    assert response.status_code == 200, response.text
+
+    from foilstack import db
+
+    session = db.session()
+    job_id = response.json()["job_id"]
+    assert session.get(db.ImportJob, job_id).total == 2
+    assert _unpacked(job_id) == ["IMG-1.jpg", "IMG.jpg"]
+    session.close()
+
+
+def test_an_archive_is_still_accepted(app_and_data):
+    """The zip path is the original one and must not regress."""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.jpg", b"x" * 32)
+        zf.writestr("notes.txt", b"ignored")
+
+    app, _ = app_and_data
+    response = _import(app, [("cards.zip", buf.getvalue(), "application/zip")])
+    assert response.status_code == 200, response.text
+
+    from foilstack import db
+
+    session = db.session()
+    job = session.get(db.ImportJob, response.json()["job_id"])
+    assert job.filename == "cards.zip"
+    assert _unpacked(job.id) == ["a.jpg"]
+    session.close()
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        pytest.param([("notes.txt", b"x", "text/plain")], id="not-a-scan"),
+        pytest.param(
+            [
+                ("a.zip", b"PK\x05\x06" + b"\0" * 18, "application/zip"),
+                ("b.jpg", b"x", "image/jpeg"),
+            ],
+            id="archive-plus-image",
+        ),
+        pytest.param(
+            [
+                ("a.zip", b"PK\x05\x06" + b"\0" * 18, "application/zip"),
+                ("b.zip", b"PK\x05\x06" + b"\0" * 18, "application/zip"),
+            ],
+            id="two-archives",
+        ),
+    ],
+)
+def test_uploads_that_are_neither_one_archive_nor_images_are_refused(app_and_data, files):
+    """Guessing at a muddled upload is worse than saying what was expected."""
+    app, _ = app_and_data
+    response = _import(app, files)
+    assert response.status_code == 400
+    assert "expected one .zip archive" in response.json()["detail"]
+
+
 def _with_setting(monkeypatch, web, **changes):
     """Run the app with `changes` applied to its Settings.
 
