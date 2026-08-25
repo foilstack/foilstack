@@ -70,26 +70,51 @@ FRAME_MS = 100
 GIF_WIDTH = 1000
 GIF_COLORS = 192
 
-# What the WebP costs. Four times the pixels at the old 72 does not fit under
-# the repository's 2048 KB file hook, and WebP spends the difference on
-# gradients rather than on edges — so text and card borders, which are what
-# this animation is actually made of, survive the drop better than the number
-# suggests.
+# What the WebP costs.
 #
-# 46 rather than something higher because width is what buys sharpness here,
-# not quality. Compared side by side at the size a retina screen actually
-# paints, 58 and 46 are indistinguishable on this material, and 46 leaves
-# 150 KB of headroom under the hook where 58 left 23 — which is less than the
-# next beat added to this demo would cost.
-WEBP_QUALITY = 46
+# This was 46 for one release, chosen to fit the repository's 2048 KB commit
+# hook. That hook never applied: `check-added-large-files` only inspects files
+# being *added*, and this one has been tracked since the beginning, so every
+# re-record went through as a modification and was waved past. The quality was
+# paying for a limit nobody was enforcing, and it showed — text edges were
+# visibly soft against the same frames at 72.
+#
+# 72 rather than 80: side by side at the size a retina screen paints, 80 is
+# marginally cleaner on card art and indistinguishable on text, for another
+# 550 KB. This is a hero image on a landing page, not an archive master.
+WEBP_QUALITY = 72
 
-# The WebP is written narrower than it is captured. Frames come off the browser
-# at 2000px so the downsample has something to work with, but 2000px of WebP
-# does not fit under the repository's 2048 KB file hook at any quality worth
-# shipping — measured, not guessed: 2000px bottoms out at 2.20 MB. 1600 lands
-# under the limit and still carries 1.6x the detail of the 1000px original,
-# which is most of the difference on the screens people actually use.
-WEBP_WIDTH = 1600
+# Written at the width it was captured — no downsample.
+#
+# Also a leftover from the phantom size limit: 1600 was the widest that fit
+# under it, which made the landing page upscale by 1.25 on top of whatever the
+# screen was already doing. At 2000 the desktop case is exactly 1:1 on a
+# device-pixel-ratio of 2, which is the common one.
+#
+# Mobile is the case that stays hard. The hero crops to a 2:3 slice with
+# `object-fit: cover`, which zooms *in* — so a phone needs more pixels per
+# visible area than a desktop does, not fewer. Serving phones a smaller file
+# would blur the one view that is already most magnified. Fixing that properly
+# means recording a pre-cropped variant of just the queue column, which is a
+# second asset and a second beat list, and is not done here.
+WEBP_WIDTH = 2000
+
+# The phone copy, cropped rather than shrunk.
+#
+# The landing page already crops the hero on a phone — `aspect-ratio: 2/3` with
+# `object-fit: cover`, right-aligned onto the review queue, because the whole
+# thousand-pixel frame at three hundred is a grey smudge. Doing that crop in
+# the browser means the phone downloads the entire frame and throws most of it
+# away, and `cover` on a 2:3 box *magnifies* what is left — so the one view
+# that is already blown up largest was also the one with the fewest pixels
+# behind it.
+#
+# Cropping here fixes both ends: the file is smaller because it is 42% of the
+# frame, and it is sharper because those pixels are native rather than scaled
+# up. The geometry has to match the stylesheet exactly — right-aligned, full
+# height, width = height * 2/3 — or the phone crops an already-cropped image
+# and the queue slides out of frame.
+MOBILE_ASPECT = (2, 3)
 
 # The pointer the browser will not draw for us. Without it a click is a screen
 # that changes for no visible reason, which reads as a cut rather than an
@@ -351,6 +376,21 @@ def assemble(
         method=6,
     )
 
+    # The phone copy: the stylesheet's own crop, applied to the master.
+    mob_w = round(images[0].height * MOBILE_ASPECT[0] / MOBILE_ASPECT[1])
+    box = (images[0].width - mob_w, 0, images[0].width, images[0].height)
+    cropped = [im.crop(box) for im in images]
+    mobile = out.with_name(f"{out.name}-mobile.webp")
+    cropped[0].save(
+        mobile,
+        save_all=True,
+        append_images=cropped[1:],
+        duration=frame_ms,
+        loop=0,
+        quality=webp_quality,
+        method=6,
+    )
+
     small = _resized(images, gif_width)
     # One palette for the whole run, not one per frame. Per-frame palettes make
     # the background shimmer between frames, which is far more distracting than
@@ -374,7 +414,7 @@ def assemble(
         disposal=1,
     )
 
-    for path in (webp, gif):
+    for path in (webp, mobile, gif):
         size = path.stat().st_size / 1048576
         print(f"  {path}  {size:.1f} MB  ({len(images)} frames)")
 

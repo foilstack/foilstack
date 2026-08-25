@@ -61,9 +61,10 @@ uv run python scripts/preview.py --demo src/foilstack/web/static/demo
 ```
 
 Same disposable database as `--shots`, so nobody's real inventory is ever on
-camera. It writes two committed files — a WebP the landing page prefers and a
-GIF the README falls back to — plus a gitignored webm, which is the one to post
-anywhere that takes real video.
+camera. It writes three committed files — a full-frame WebP the landing page
+prefers, a 2:3 crop of the review queue for phones, and a GIF the README falls
+back to — plus a gitignored webm, which is the one to post anywhere that takes
+real video.
 
 Then watch it. Every fault this has had was invisible in the code and obvious in
 the output: scrolls that silently moved nothing and vanished from the GIF when
@@ -81,6 +82,14 @@ widest that fits the hook. 2000px does not fit at any quality worth shipping.
 Width is what buys sharpness on this material — flat panels and text — so the
 quality number is low (46) and looks identical to 58 side by side, while
 leaving headroom the next beat will need.
+
+The phone crop is cut at record time, not by the browser. The stylesheet
+already crops the hero below 640px — `aspect-ratio: 2/3`, `object-fit: cover`,
+right-aligned onto the queue — and doing that in CSS meant a phone downloaded
+the whole frame, discarded 58% of it, and then *magnified* what was left. The
+recorder now cuts the same geometry from the master: 1.3 MB instead of 3.1, and
+native pixels instead of upscaled ones. `MOBILE_ASPECT` has to keep matching
+the media query, or the browser crops an already-cropped image.
 
 The preview seeds runners-up, not just the top match. It used to seed one
 candidate per scan, which quietly made the demo argue less than the product
