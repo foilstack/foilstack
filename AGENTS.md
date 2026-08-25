@@ -61,16 +61,31 @@ uv run python scripts/preview.py --demo src/foilstack/web/static/demo
 ```
 
 Same disposable database as `--shots`, so nobody's real inventory is ever on
-camera. It writes the committed GIF plus a WebP and a webm that are gitignored —
-the webm is the one to post anywhere that takes real video.
+camera. It writes two committed files — a WebP the landing page prefers and a
+GIF the README falls back to — plus a gitignored webm, which is the one to post
+anywhere that takes real video.
 
 Then watch it. Every fault this has had was invisible in the code and obvious in
 the output: scrolls that silently moved nothing and vanished from the GIF when
 identical frames collapsed, a queue seeded with the same card twice, a price
 trend panel reading "no price history" on the one card chosen to show it off.
-The size ceiling is the `check-added-large-files` hook at 2048 KB — fit under
-it by scrolling less rather than by dropping the frame rate, because a scroll at
-five frames a second reads as broken.
+The size ceiling is the `check-added-large-files` hook at 2048 KB, and both
+files sit within about 150 KB of it — fit under by scrolling less rather than by
+dropping the frame rate, because a scroll at five frames a second reads as
+broken.
+
+Capture is at `device_scale_factor=2` and the WebP is written down to 1600px.
+Those are separate numbers on purpose: the browser is asked for twice the CSS
+size so the downsample has real detail to work from, and 1600 is simply the
+widest that fits the hook. 2000px does not fit at any quality worth shipping.
+Width is what buys sharpness on this material — flat panels and text — so the
+quality number is low (46) and looks identical to 58 side by side, while
+leaving headroom the next beat will need.
+
+The preview seeds runners-up, not just the top match. It used to seed one
+candidate per scan, which quietly made the demo argue less than the product
+does: `also matched: ...` never rendered on a queue row, and the "wrong card?"
+panel opened on a heading promising a choice above a single option.
 
 ## Formatting and types
 

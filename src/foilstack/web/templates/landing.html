@@ -52,15 +52,17 @@
     {% else %}Your scans are processed on the host running this and are never sent anywhere else.{% endif %}
   </p>
 
-  {# WebP first: same fifteen seconds at a third fewer bytes and without the
-     256-colour banding. The GIF is the fallback, and every browser has one. #}
+  {# WebP first: the same run at 1600px and without the 256-colour banding,
+     which is what makes it legible on a screen that paints two device pixels
+     per CSS pixel. The GIF is the fallback and is 640px, so it is the one
+     that looks soft — every browser has one, and almost none of them use it. #}
   <figure class="hero-demo">
     <picture>
       <source srcset="/static/demo/foilstack.webp?v={{ asset_v }}" type="image/webp">
       <img src="/static/demo/foilstack.gif?v={{ asset_v }}" width="1000" height="625"
            alt="Reviewing matched cards, confirming them into inventory, opening a card to see its price trend, and exporting the selection as a marketplace CSV">
     </picture>
-    <figcaption>The whole loop, in about fifteen seconds. No narration — there is nothing to listen to.</figcaption>
+    <figcaption>The whole loop — including fixing a match it got wrong — in under twenty seconds. No narration: there is nothing to listen to.</figcaption>
   </figure>
 </section>
 

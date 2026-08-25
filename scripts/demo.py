@@ -28,11 +28,20 @@ import tempfile
 from pathlib import Path
 
 from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 # 1000px wide reads at README width without the file becoming enormous. The
 # 10:6.25 shape is the app's own proportions; anything squarer crops the rail
 # or the queue, which are the two things worth seeing.
 WIDTH, HEIGHT = 1000, 625
+
+# Capture at twice the CSS size. The page is laid out at 1000 CSS pixels and
+# the landing page displays it at 1000 too, so at a scale factor of 1 there
+# were exactly enough pixels for a monitor nobody has owned for a decade —
+# every modern laptop and phone doubles it on the way to the screen, and the
+# result is the soft, slightly smeared demo this replaced. The frames get
+# bigger; the WebP quality setting is what pays for it.
+DEVICE_SCALE = 2
 
 # Milliseconds per frame in the finished GIF. 100ms (10fps) is smooth enough
 # for a cursor and a scroll, and coarse enough that a twenty second story does
@@ -49,6 +58,27 @@ FRAME_MS = 100
 # second reads as broken; less scrolling at ten reads as brisk.
 GIF_WIDTH = 640
 GIF_COLORS = 128
+
+# What the WebP costs. Four times the pixels at the old 72 does not fit under
+# the repository's 2048 KB file hook, and WebP spends the difference on
+# gradients rather than on edges — so text and card borders, which are what
+# this animation is actually made of, survive the drop better than the number
+# suggests.
+#
+# 46 rather than something higher because width is what buys sharpness here,
+# not quality. Compared side by side at the size a retina screen actually
+# paints, 58 and 46 are indistinguishable on this material, and 46 leaves
+# 150 KB of headroom under the hook where 58 left 23 — which is less than the
+# next beat added to this demo would cost.
+WEBP_QUALITY = 46
+
+# The WebP is written narrower than it is captured. Frames come off the browser
+# at 2000px so the downsample has something to work with, but 2000px of WebP
+# does not fit under the repository's 2048 KB file hook at any quality worth
+# shipping — measured, not guessed: 2000px bottoms out at 2.20 MB. 1600 lands
+# under the limit and still carries 1.6x the detail of the 1000px original,
+# which is most of the difference on the screens people actually use.
+WEBP_WIDTH = 1600
 
 # The pointer the browser will not draw for us. Without it a click is a screen
 # that changes for no visible reason, which reads as a cut rather than an
@@ -117,6 +147,21 @@ class Recorder:
         self.frame(settle)
         return True
 
+    def wait_for(self, selector: str, timeout: int = 5000) -> bool:
+        """Wait for something a previous click went to the server for.
+
+        Returns False rather than raising, for the same reason `click` does: a
+        beat that cannot play is worth skipping, and a demo that dies two
+        thirds of the way through is worse than one that is a beat short.
+        """
+        try:
+            self.page.wait_for_selector(selector, timeout=timeout)
+        except PlaywrightTimeout:
+            print(f"demo: {selector} never arrived, skipping that beat", file=sys.stderr)
+            return False
+        self.page.evaluate(CURSOR_JS)
+        return True
+
     def scroll(self, total: int, steps: int = 10) -> None:
         """Scroll whichever pane on this screen actually scrolls.
 
@@ -177,16 +222,45 @@ def storyboard(rec: Recorder, base: str, card_id: int | None = None) -> None:
     rec.scroll(360, steps=8)
     rec.frame(6)
 
-    # 2. Confirming one. The row leaves the queue, which is the whole loop in
-    #    a single visible move.
-    rec.click(".qrow [data-confirm]", settle=10)
+    # 2. Correcting one. The queue's real claim is not that the matcher is
+    #    always right — it is that being wrong is recoverable in two clicks,
+    #    which is the question every seller asks about a tool like this. The
+    #    panel is fetched on demand and then runs its own search, so the beat
+    #    waits for the options rather than guessing at a duration.
+    #
+    #    Aimed at a row that has runners-up, not just any row. `.qalt-swap`
+    #    only renders when the scan has alternates, so `:has()` picks a scan
+    #    whose panel will show the "Also matched this scan" strip — the first
+    #    take corrected a scan with a single candidate, and a panel headed
+    #    "Pick the right card" above one option argues against itself.
+    corrected = False
+    if rec.click(".qrow:has(.qalt-swap) [data-fix]", settle=4) and rec.wait_for(
+        ".qrow .qfix .qfix-list:not([data-fix-results]) [data-pick]"
+    ):
+        rec.frame(8)
+        # A runner-up, not a search result: the point of the beat is that the
+        # answer was already on the page.
+        corrected = rec.click(
+            ".qrow .qfix .qfix-list:not([data-fix-results]) [data-pick]", settle=12
+        )
 
-    # 3. Inventory: consolidated by card, with quantities and value.
+    # 3. Confirming it. The row leaves the queue, which is the whole loop in a
+    #    single visible move — and it is the row just corrected, so the two
+    #    beats read as one thought rather than two features.
+    #    A corrected row wears the chosen icon in place of a match bar, which
+    #    is how this finds it again — confirming a different row would turn one
+    #    thought into two unrelated demonstrations.
+    rec.click(
+        ".qrow:has(.qconf svg) [data-confirm]" if corrected else ".qrow [data-confirm]",
+        settle=10,
+    )
+
+    # 4. Inventory: consolidated by card, with quantities and value.
     rec.click('.nav-item[href="/inventory"]', settle=12)
     rec.scroll(300, steps=7)
     rec.frame(6)
 
-    # 4. Into a card. The price trend is the thing no spreadsheet gives you, so
+    # 5. Into a card. The price trend is the thing no spreadsheet gives you, so
     #    this beat holds longest.
     #
     #    The link, not the row: clicking the row lands on its checkbox and
@@ -206,7 +280,7 @@ def storyboard(rec: Recorder, base: str, card_id: int | None = None) -> None:
     rec.scroll(280, steps=7)
     rec.frame(14)
 
-    # 5. Back out, select everything, and take it to the listing screen —
+    # 6. Back out, select everything, and take it to the listing screen —
     #    ending on the CSV, because that is what the tool is for.
     rec.goto(f"{base}/inventory", settle=4)
     rec.click("#all", settle=5)
@@ -215,12 +289,24 @@ def storyboard(rec: Recorder, base: str, card_id: int | None = None) -> None:
     rec.frame(12)
 
 
+def _resized(images, width):
+    """Downscale a run of frames, or hand them back untouched at native width."""
+    from PIL import Image
+
+    if width >= images[0].width:
+        return images
+    scale = width / images[0].width
+    return [im.resize((width, round(im.height * scale)), Image.Resampling.LANCZOS) for im in images]
+
+
 def assemble(
     frames_dir: Path,
     out: Path,
     frame_ms: int = FRAME_MS,
     gif_width: int = GIF_WIDTH,
     gif_colors: int = GIF_COLORS,
+    webp_quality: int = WEBP_QUALITY,
+    webp_width: int = WEBP_WIDTH,
 ) -> None:
     """Write the animation twice, for two different jobs.
 
@@ -240,20 +326,21 @@ def assemble(
     out.parent.mkdir(parents=True, exist_ok=True)
 
     webp = out.with_suffix(".webp")
-    images[0].save(
+    wide = _resized(images, webp_width)
+    wide[0].save(
         webp,
         save_all=True,
-        append_images=images[1:],
+        append_images=wide[1:],
         duration=frame_ms,
         loop=0,
-        quality=72,
-        method=4,
+        quality=webp_quality,
+        # method=6 is the slowest setting and the reason the whole thing fits:
+        # it buys about 8% over the default for a minute of encoding, which is
+        # a minute nobody spends twice.
+        method=6,
     )
 
-    scale = gif_width / images[0].width
-    small = [
-        im.resize((gif_width, round(im.height * scale)), Image.Resampling.LANCZOS) for im in images
-    ]
+    small = _resized(images, gif_width)
     # One palette for the whole run, not one per frame. Per-frame palettes make
     # the background shimmer between frames, which is far more distracting than
     # the banding a fixed palette costs.
@@ -291,6 +378,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--frame-ms", type=int, default=FRAME_MS)
     ap.add_argument("--gif-width", type=int, default=GIF_WIDTH)
     ap.add_argument("--gif-colors", type=int, default=GIF_COLORS)
+    ap.add_argument("--webp-quality", type=int, default=WEBP_QUALITY)
+    ap.add_argument("--webp-width", type=int, default=WEBP_WIDTH)
+    ap.add_argument("--scale", type=int, default=DEVICE_SCALE, help="device pixel ratio")
     ap.add_argument("--keep-frames", action="store_true")
     args = ap.parse_args(argv)
 
@@ -301,7 +391,7 @@ def main(argv: list[str] | None = None) -> int:
         browser = p.chromium.launch()
         context = browser.new_context(
             viewport={"width": WIDTH, "height": HEIGHT},
-            device_scale_factor=1,
+            device_scale_factor=args.scale,
             record_video_dir=str(args.out / "video"),
             record_video_size={"width": WIDTH, "height": HEIGHT},
         )
@@ -322,7 +412,15 @@ def main(argv: list[str] | None = None) -> int:
         context.close()
         browser.close()
 
-    assemble(frames_dir, args.out / "foilstack", args.frame_ms, args.gif_width, args.gif_colors)
+    assemble(
+        frames_dir,
+        args.out / "foilstack",
+        args.frame_ms,
+        args.gif_width,
+        args.gif_colors,
+        args.webp_quality,
+        args.webp_width,
+    )
     if args.keep_frames:
         print(f"  frames kept in {frames_dir}")
     else:
