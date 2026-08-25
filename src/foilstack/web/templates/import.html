@@ -7,7 +7,7 @@
 </span>
 {%- endmacro %}
 {% block title %}Import scans · foilstack{% endblock %}
-{% block status %}{% if active %}import running · {{ active.processed }}/{{ active.total }}{% elif counts.all %}{{ counts.all }} scans waiting · {{ counts.nomatch }} with no match{% else %}queue clear · drop a .zip to begin{% endif %}{% endblock %}
+{% block status %}{% if active %}import running · {{ active.processed }}/{{ active.total }}{% elif counts.all %}{{ counts.all }} scans waiting · {{ counts.nomatch }} with no match{% else %}queue clear · drop some scans to begin{% endif %}{% endblock %}
 
 {% block screen %}
 <div class="split">
@@ -15,16 +15,17 @@
   <div class="pane-import">
     <div class="pane-head">
       <b>Import scans</b>
-      <span class="bar-note">.zip · jpg, png, tif</span>
+      <span class="bar-note">jpg, png, tif · or a .zip of them</span>
     </div>
 
     <form id="form">
-      <input type="file" id="file" name="archive" accept=".zip" hidden>
+      <input type="file" id="file" name="archive" multiple
+             accept=".zip,.jpg,.jpeg,.png,.tif,.tiff,.webp" hidden>
       <div class="drop" id="drop" {% if active %}hidden{% endif %}>
         <div class="drop-card"></div>
-        <div class="drop-title">Drop a .zip of card scans</div>
-        <div class="drop-sub">one image per card, any filename<br>
-          up to {{ "{:,}".format(max_images) }} scans per archive · {{ max_mb }} MB</div>
+        <div class="drop-title">Drop your card scans here</div>
+        <div class="drop-sub">one image per card, or a .zip of them<br>
+          up to {{ "{:,}".format(max_images) }} scans · {{ max_mb }} MB per upload</div>
         <button class="btn-choose" type="button" id="choose">Choose file</button>
       </div>
     </form>
@@ -198,7 +199,7 @@
       <div class="queue-empty">
         {% if filter == 'matched' %}nothing matched is waiting
         {% elif filter == 'nomatch' %}everything waiting has a match
-        {% else %}queue is clear — drop a .zip of scans to start{% endif %}
+        {% else %}queue is clear — drop some scans to start{% endif %}
       </div>
       {% endif %}
     </div>
@@ -214,12 +215,30 @@
 const drop = $('#drop'), fileInput = $('#file'), chip = $('#filechip');
 let chosen = null, settings = { cond: 'NM', thr: {{ auto_accept }}, finish: 'nonfoil' };
 
+const ZIP_RE = /\.zip$/i, IMAGE_RE = /\.(jpe?g|png|tiff?|webp)$/i;
+
 function show(el, on) { el.hidden = !on; }
-function pick(f) {
-  if (!f) return;
-  chosen = f;
-  $('#fname').textContent = f.name;
-  $('#fmeta').textContent = (f.size / 1048576).toFixed(1) + ' MB';
+
+/* The picker's `accept` filters the file dialog, but a drop carries whatever
+   was dragged onto it — so the same rules the server enforces are checked
+   here too, to fail before the upload rather than after it. */
+function pick(files) {
+  const all = Array.from(files || []);
+  if (!all.length) return;
+  const good = all.filter(f => ZIP_RE.test(f.name) || IMAGE_RE.test(f.name));
+  const zips = good.filter(f => ZIP_RE.test(f.name));
+  const problem =
+    !good.length ? 'Card scans (jpg, png, tif, webp) or a .zip of them, please.'
+    : zips.length > 1 ? 'One .zip at a time.'
+    : zips.length && good.length > zips.length ? 'A .zip or loose images — not both at once.'
+    : null;
+  if (problem) { fileInput.value = ''; alert(problem); return; }
+  const skipped = all.length - good.length;
+  if (skipped) alert(skipped + (skipped === 1 ? ' file' : ' files') + ' skipped — not card scans.');
+  chosen = good;
+  const bytes = good.reduce((n, f) => n + f.size, 0);
+  $('#fname').textContent = good.length === 1 ? good[0].name : good.length + ' images';
+  $('#fmeta').textContent = (bytes / 1048576).toFixed(1) + ' MB';
   $('#pct').textContent = '0%';
   $('#stage').textContent = 'ready';
   $('#bar').style.width = '0%';
@@ -235,14 +254,14 @@ $('#choose').addEventListener('click', e => { e.stopPropagation(); fileInput.cli
 drop.addEventListener('click', () => fileInput.click());
 $('#clear').addEventListener('click', reset);
 $('#cancel').addEventListener('click', reset);
-fileInput.addEventListener('change', () => pick(fileInput.files[0]));
+fileInput.addEventListener('change', () => pick(fileInput.files));
 ['dragenter', 'dragover'].forEach(e => drop.addEventListener(e, ev => {
   ev.preventDefault(); drop.classList.add('over');
 }));
 ['dragleave', 'drop'].forEach(e => drop.addEventListener(e, ev => {
   ev.preventDefault(); drop.classList.remove('over');
 }));
-drop.addEventListener('drop', ev => pick(ev.dataTransfer.files[0]));
+drop.addEventListener('drop', ev => pick(ev.dataTransfer.files));
 
 function chipSet(root, key, cast) {
   $$('button', root).forEach(b => b.addEventListener('click', () => {
@@ -256,24 +275,24 @@ chipSet($('#thr-set'), 'thr', parseFloat);
 chipSet($('#finish-set'), 'finish', String);
 
 $('#go').addEventListener('click', async () => {
-  if (!chosen) return;
+  if (!chosen || !chosen.length) return;
   $('#go').disabled = true;
   $('#go').textContent = 'Importing…';
   const body = new FormData();
-  body.append('archive', chosen);
+  chosen.forEach(f => body.append('archive', f));
   body.append('auto_accept', settings.thr);
   body.append('default_condition', settings.cond);
   body.append('default_finish', settings.finish);
   const res = await fetch('/api/import', { method: 'POST', body });
   if (!res.ok) {
-    $('#stage').textContent = 'upload failed — ' + (await res.text()).slice(0, 60);
+    $('#stage').textContent = await errorDetail(res, 'upload failed');
     $('#go').disabled = false; $('#go').textContent = 'Start import';
     return;
   }
   poll((await res.json()).job_id);
 });
 
-const STAGES = { pending: 'unzipping archive', matching: 'matching against catalogue', done: 'done', failed: 'failed' };
+const STAGES = { pending: 'unpacking scans', matching: 'matching against catalogue', done: 'done', failed: 'failed' };
 async function poll(id) {
   const job = await (await fetch('/api/jobs/' + id)).json();
   const pct = job.total ? Math.round(100 * job.processed / job.total) : 0;

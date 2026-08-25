@@ -11,9 +11,10 @@ halves of one decision in different files.
 from __future__ import annotations
 
 import logging
-import os
 import shutil
 import tempfile
+import warnings
+import zipfile
 from pathlib import Path
 
 from fastapi import (
@@ -212,7 +213,7 @@ def page_import(
             "queue_value": sum(r["market"] for r in rows),
             "auto_accept": settings.auto_accept,
             "thresholds": [0.88, 0.92, 0.96],
-            "max_images": int(os.getenv("FOILSTACK_MAX_IMAGES", "5000")),
+            "max_images": importing.MAX_IMAGES,
             "max_mb": settings.max_archive_mb,
             "conditions": inventory.CONDITIONS,
             **_chrome(session, request, user, settings),
@@ -230,7 +231,7 @@ def page_matches():
 @router.post("/api/import")
 async def api_import(
     background: BackgroundTasks,
-    archive: UploadFile = File(...),
+    archive: list[UploadFile] = File(...),
     auto_accept: float = Form(None),
     default_condition: str = Form("NM"),
     default_finish: str = Form("nonfoil"),
@@ -238,12 +239,24 @@ async def api_import(
     user: db.User = Depends(api_owner),
     settings: Settings = Depends(settings_dep),
 ):
-    if not (archive.filename or "").lower().endswith(".zip"):
-        raise HTTPException(400, "expected a .zip archive")
+    uploads = [f for f in archive if (f.filename or "").strip()]
+    if not uploads:
+        raise HTTPException(400, "no file uploaded")
     if default_condition not in inventory.CONDITIONS:
         raise HTTPException(400, "unknown condition")
     if default_finish not in inventory.FINISHES:
         raise HTTPException(400, "unknown finish")
+
+    # Either one archive, or loose images that get packed into one below.
+    # Anything else — two archives, or an archive alongside images — is a
+    # muddle worth refusing rather than guessing at.
+    suffixes = {Path(f.filename or "").suffix.lower() for f in uploads}
+    single_archive = len(uploads) == 1 and suffixes == {".zip"}
+    if not single_archive and not suffixes <= importing.IMAGE_SUFFIXES:
+        kinds = ", ".join(sorted(s.lstrip(".") for s in importing.IMAGE_SUFFIXES))
+        raise HTTPException(400, f"expected one .zip archive, or images ({kinds})")
+    if len(uploads) > importing.MAX_IMAGES:
+        raise HTTPException(400, f"at most {importing.MAX_IMAGES:,} images per upload")
 
     # Checked before a byte is written, and again against what the archive
     # actually contains once its size is known. A quota tested only after the
@@ -259,26 +272,58 @@ async def api_import(
             )
 
     tmp = Path(tempfile.mkdtemp(prefix="foilstack-")) / "upload.zip"
-    size = 0
     limit = settings.max_archive_mb * 1024 * 1024
     if settings.max_account_mb:
         limit = min(limit, ceiling - used)
-    with open(tmp, "wb") as out:
-        while chunk := await archive.read(1024 * 1024):
+
+    async def drain(upload: UploadFile, write, size: int) -> int:
+        """Copy one upload through `write`, counting every byte against `limit`."""
+        while chunk := await upload.read(1024 * 1024):
             size += len(chunk)
             if size > limit:
-                out.close()
-                shutil.rmtree(tmp.parent, ignore_errors=True)
                 raise HTTPException(
                     413,
-                    f"archive exceeds {limit / 1048576:.0f} MB "
+                    f"upload exceeds {limit / 1048576:.0f} MB "
                     "(the per-upload cap, or what is left of this account's quota)",
                 )
-            out.write(chunk)
+            write(chunk)
+        return size
+
+    try:
+        if single_archive:
+            with open(tmp, "wb") as out:
+                size = await drain(uploads[0], out.write, 0)
+        else:
+            # Loose images are packed into an archive at the door, so that one
+            # code path serves both. The traversal checks, the expansion
+            # ceiling, the duplicate-name suffixing and the image cap all live
+            # in extract_archive, and none of them need a second implementation
+            # for an image that arrived on its own. Stored rather than
+            # deflated: a JPEG does not compress, so the CPU would buy nothing.
+            size = 0
+            with warnings.catch_warnings(), zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as zf:
+                # Two phone folders both holding IMG_0001.jpg is ordinary, not a
+                # mistake worth warning about: extract_archive suffixes the
+                # second one on the way back out, so both scans survive.
+                warnings.filterwarnings("ignore", "Duplicate name", UserWarning)
+                for n, upload in enumerate(uploads, 1):
+                    name = Path(upload.filename or f"scan-{n}").name
+                    with zf.open(name, "w") as entry:
+                        size = await drain(upload, entry.write, size)
+    except HTTPException:
+        shutil.rmtree(tmp.parent, ignore_errors=True)
+        raise
+
+    if single_archive:
+        filename = uploads[0].filename or "archive.zip"
+    elif len(uploads) == 1:
+        filename = uploads[0].filename or "scan"
+    else:
+        filename = f"{len(uploads)} images"
 
     job = db.ImportJob(
         user_id=user.id,
-        filename=archive.filename or "archive.zip",
+        filename=filename,
         status="pending",
         auto_accept=auto_accept,
         default_condition=default_condition,
@@ -287,7 +332,7 @@ async def api_import(
     session.add(job)
     session.commit()
 
-    joblog.add(user.id, f"POST /imports · {archive.filename} · {size / 1048576:.1f} MB")
+    joblog.add(user.id, f"POST /imports · {filename} · {size / 1048576:.1f} MB")
     background.add_task(run_import, job.id, tmp, settings)
     return {"job_id": job.id}
 
