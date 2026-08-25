@@ -56,8 +56,19 @@ FRAME_MS = 100
 # The scroll beats are deliberately short for the same reason. Halving the
 # frame rate would also fit under the limit, but a scroll at five frames a
 # second reads as broken; less scrolling at ten reads as brisk.
-GIF_WIDTH = 640
-GIF_COLORS = 128
+# The GIF is the README's copy, and the README is where a stranger meets this
+# project. 640px was chosen to fit the 2048 KB commit hook; that hook turned
+# out never to have applied here — it only checks files being *added*, and
+# these two have been tracked since the beginning — so the width was paying a
+# tax that was not being collected.
+#
+# 1000px is what GitHub's content column actually renders, and the palette is
+# close to free: at 800px, 192 colours came out fractionally *smaller* than
+# 160. Width is the whole cost. Stopping at 1000 rather than 1200 is about
+# camo, GitHub's image proxy, which has a size ceiling near 5 MB — 1200px at
+# 256 lands at 5.2 and would be betting the README's only picture on it.
+GIF_WIDTH = 1000
+GIF_COLORS = 192
 
 # What the WebP costs. Four times the pixels at the old 72 does not fit under
 # the repository's 2048 KB file hook, and WebP spends the difference on
