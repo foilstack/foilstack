@@ -48,6 +48,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--width", type=int, default=1440)
     ap.add_argument("--height", type=int, default=900)
     ap.add_argument("--only", default=None, help="shoot just this screen by name")
+    ap.add_argument("--scale", type=int, default=None, help="device pixel ratio for --demo")
+    ap.add_argument("--webp-quality", type=int, default=None, help="WebP quality for --demo")
+    ap.add_argument("--keep-frames", action="store_true", help="leave --demo frames on disk")
     args = ap.parse_args(argv)
 
     source_url = _admin_url()
@@ -105,6 +108,9 @@ def main(argv: list[str] | None = None) -> int:
                     "--password",
                     PASSWORD,
                     *(["--card", str(card_id)] if card_id else []),
+                    *(["--scale", str(args.scale)] if args.scale else []),
+                    *(["--webp-quality", str(args.webp_quality)] if args.webp_quality else []),
+                    *(["--keep-frames"] if args.keep_frames else []),
                 ]
             )
             proc.terminate()
@@ -165,7 +171,7 @@ def _seed(source_url: str, preview_url: str) -> None:
         pairs = (
             conn.execute(
                 text(
-                    "SELECT s.stored_path, s.filename, s.auto_accepted,"
+                    "SELECT s.id AS scan_id, s.stored_path, s.filename, s.auto_accepted,"
                     "       c.score, cd.id, cd.source, cd.source_id, cd.name, cd.game,"
                     "       cd.set_name, cd.number, cd.variant, cd.image_url, cd.market,"
                     "       cd.currency"
@@ -175,6 +181,36 @@ def _seed(source_url: str, preview_url: str) -> None:
                     " WHERE cd.image_url IS NOT NULL AND cd.market IS NOT NULL"
                     " ORDER BY c.score DESC LIMIT 60"
                 )
+            )
+            .mappings()
+            .all()
+        )
+
+        # The runners-up, from the same matching run.
+        #
+        # The preview used to seed one candidate per scan, which quietly made
+        # the queue argue less than the product does: `also matched: ...` never
+        # rendered, and the "wrong card?" panel opened on a heading that
+        # promised a choice above a single option. The screen's whole claim is
+        # that the top match is evidence rather than an assertion, and evidence
+        # means the things it beat are visible.
+        #
+        # Real rows again, not invented ones. A fabricated runner-up captioned
+        # with a percentage is the same dishonesty as a fabricated top match.
+        alternates = (
+            conn.execute(
+                text(
+                    "SELECT c.scan_id, c.score, c.rank,"
+                    "       cd.id, cd.source, cd.source_id, cd.name, cd.game,"
+                    "       cd.set_name, cd.number, cd.variant, cd.image_url, cd.market,"
+                    "       cd.currency"
+                    "  FROM candidates c"
+                    "  JOIN cards cd ON cd.id = c.card_id"
+                    " WHERE c.scan_id = ANY(:ids) AND c.rank BETWEEN 1 AND 3"
+                    "   AND cd.image_url IS NOT NULL"
+                    " ORDER BY c.scan_id, c.rank"
+                ),
+                {"ids": [r["scan_id"] for r in pairs]},
             )
             .mappings()
             .all()
@@ -219,8 +255,16 @@ def _seed(source_url: str, preview_url: str) -> None:
     # Two scans can match the same printing — that is the duplicate case the
     # inventory screen exists to consolidate — so the catalogue rows behind
     # them have to be deduplicated before insert.
+    kept_scans = {row["scan_id"] for row in cards}
+    alts_by_scan: dict[int, list] = {}
+    for alt in alternates:
+        if alt["scan_id"] in kept_scans:
+            alts_by_scan.setdefault(alt["scan_id"], []).append(alt)
+
     seen: set[int] = set()
-    for row in cards:
+    # The runners-up are catalogue rows like any other and have to exist before
+    # a candidate can point at one.
+    for row in list(cards) + [a for alts in alts_by_scan.values() for a in alts]:
         if row["id"] in seen:
             continue
         seen.add(row["id"])
@@ -275,6 +319,19 @@ def _seed(source_url: str, preview_url: str) -> None:
         session.add(
             db.Candidate(scan_id=scan.id, card_id=card["id"], score=float(card["score"]), rank=0)
         )
+        for alt in alts_by_scan.get(card["scan_id"], []):
+            # Skip a runner-up that is the top match again: two scans of one
+            # printing is ordinary, and (scan, card) has to stay unique.
+            if alt["id"] == card["id"]:
+                continue
+            session.add(
+                db.Candidate(
+                    scan_id=scan.id,
+                    card_id=alt["id"],
+                    score=float(alt["score"]),
+                    rank=int(alt["rank"]),
+                )
+            )
         if i >= PENDING:
             session.add(
                 db.InventoryItem(

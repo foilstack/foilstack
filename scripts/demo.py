@@ -28,11 +28,20 @@ import tempfile
 from pathlib import Path
 
 from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 # 1000px wide reads at README width without the file becoming enormous. The
 # 10:6.25 shape is the app's own proportions; anything squarer crops the rail
 # or the queue, which are the two things worth seeing.
 WIDTH, HEIGHT = 1000, 625
+
+# Capture at twice the CSS size. The page is laid out at 1000 CSS pixels and
+# the landing page displays it at 1000 too, so at a scale factor of 1 there
+# were exactly enough pixels for a monitor nobody has owned for a decade —
+# every modern laptop and phone doubles it on the way to the screen, and the
+# result is the soft, slightly smeared demo this replaced. The frames get
+# bigger; the WebP quality setting is what pays for it.
+DEVICE_SCALE = 2
 
 # Milliseconds per frame in the finished GIF. 100ms (10fps) is smooth enough
 # for a cursor and a scroll, and coarse enough that a twenty second story does
@@ -47,8 +56,65 @@ FRAME_MS = 100
 # The scroll beats are deliberately short for the same reason. Halving the
 # frame rate would also fit under the limit, but a scroll at five frames a
 # second reads as broken; less scrolling at ten reads as brisk.
-GIF_WIDTH = 640
-GIF_COLORS = 128
+# The GIF is the README's copy, and the README is where a stranger meets this
+# project. 640px was chosen to fit the 2048 KB commit hook; that hook turned
+# out never to have applied here — it only checks files being *added*, and
+# these two have been tracked since the beginning — so the width was paying a
+# tax that was not being collected.
+#
+# 1000px is what GitHub's content column actually renders, and the palette is
+# close to free: at 800px, 192 colours came out fractionally *smaller* than
+# 160. Width is the whole cost. Stopping at 1000 rather than 1200 is about
+# camo, GitHub's image proxy, which has a size ceiling near 5 MB — 1200px at
+# 256 lands at 5.2 and would be betting the README's only picture on it.
+GIF_WIDTH = 1000
+GIF_COLORS = 192
+
+# What the WebP costs.
+#
+# This was 46 for one release, chosen to fit the repository's 2048 KB commit
+# hook. That hook never applied: `check-added-large-files` only inspects files
+# being *added*, and this one has been tracked since the beginning, so every
+# re-record went through as a modification and was waved past. The quality was
+# paying for a limit nobody was enforcing, and it showed — text edges were
+# visibly soft against the same frames at 72.
+#
+# 72 rather than 80: side by side at the size a retina screen paints, 80 is
+# marginally cleaner on card art and indistinguishable on text, for another
+# 550 KB. This is a hero image on a landing page, not an archive master.
+WEBP_QUALITY = 72
+
+# Written at the width it was captured — no downsample.
+#
+# Also a leftover from the phantom size limit: 1600 was the widest that fit
+# under it, which made the landing page upscale by 1.25 on top of whatever the
+# screen was already doing. At 2000 the desktop case is exactly 1:1 on a
+# device-pixel-ratio of 2, which is the common one.
+#
+# Mobile is the case that stays hard. The hero crops to a 2:3 slice with
+# `object-fit: cover`, which zooms *in* — so a phone needs more pixels per
+# visible area than a desktop does, not fewer. Serving phones a smaller file
+# would blur the one view that is already most magnified. Fixing that properly
+# means recording a pre-cropped variant of just the queue column, which is a
+# second asset and a second beat list, and is not done here.
+WEBP_WIDTH = 2000
+
+# The phone copy, cropped rather than shrunk.
+#
+# The landing page already crops the hero on a phone — `aspect-ratio: 2/3` with
+# `object-fit: cover`, right-aligned onto the review queue, because the whole
+# thousand-pixel frame at three hundred is a grey smudge. Doing that crop in
+# the browser means the phone downloads the entire frame and throws most of it
+# away, and `cover` on a 2:3 box *magnifies* what is left — so the one view
+# that is already blown up largest was also the one with the fewest pixels
+# behind it.
+#
+# Cropping here fixes both ends: the file is smaller because it is 42% of the
+# frame, and it is sharper because those pixels are native rather than scaled
+# up. The geometry has to match the stylesheet exactly — right-aligned, full
+# height, width = height * 2/3 — or the phone crops an already-cropped image
+# and the queue slides out of frame.
+MOBILE_ASPECT = (2, 3)
 
 # The pointer the browser will not draw for us. Without it a click is a screen
 # that changes for no visible reason, which reads as a cut rather than an
@@ -117,6 +183,21 @@ class Recorder:
         self.frame(settle)
         return True
 
+    def wait_for(self, selector: str, timeout: int = 5000) -> bool:
+        """Wait for something a previous click went to the server for.
+
+        Returns False rather than raising, for the same reason `click` does: a
+        beat that cannot play is worth skipping, and a demo that dies two
+        thirds of the way through is worse than one that is a beat short.
+        """
+        try:
+            self.page.wait_for_selector(selector, timeout=timeout)
+        except PlaywrightTimeout:
+            print(f"demo: {selector} never arrived, skipping that beat", file=sys.stderr)
+            return False
+        self.page.evaluate(CURSOR_JS)
+        return True
+
     def scroll(self, total: int, steps: int = 10) -> None:
         """Scroll whichever pane on this screen actually scrolls.
 
@@ -177,16 +258,45 @@ def storyboard(rec: Recorder, base: str, card_id: int | None = None) -> None:
     rec.scroll(360, steps=8)
     rec.frame(6)
 
-    # 2. Confirming one. The row leaves the queue, which is the whole loop in
-    #    a single visible move.
-    rec.click(".qrow [data-confirm]", settle=10)
+    # 2. Correcting one. The queue's real claim is not that the matcher is
+    #    always right — it is that being wrong is recoverable in two clicks,
+    #    which is the question every seller asks about a tool like this. The
+    #    panel is fetched on demand and then runs its own search, so the beat
+    #    waits for the options rather than guessing at a duration.
+    #
+    #    Aimed at a row that has runners-up, not just any row. `.qalt-swap`
+    #    only renders when the scan has alternates, so `:has()` picks a scan
+    #    whose panel will show the "Also matched this scan" strip — the first
+    #    take corrected a scan with a single candidate, and a panel headed
+    #    "Pick the right card" above one option argues against itself.
+    corrected = False
+    if rec.click(".qrow:has(.qalt-swap) [data-fix]", settle=4) and rec.wait_for(
+        ".qrow .qfix .qfix-list:not([data-fix-results]) [data-pick]"
+    ):
+        rec.frame(8)
+        # A runner-up, not a search result: the point of the beat is that the
+        # answer was already on the page.
+        corrected = rec.click(
+            ".qrow .qfix .qfix-list:not([data-fix-results]) [data-pick]", settle=12
+        )
 
-    # 3. Inventory: consolidated by card, with quantities and value.
+    # 3. Confirming it. The row leaves the queue, which is the whole loop in a
+    #    single visible move — and it is the row just corrected, so the two
+    #    beats read as one thought rather than two features.
+    #    A corrected row wears the chosen icon in place of a match bar, which
+    #    is how this finds it again — confirming a different row would turn one
+    #    thought into two unrelated demonstrations.
+    rec.click(
+        ".qrow:has(.qconf svg) [data-confirm]" if corrected else ".qrow [data-confirm]",
+        settle=10,
+    )
+
+    # 4. Inventory: consolidated by card, with quantities and value.
     rec.click('.nav-item[href="/inventory"]', settle=12)
     rec.scroll(300, steps=7)
     rec.frame(6)
 
-    # 4. Into a card. The price trend is the thing no spreadsheet gives you, so
+    # 5. Into a card. The price trend is the thing no spreadsheet gives you, so
     #    this beat holds longest.
     #
     #    The link, not the row: clicking the row lands on its checkbox and
@@ -206,7 +316,7 @@ def storyboard(rec: Recorder, base: str, card_id: int | None = None) -> None:
     rec.scroll(280, steps=7)
     rec.frame(14)
 
-    # 5. Back out, select everything, and take it to the listing screen —
+    # 6. Back out, select everything, and take it to the listing screen —
     #    ending on the CSV, because that is what the tool is for.
     rec.goto(f"{base}/inventory", settle=4)
     rec.click("#all", settle=5)
@@ -215,12 +325,24 @@ def storyboard(rec: Recorder, base: str, card_id: int | None = None) -> None:
     rec.frame(12)
 
 
+def _resized(images, width):
+    """Downscale a run of frames, or hand them back untouched at native width."""
+    from PIL import Image
+
+    if width >= images[0].width:
+        return images
+    scale = width / images[0].width
+    return [im.resize((width, round(im.height * scale)), Image.Resampling.LANCZOS) for im in images]
+
+
 def assemble(
     frames_dir: Path,
     out: Path,
     frame_ms: int = FRAME_MS,
     gif_width: int = GIF_WIDTH,
     gif_colors: int = GIF_COLORS,
+    webp_quality: int = WEBP_QUALITY,
+    webp_width: int = WEBP_WIDTH,
 ) -> None:
     """Write the animation twice, for two different jobs.
 
@@ -240,20 +362,36 @@ def assemble(
     out.parent.mkdir(parents=True, exist_ok=True)
 
     webp = out.with_suffix(".webp")
-    images[0].save(
+    wide = _resized(images, webp_width)
+    wide[0].save(
         webp,
         save_all=True,
-        append_images=images[1:],
+        append_images=wide[1:],
         duration=frame_ms,
         loop=0,
-        quality=72,
-        method=4,
+        quality=webp_quality,
+        # method=6 is the slowest setting and the reason the whole thing fits:
+        # it buys about 8% over the default for a minute of encoding, which is
+        # a minute nobody spends twice.
+        method=6,
     )
 
-    scale = gif_width / images[0].width
-    small = [
-        im.resize((gif_width, round(im.height * scale)), Image.Resampling.LANCZOS) for im in images
-    ]
+    # The phone copy: the stylesheet's own crop, applied to the master.
+    mob_w = round(images[0].height * MOBILE_ASPECT[0] / MOBILE_ASPECT[1])
+    box = (images[0].width - mob_w, 0, images[0].width, images[0].height)
+    cropped = [im.crop(box) for im in images]
+    mobile = out.with_name(f"{out.name}-mobile.webp")
+    cropped[0].save(
+        mobile,
+        save_all=True,
+        append_images=cropped[1:],
+        duration=frame_ms,
+        loop=0,
+        quality=webp_quality,
+        method=6,
+    )
+
+    small = _resized(images, gif_width)
     # One palette for the whole run, not one per frame. Per-frame palettes make
     # the background shimmer between frames, which is far more distracting than
     # the banding a fixed palette costs.
@@ -276,7 +414,7 @@ def assemble(
         disposal=1,
     )
 
-    for path in (webp, gif):
+    for path in (webp, mobile, gif):
         size = path.stat().st_size / 1048576
         print(f"  {path}  {size:.1f} MB  ({len(images)} frames)")
 
@@ -291,6 +429,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--frame-ms", type=int, default=FRAME_MS)
     ap.add_argument("--gif-width", type=int, default=GIF_WIDTH)
     ap.add_argument("--gif-colors", type=int, default=GIF_COLORS)
+    ap.add_argument("--webp-quality", type=int, default=WEBP_QUALITY)
+    ap.add_argument("--webp-width", type=int, default=WEBP_WIDTH)
+    ap.add_argument("--scale", type=int, default=DEVICE_SCALE, help="device pixel ratio")
     ap.add_argument("--keep-frames", action="store_true")
     args = ap.parse_args(argv)
 
@@ -301,7 +442,7 @@ def main(argv: list[str] | None = None) -> int:
         browser = p.chromium.launch()
         context = browser.new_context(
             viewport={"width": WIDTH, "height": HEIGHT},
-            device_scale_factor=1,
+            device_scale_factor=args.scale,
             record_video_dir=str(args.out / "video"),
             record_video_size={"width": WIDTH, "height": HEIGHT},
         )
@@ -322,7 +463,15 @@ def main(argv: list[str] | None = None) -> int:
         context.close()
         browser.close()
 
-    assemble(frames_dir, args.out / "foilstack", args.frame_ms, args.gif_width, args.gif_colors)
+    assemble(
+        frames_dir,
+        args.out / "foilstack",
+        args.frame_ms,
+        args.gif_width,
+        args.gif_colors,
+        args.webp_quality,
+        args.webp_width,
+    )
     if args.keep_frames:
         print(f"  frames kept in {frames_dir}")
     else:

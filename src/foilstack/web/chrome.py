@@ -85,7 +85,7 @@ def _asset_version() -> str:
     # that, because the URL never changed. Reading three megabytes on every
     # request to learn something `stat` already knows would be the wrong way to
     # fix it.
-    for name in ("demo/foilstack.webp", "demo/foilstack.gif"):
+    for name in ("demo/foilstack.webp", "demo/foilstack-mobile.webp", "demo/foilstack.gif"):
         try:
             info = (BASE_DIR / "static" / name).stat()
         except OSError:
