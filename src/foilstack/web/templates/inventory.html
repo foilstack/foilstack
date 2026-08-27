@@ -73,7 +73,7 @@
           <td class="{{ 'muted' if not r.mixed }}">{{ r.conditions }}</td>
           <td class="{{ 'foil-yes' if r.any_foil else 'muted' }}">
             {{ r.printing_label }}
-            {% if r.guessed %}<span class="pill warn" title="printing not chosen — priced as the dearest match">?</span>{% endif %}
+            {% if r.guessed %}<span class="pill warn" title="printing not chosen, so it is priced as the dearest match">?</span>{% endif %}
           </td>
           <td class="r muted">{{ r.cost|money if r.cost is not none else '—' }}</td>
           <td class="r">{{ r.market|money if r.market is not none else '—' }}</td>
@@ -87,7 +87,7 @@
     <div class="empty">
       {% if show == 'printing' %}every card is priced on a printing you chose
       {% elif q %}nothing matches “{{ q }}”
-      {% else %}nothing confirmed yet — import an archive to get started{% endif %}
+      {% else %}nothing confirmed yet · import some scans to get started{% endif %}
     </div>
     {% endif %}
   </form>

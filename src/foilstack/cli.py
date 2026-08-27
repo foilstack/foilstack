@@ -136,7 +136,7 @@ async def cmd_embed(args) -> int:
     if not cards:
         total = session.scalar(select(func.count(db.Card.id))) or 0
         if total == 0:
-            log.error("no cards with images — run `ingest` first")
+            log.error("no cards with images. run `ingest` first")
             return 2
         skipped = (
             session.scalar(
@@ -144,7 +144,7 @@ async def cmd_embed(args) -> int:
             )
             or 0
         )
-        log.info("nothing to do — all %s cards are encoded with %s", total, settings.embed_model)
+        log.info("nothing to do: all %s cards are encoded with %s", total, settings.embed_model)
         if skipped:
             # Named rather than left as a silent gap between the catalogue
             # count and the vector count, which otherwise looks like a
@@ -188,9 +188,7 @@ async def cmd_embed(args) -> int:
                         # Honour Retry-After when they send one; they know
                         # better than a guess does.
                         wait = float(image.headers.get("Retry-After") or 2**attempt)
-                        log.warning(
-                            "  %s on %s — waiting %.0fs", image.status_code, card.name, wait
-                        )
+                        log.warning("  %s on %s, waiting %.0fs", image.status_code, card.name, wait)
                         await asyncio.sleep(min(wait, 60))
                         continue
                     if image_is_permanently_missing(image.status_code, image.content):
@@ -249,7 +247,7 @@ async def cmd_embed(args) -> int:
     session.commit()
     log.info("wrote %s vectors (%s have no image upstream, %s failed)", written, missing, failed)
     if missing:
-        log.info("  those %s will be skipped from now on — `--retry-missing` to ask again", missing)
+        log.info("  those %s will be skipped from now on. `--retry-missing` to ask again", missing)
     # A batch where every remaining card simply has no image upstream is a
     # finished job, not a failed one — and on a resumed run over a large
     # catalogue that is exactly what the last batch looks like.
@@ -361,7 +359,7 @@ async def cmd_sync_prices(args) -> int:
             ).all()
         )
         if not games:
-            log.error("no %s cards ingested yet — run `foilstack ingest` first", plugin.name)
+            log.error("no %s cards ingested yet. run `foilstack ingest` first", plugin.name)
             return 2
         log.info("syncing every ingested game: %s", " ".join(games))
     else:
@@ -405,7 +403,7 @@ async def _sync_one_game(session, plugin, game: str, stamp: str | None, args) ->
     kind = f"prices:{game}"
     state = session.get(db.SyncState, (plugin.name, kind))
     if stamp and state is not None and state.upstream_stamp == stamp and not args.force:
-        log.info("%s: upstream unchanged since %s — nothing to do", game, stamp)
+        log.info("%s: upstream unchanged since %s, nothing to do", game, stamp)
         state.last_run_at = _now()
         session.commit()
         return 0
@@ -421,7 +419,7 @@ async def _sync_one_game(session, plugin, game: str, stamp: str | None, args) ->
         ).all()
     }
     if not cards:
-        log.error("no %s %s cards ingested yet — run `foilstack ingest` first", plugin.name, game)
+        log.error("no %s %s cards ingested yet. run `foilstack ingest` first", plugin.name, game)
         return 2
 
     today = dt.date.today()

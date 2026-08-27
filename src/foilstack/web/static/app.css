@@ -435,6 +435,8 @@ body.app {
 }
 .matcher .strong { color: var(--green); }
 .setting-note { color: var(--muted); font-size: 11.5px; margin-top: 10px; line-height: 1.5; }
+.setting-list { margin: 6px 0 0; padding-left: 16px; }
+.setting-list li { margin-top: 3px; }
 
 /* The prose under the match settings answers two questions that only need
    answering once — why finish is yours to set, and what auto-accept actually

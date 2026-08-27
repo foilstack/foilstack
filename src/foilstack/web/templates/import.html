@@ -87,16 +87,24 @@
       <details class="why">
         <summary>Why finish and auto-accept work this way</summary>
         <p class="setting-note">
-          Finish is yours to set, not the matcher's: a foil and a non-foil
-          printing share artwork exactly and differ under the light, so the scan
-          cannot settle it — and the price gap is routinely a multiple.
+          A foil and a non-foil printing use the same artwork, so a scan cannot
+          tell them apart. That is why you set the finish yourself. It is worth
+          getting right: a foil often sells for several times what the plain
+          version does.
         </p>
         <p class="setting-note">
-          A match is accepted without review only if it clears that score, beats
-          the runner-up by a margin, <em>and</em> — where the runner-up is the same
-          card in another printing — their prices are close. Reprints share
-          artwork, so a high score alone is not evidence. The threshold is stored
-          with the import, so it stays clear later why a scan went through.
+          A scan skips the review queue only when all three of these are true.
+        </p>
+        <ul class="setting-note setting-list">
+          <li>It scores above the threshold you picked.</li>
+          <li>It beats the second-best match by a clear margin.</li>
+          <li>If that second-best is the same card in another printing, the two
+            prices are close.</li>
+        </ul>
+        <p class="setting-note">
+          Reprints share artwork, so a high score on its own proves nothing. The
+          threshold is saved with each import, so you can always see later why a
+          scan was accepted.
         </p>
       </details>
       <div class="matcher">
@@ -218,7 +226,7 @@
       <div class="queue-empty">
         {% if filter == 'matched' %}nothing matched is waiting
         {% elif filter == 'nomatch' %}everything waiting has a match
-        {% else %}queue is clear — drop some scans to start{% endif %}
+        {% else %}queue is clear · drop some scans to start{% endif %}
       </div>
       {% endif %}
     </div>
