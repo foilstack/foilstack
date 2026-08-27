@@ -118,7 +118,8 @@
       <div class="batch">
         <div class="batch-head">
           <span class="batch-name">{{ b.filename }}</span>
-          {% if b.created_at %}<span class="batch-when">{{ b.created_at.strftime('%b %d %Y, %H:%M') }}</span>{% endif %}
+          {% if b.created_at %}<time class="batch-when" data-local="year"
+            datetime="{{ b.created_at.isoformat() }}">{{ b.created_at.strftime('%b %d %Y, %H:%M') }}</time>{% endif %}
           <div class="spacer"></div>
           <span class="batch-count">{{ b.copies|length }} card{{ '' if b.copies|length == 1 else 's' }}</span>
         </div>

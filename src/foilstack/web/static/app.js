@@ -149,9 +149,13 @@ function localTimes(root) {
   $$('time[data-local]', root).forEach(el => {
     const at = new Date(el.getAttribute('datetime'));
     if (isNaN(at)) return;
-    el.textContent = at.toLocaleString([], {
+    const shape = {
       month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
-    });
+    };
+    // Recent imports are all from the last few days, so the year is noise
+    // there. A card's purchase history goes back as far as the shop does.
+    if (el.dataset.local === 'year') shape.year = 'numeric';
+    el.textContent = at.toLocaleString([], shape);
     el.title = at.toLocaleString();
   });
 }
