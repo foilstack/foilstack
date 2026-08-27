@@ -105,14 +105,30 @@
     {% if jobs %}
     <div class="settings">
       <div class="sec-label">Recent imports</div>
-      <div class="matcher" style="margin-top: 0">
-        {% for job in jobs %}
-        <div>{{ job.created_at.strftime('%b %d %H:%M') }} &nbsp;
-          {{ job.filename[:22] }} &nbsp;
-          <span class="{{ 'strong' if job.status == 'done' }}">{{ job.status }}</span>
-          {{ job.processed }}/{{ job.total }}</div>
-        {% endfor %}
-      </div>
+      <table class="dtable compact">
+        <thead>
+          <tr><th>WHEN</th><th>FILE</th><th>STATUS</th><th class="r">SCANS</th></tr>
+        </thead>
+        <tbody>
+          {% for job in jobs %}
+          <tr>
+            <td class="faint"><time data-local datetime="{{ job.created_at.isoformat() }}"
+              >{{ job.created_at.strftime('%b %d %H:%M') }}</time></td>
+            {# Truncated by the column rather than by a slice: the pane is a
+               fixed width, so where the name has to give way is a question the
+               layout can answer and the template cannot. The full name stays
+               reachable on hover. #}
+            <td class="ell" title="{{ job.filename }}">{{ job.filename }}</td>
+            <td class="{{ 'pos' if job.status == 'done' else 'neg' if job.status == 'failed' else 'muted' }}"
+                {%- if job.message %} title="{{ job.message }}"{% endif %}>{{ job.status }}</td>
+            <td class="r muted">
+              {%- if job.processed == job.total %}{{ job.total }}
+              {%- else %}{{ job.processed }}/{{ job.total }}{% endif -%}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
     </div>
     {% endif %}
   </div>
