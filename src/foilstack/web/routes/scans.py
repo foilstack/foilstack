@@ -29,6 +29,7 @@ from fastapi import (
 )
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from foilstack import db, importing, inventory, search
 from foilstack.config import Settings
@@ -57,6 +58,9 @@ def _queue_rows(session, user_id: int) -> list[dict]:
     """
     scans = session.scalars(
         select(db.Scan)
+        # Every row reads its job's import defaults, and four hundred rows
+        # asking for them one at a time is four hundred queries.
+        .options(selectinload(db.Scan.job))
         .where(
             db.Scan.user_id == user_id,
             db.Scan.status.in_(("pending", "unmatched", "error")),
@@ -166,6 +170,17 @@ def _queue_rows(session, user_id: int) -> list[dict]:
                 # the answer instead of empty.
                 "query": card.name if card else "",
                 "game": card.game if card else "",
+                # The defaults this scan was imported under. Read off the job
+                # rather than off the settings panel, because the panel is
+                # aimed at the next import and this queue outlives the one
+                # that filled it — two batches waiting together, one graded
+                # NM and one DMG, each want their own answer.
+                #
+                # Only the starting position. The per-row chips still decide
+                # what gets committed, so a default that is right for most of
+                # a batch costs nothing on the cards it is wrong for.
+                "condition": scan.job.default_condition or "NM",
+                "finish": scan.job.default_finish or "nonfoil",
             }
         )
     return rows

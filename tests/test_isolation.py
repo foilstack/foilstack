@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import re
 import uuid
+from contextlib import contextmanager
 
 import pytest
 from sqlalchemy import create_engine, select, text
@@ -1490,3 +1491,114 @@ def test_serving_a_scan_does_not_hold_a_database_connection(app_and_data):
 
     assert response.status_code == 200
     assert after == before, f"leaked {after - before} connection(s) serving a scan"
+
+
+def _queue_row(html: str, scan_id: int) -> str:
+    """The one row for this scan, sliced out of the import screen.
+
+    Asserting against the whole page would pass on a chip belonging to some
+    other row, which is precisely the mistake the tests below exist to catch.
+    """
+    for chunk in html.split('class="qrow'):
+        if f'id="scan-{scan_id}"' in chunk:
+            return chunk
+    raise AssertionError(f"scan {scan_id} is not in the queue")
+
+
+@contextmanager
+def _waiting_scan(ids, **job_settings):
+    """A second batch waiting in the queue, torn down afterwards.
+
+    Its own job rather than the fixture's, because the fixture is module-scoped
+    and a test that edited its import settings in place would hand them to
+    every test that ran after it.
+    """
+    from foilstack import db
+
+    session = db.session()
+    owner_id = session.get(db.Scan, ids["scan"]).user_id
+    job = db.ImportJob(
+        user_id=owner_id, filename="b.zip", status="done", total=1, processed=1, **job_settings
+    )
+    session.add(job)
+    session.commit()
+    scan = db.Scan(
+        job_id=job.id,
+        user_id=owner_id,
+        filename="second.jpg",
+        stored_path="1/card.jpg",
+        status="pending",
+    )
+    session.add(scan)
+    session.commit()
+    session.add(db.Candidate(scan_id=scan.id, card_id=ids["card"], score=0.71, rank=0))
+    session.commit()
+    scan_id = scan.id
+    try:
+        yield scan_id
+    finally:
+        session.delete(session.get(db.Scan, scan_id))
+        session.delete(session.get(db.ImportJob, job.id))
+        session.commit()
+        session.close()
+
+
+def test_a_queue_row_opens_on_the_defaults_its_import_was_given(app_and_data):
+    """ "Default condition" reached only the scans that auto-accepted.
+
+    Which is to say: only the ones nobody ever looks at. A batch graded DMG
+    came back to the review queue as NM, so the setting changed nothing about
+    the cards actually being confirmed — and grading each row by hand is the
+    work the default exists to save.
+    """
+    from foilstack import inventory
+
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    with _waiting_scan(ids, default_condition="DMG", default_finish="foil") as scan_id:
+        row = _queue_row(client.get("/app").text, scan_id)
+
+    assert 'data-cond="DMG"' in row
+    assert 'data-finish="foil"' in row
+    # Not just the dataset the commit reads: the chip a person sees selected
+    # and the value that would be committed have to be the same claim.
+    assert 'chip-sm on" type="button" data-cond="DMG"' in row
+    assert ">Foil<" in row
+    assert ">Non-foil<" not in row
+    # Filled, because the row is still showing what the import asked for. The
+    # class used to be pinned to foil, so a batch imported as non-foil had no
+    # row on the screen marked as set to anything.
+    assert "foil-toggle on" in row
+    # Every grade is reachable from the row. DMG used to be sliced off the end
+    # of the chips to save horizontal room, which left the worst grade settable
+    # in the import defaults and on the card page but not while confirming —
+    # so a damaged card could only be marked damaged once it was inventory.
+    for condition in inventory.CONDITIONS:
+        assert f'data-cond="{condition}"' in row
+
+
+def test_one_batch_of_defaults_does_not_leak_onto_another(app_and_data):
+    """Two imports can be waiting at once, and they are graded separately.
+
+    The reason these are read off each scan's own job rather than off the
+    settings panel, which knows only about the next import.
+    """
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    with (
+        _waiting_scan(ids, default_condition="DMG", default_finish="foil") as damaged,
+        _waiting_scan(ids, default_condition="LP", default_finish="nonfoil") as played,
+    ):
+        html = client.get("/app").text
+        damaged_row, played_row = _queue_row(html, damaged), _queue_row(html, played)
+
+    assert 'data-cond="DMG"' in damaged_row
+    assert 'data-finish="foil"' in damaged_row
+    assert 'data-cond="LP"' in played_row
+    assert 'data-finish="nonfoil"' in played_row
+    # Both are filled: each is showing its own batch's answer, opposite though
+    # those answers are.
+    assert "foil-toggle on" in damaged_row
+    assert "foil-toggle on" in played_row
