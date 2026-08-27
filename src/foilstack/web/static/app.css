@@ -495,6 +495,62 @@ body.app {
   background: var(--surface);
 }
 .qrow.review { background: var(--warn-tint); }
+
+/* ==========================================================================
+   The card being decided
+   ==========================================================================
+   Every row in this queue is waiting on the same judgement: is the catalogue
+   card on the right the card in the photograph on the left. At 46px neither
+   image can answer that. A set symbol is a few pixels wide and a collector
+   number is smaller still, so the thumbnails were decoration and the score
+   was doing all the work.
+
+   The first row is therefore shown at a size you can actually read, and the
+   rest stay as a list of what is coming. Confirming or discarding removes the
+   row, so the next one is promoted by :first-child with no bookkeeping. */
+.qrow:first-child {
+  display: grid;
+  grid-template-columns: auto 22px auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px 16px;
+  padding: 16px 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--rule);
+}
+.qrow:first-child .thumb {
+  grid-column: 1; grid-row: 1 / span 4;
+  width: 140px; height: 196px; flex: none;
+}
+.qrow:first-child .thumb.ref { grid-column: 3; }
+.qrow:first-child .qarrow {
+  grid-column: 2; grid-row: 1 / span 4; align-self: center; font-size: 15px;
+}
+.qrow:first-child .qfile {
+  grid-column: 1; grid-row: 5;
+  width: 140px; flex: none; text-align: center;
+}
+.qrow:first-child .qmain { grid-column: 4; grid-row: 1; }
+.qrow:first-child .qconf { grid-column: 4; grid-row: 2; width: 100%; flex: none; }
+.qrow:first-child .qcond { grid-column: 4; grid-row: 3; }
+.qrow:first-child .qfoil { grid-column: 4; grid-row: 4; }
+.qrow:first-child .qactions { grid-column: 5; grid-row: 1 / span 4; }
+.qrow:first-child .qfix { grid-column: 1 / -1; }
+
+/* The bar is a confidence reading, not a progress meter for the panel, so it
+   stops well short of the full width it would otherwise stretch to. */
+.qrow:first-child .qconf { max-width: 340px; }
+/* Readable at 140px, where 8px in the corner of a thumbnail was not. */
+.qrow:first-child .thumb-tag {
+  bottom: 4px; left: 5px; font-size: 9.5px;
+  background: var(--surface); padding: 0 3px; border-radius: 2px;
+}
+.qrow:first-child .qname { font-size: 19px; letter-spacing: -0.01em; }
+.qrow:first-child .qmeta { font-size: 12px; margin-top: 4px; }
+.qrow:first-child .qalt { margin-top: 8px; }
+.qrow:first-child .qconf .track { height: 6px; }
+.qrow:first-child .qconf .lbl { font-size: 12px; }
+.qrow:first-child .chip-sm { height: 26px; padding: 0 10px; font-size: 12px; }
+.qrow:first-child .btn-dark { height: 34px; padding: 0 18px; font-size: 13px; }
 .thumb {
   width: 46px; height: 64px; flex: 0 0 46px;
   border: 1px solid var(--rule); border-radius: 2px;
