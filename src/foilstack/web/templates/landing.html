@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>foilstack — scan your cards, get a marketplace CSV</title>
+<title>foilstack: scan your cards, get a marketplace CSV</title>
 <meta name="description" content="Drop in a zip of card scans. Get an identified, priced inventory and a marketplace CSV. Open source, self-hostable, your scans never leave the host.">
 <link rel="icon" href="/static/brand/favicon.svg?v={{ asset_v }}" type="image/svg+xml">
 <link rel="alternate icon" href="/static/brand/favicon-32.png?v={{ asset_v }}" sizes="32x32">
@@ -48,7 +48,7 @@
   </div>
   <p class="hero-note">
     {% if viewer %}Signed in as {{ viewer.email }}.
-    {% elif multi_user %}Free while it is this young. Your scans, inventory and exports are yours alone — no other account can see them.
+    {% elif multi_user %}Free while it is this young. Your scans, inventory and exports are yours alone. No other account can see them.
     {% else %}Your scans are processed on the host running this and are never sent anywhere else.{% endif %}
   </p>
 
@@ -69,7 +69,7 @@
       <img src="/static/demo/foilstack.gif?v={{ asset_v }}" width="1000" height="625"
            alt="Reviewing matched cards, confirming them into inventory, opening a card to see its price trend, and exporting the selection as a marketplace CSV">
     </picture>
-    <figcaption>The whole loop — including fixing a match it got wrong — in under twenty seconds. No narration: there is nothing to listen to.</figcaption>
+    <figcaption>The whole loop, including fixing a match it got wrong, in under twenty seconds. No narration: there is nothing to listen to.</figcaption>
   </figure>
 </section>
 
@@ -94,7 +94,7 @@
   <h2 class="band-h">Why there is a review queue</h2>
   <p class="band-lede">
     Reprints share artwork. Image search gives you a name you can trust and a
-    printing you cannot — the same illustration appears in set after set,
+    printing you cannot. The same illustration appears in set after set,
     separated on the card by a symbol a few pixels wide.
   </p>
   {# The confidence bar is the app's own — same markup, same classes, same
@@ -134,15 +134,15 @@
   </div>
   <p class="proof-note">
     Both prices are real rows from the catalogue foilstack fetched, and the
-    bars are the review queue's own. The two scores are illustrative — a scan
+    bars are the review queue's own. The two scores are illustrative. A scan
     of your card produces its own.
   </p>
   <p class="band-note">
     The same illustration, printed twice, separated by a small black symbol and
-    the word "Shadowless" — and by eleven and a half thousand dollars. A tool
+    the word "Shadowless", and by eleven and a half thousand dollars. A tool
     that shows you only the winner will eventually sell that card for $855.
     So auto-accept requires a high score, a clear margin over the runner-up,
-    <em>and</em> — when the runner-up is the same card in another printing —
+    <em>and</em>, when the runner-up is the same card in another printing,
     prices close enough that being wrong doesn't matter.
   </p>
 </section>
@@ -153,7 +153,7 @@
     <div>
       <h3>Priced per printing, not per card</h3>
       <p>A foil is priced as a foil. Where several printings all answer to
-         "foil", you name the one you hold and the price follows it — until you
+         "foil", you name the one you hold and the price follows it. Until you
          do, the dearest match is used and the row says <code>guessed</code>,
          because an overpriced card sits unsold where an underpriced one is
          already gone.</p>
@@ -182,7 +182,7 @@
   <h2 class="band-h">Or run the whole thing yourself</h2>
   <p class="band-lede">
     Three containers and a Postgres volume. No telemetry, no upload of your
-    images to anyone, and — running it yourself — no account to create: one
+    images to anyone, and, running it yourself, no account to create: one
     implicit owner holds everything, and the login screen never appears.
   </p>
   <pre class="code-block"><code>git clone https://github.com/foilstack/foilstack.git
@@ -194,8 +194,8 @@ docker compose exec web foilstack embed</code></pre>
   <div class="two-up">
     <div>
       <h3>Bring your own catalogue</h3>
-      <p>Source plugins fetch card data from upstream on <em>your</em> machine —
-         this project redistributes no prices and no images. Adding a game or a
+      <p>Source plugins fetch card data from upstream on <em>your</em> machine.
+         This project redistributes no prices and no images. Adding a game or a
          sport means writing one plugin.</p>
     </div>
     <div>

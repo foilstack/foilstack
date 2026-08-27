@@ -255,7 +255,7 @@ class TCGCSVSource:
             # Their throttle lasts about ten minutes. Retrying inside it just
             # deepens the hole, so stop and let the operator come back.
             raise RateLimited(
-                f"rate limited by tcgcsv.com — wait ~10 minutes before retrying ({url})"
+                f"rate limited by tcgcsv.com. wait ~10 minutes before retrying ({url})"
             )
         response.raise_for_status()
         payload = response.json()

@@ -179,7 +179,7 @@ async def run_import(job_id: int, archive_path: Path, settings: Settings) -> Non
         if search.count(session, settings.embed_model) == 0:
             job.status = "failed"
             job.message = (
-                "no catalogue vectors for this encoder — run `foilstack ingest` "
+                "no catalogue vectors for this encoder. run `foilstack ingest` "
                 "then `foilstack embed`"
             )
             session.commit()

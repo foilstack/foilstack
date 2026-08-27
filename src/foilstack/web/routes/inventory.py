@@ -211,8 +211,8 @@ async def api_inventory_bulk_delete(
             400,
             f"{len(sold)} of these {'has' if len(sold) == 1 else 'have'} sold. "
             "A sold row is the only record of "
-            "that sale and carries the cost basis behind your realised profit — "
-            "delete those one at a time, from the card page, if you really mean to.",
+            "that sale and carries the cost basis behind your realised profit. "
+            "Delete those one at a time, from the card page, if you really mean to.",
         )
 
     count = len(items)

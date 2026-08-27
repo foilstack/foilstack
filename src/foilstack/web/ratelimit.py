@@ -100,4 +100,4 @@ def wait_message(seconds: float) -> str:
     attacker the limit is there for.
     """
     minutes = max(1, int(seconds // 60) + (1 if seconds % 60 else 0))
-    return f"too many attempts — try again in about {minutes} minute" + ("s" if minutes > 1 else "")
+    return f"too many attempts. try again in about {minutes} minute" + ("s" if minutes > 1 else "")

@@ -25,7 +25,7 @@
     </table>
     <p class="note">
       A source plugin runs code and reaches the network. Nothing is installed
-      automatically and there is no registry — you add one deliberately, the same
+      automatically and there is no registry. You add one deliberately, the same
       way you would any other dependency.
     </p>
   </div>
@@ -77,12 +77,12 @@
     </div>
     {% else %}
     <div class="empty">
-      no encoder reachable at <code>{{ encoder_url }}</code> — matching will fail until it is running
+      no encoder reachable at <code>{{ encoder_url }}</code>. Matching will fail until it is running
     </div>
     {% endif %}
     <p class="note">
       Vectors from two different encoders are not comparable, and the failure is
-      silent — plausible matches that are simply wrong. If you change the model,
+      silent, producing plausible matches that are simply wrong. If you change the model,
       re-encode the catalogue.
     </p>
   </div>

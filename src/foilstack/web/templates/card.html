@@ -73,7 +73,7 @@
         {% endif %}
       {% else %}
         <p class="panel-note">
-          Nothing recorded for this printing yet — the <code>prices</code> service
+          Nothing recorded for this printing yet. The <code>prices</code> service
           writes a reading on its next run.
         </p>
       {% endif %}
@@ -107,7 +107,7 @@
     <p class="panel-note">
       These copies are not all the same condition or finish. A marketplace
       export splits them into separate listings, because condition sets the
-      price — this screen keeps them together because you own one card.
+      price, but this screen keeps them together because you own one card.
     </p>
     {% endif %}
   </div>
@@ -152,7 +152,7 @@
               <td>{{ c.condition }}</td>
               <td class="{{ 'foil-yes' if c.is_foil else 'muted' }}">
                 {{ c.sub_type or c.finish_label }}
-                {% if c.printing_guessed %}<span class="pill warn" title="No printing chosen — priced as the dearest match">guessed</span>{% endif %}
+                {% if c.printing_guessed %}<span class="pill warn" title="No printing chosen, so it is priced as the dearest match">guessed</span>{% endif %}
               </td>
               <td class="r muted">{{ c.cost|money if c.cost is not none else '—' }}</td>
               <td>

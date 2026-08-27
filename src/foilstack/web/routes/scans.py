@@ -78,7 +78,7 @@ def _queue_rows(session, user_id: int) -> list[dict]:
         if scan.status == "error":
             alt = scan.error or "could not read this image"
         elif top is None:
-            alt = "no match in the catalogue — is this game ingested?"
+            alt = "no match in the catalogue. is this game ingested?"
         elif len(scan.candidates) > 1:
             runner = scan.candidates[1]
             alt = (
@@ -91,7 +91,7 @@ def _queue_rows(session, user_id: int) -> list[dict]:
             # decision, so hanging "low confidence" on all of them — including
             # a 99% match — trains the reader to ignore the one row where it
             # means something.
-            alt = "low confidence — check the printing before committing"
+            alt = "low confidence. check the printing before committing"
 
         # A person's choice outranks the encoder's ranking, and survives a
         # reload because it is a column rather than a state the browser is
@@ -268,7 +268,7 @@ async def api_import(
             raise HTTPException(
                 413,
                 f"this account is using {used / 1048576:.0f} MB of its "
-                f"{settings.max_account_mb} MB limit — discard some scans first",
+                f"{settings.max_account_mb} MB limit. discard some scans first",
             )
 
     tmp = Path(tempfile.mkdtemp(prefix="foilstack-")) / "upload.zip"

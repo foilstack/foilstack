@@ -65,7 +65,7 @@
     </div>
     {% if r.printing_guessed %}
     <span class="field-hint warn">
-      Not chosen — priced as the dearest printing that matches “{{ r.finish_label }}”.
+      Not chosen, so it is priced as the dearest printing that matches “{{ r.finish_label }}”.
       Pick the one you hold.
     </span>
     {% elif r.printing_declared %}
@@ -73,7 +73,7 @@
     {% endif %}
     {% else %}
     <span class="field-hint">
-      No printing prices for this card yet — run <code>foilstack sync-prices</code>.
+      No printing prices for this card yet. Run <code>foilstack sync-prices</code>.
     </span>
     {% endif %}
   </div>
@@ -118,7 +118,7 @@
     </div>
     <p class="panel-note">
       Sold rows leave your stock and stop being exported, but stay in the
-      table — they are what makes realised profit answerable. Deleting a card
+      table, because they are what makes realised profit answerable. Deleting a card
       you sold takes its cost basis with it.
     </p>
   </div>
@@ -127,5 +127,5 @@
     <button class="btn btn-primary btn-tall btn-block" type="submit">Save changes</button>
     <button class="btn btn-tall btn-danger" type="button" data-delete>Delete</button>
   </div>
-  <p class="panel-note">Delete is for a copy you never had. If the scan is right and the card it matched is wrong, use <b>Not this card?</b> above instead — it keeps the scan. Delete cannot be undone.</p>
+  <p class="panel-note">Delete is for a copy you never had. If the scan is right and the card it matched is wrong, use <b>Not this card?</b> above instead, which keeps the scan. Delete cannot be undone.</p>
 </form>

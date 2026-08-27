@@ -74,7 +74,7 @@ class CardRecord:
             raise ValueError("source_id, name and game are required")
         if not self.image_url:
             raise ValueError(
-                f"{self.source_id}: image_url is required — a card with no "
+                f"{self.source_id}: image_url is required, because a card with no "
                 "reference image cannot be matched against a scan"
             )
 
