@@ -22,7 +22,7 @@
       <input type="file" id="file" name="archive" multiple
              accept=".zip,.jpg,.jpeg,.png,.tif,.tiff,.webp" hidden>
       <div class="drop" id="drop" {% if active %}hidden{% endif %}>
-        <div class="drop-card"></div>
+        <div class="drop-card" aria-hidden="true"><i></i></div>
         <div class="drop-title">Drop your card scans here</div>
         <div class="drop-sub">one image per card, or a .zip of them<br>
           up to {{ "{:,}".format(max_images) }} scans · {{ max_mb }} MB per upload</div>

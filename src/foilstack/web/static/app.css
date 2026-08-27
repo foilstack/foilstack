@@ -370,9 +370,34 @@ body.app {
   transition: border-color .12s, background .12s;
 }
 .drop:hover, .drop.over { border-color: var(--green); background: var(--green-tint); }
+/* Three cards, fanned. It used to be one plain rectangle, which read as a
+   white box rather than as anything you would sleeve: nothing about it said
+   "card", and at 40x52 it was squarer than the 1:1.4 a real one is.
+
+   The two cards behind are pseudo-elements. The front one has to be a real
+   child, because a pseudo-element always paints over its parent's background
+   and there is no way to bring the parent in front of its own pseudos without
+   a negative z-index that would also drop it behind the drop zone. */
 .drop-card {
-  width: 40px; height: 52px;
+  position: relative; width: 42px; height: 58px;
+}
+.drop-card::before, .drop-card::after, .drop-card > i {
+  content: ""; position: absolute; inset: 0;
   border: 1px solid var(--edge); border-radius: 3px; background: var(--surface);
+}
+.drop-card::before { transform: rotate(-9deg) translate(-4px, 2px); }
+.drop-card::after { transform: rotate(9deg) translate(4px, 2px); }
+/* An art window and two lines of text: enough of a card face to be read as
+   one at 42px, without pretending to be any card in particular. */
+.drop-card > i {
+  /* ::after paints after child content, so without this the right-hand card
+     of the fan covers the face of the one meant to be in front. */
+  display: block; z-index: 1;
+  background:
+    linear-gradient(var(--rule), var(--rule)) 5px 5px / 30px 23px no-repeat,
+    linear-gradient(var(--rule-soft), var(--rule-soft)) 5px 33px / 30px 3px no-repeat,
+    linear-gradient(var(--rule-soft), var(--rule-soft)) 5px 39px / 19px 3px no-repeat,
+    var(--surface);
 }
 .drop-title { font-size: 13px; font-weight: 600; }
 .drop-sub {
