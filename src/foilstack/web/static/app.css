@@ -628,6 +628,21 @@ body.app {
 .dtable .strong { font-weight: 700; }
 .dtable .cbcol { width: 30px; }
 .dtable .refcol { padding: 4px 8px; }
+.dtable .neg { color: var(--warn); }
+/* One cell absorbs the slack and truncates; the rest size to their content, so
+   the columns line up down the table. `max-width: 0` is what makes it work —
+   an auto table gives a cell its content's width unless told otherwise, and
+   `overflow: hidden` on something already wide enough never clips. */
+.dtable .ell { max-width: 0; width: 100%; overflow: hidden; text-overflow: ellipsis; }
+
+/* Same table in a sidebar: tighter, flush to the column edges, and with the
+   sticky header switched off — .pane-import scrolls, so a header that stuck
+   would float over the settings above it. */
+.dtable.compact { font-size: 10.5px; }
+.dtable.compact th, .dtable.compact td { padding: 4px 6px; }
+.dtable.compact th { position: static; background: none; }
+.dtable.compact th:first-child, .dtable.compact td:first-child { padding-left: 0; }
+.dtable.compact th:last-child, .dtable.compact td:last-child { padding-right: 0; }
 .thumb-xs {
   /* `display` is not optional here. This is a <span>, so without it the box is
      inline, width/height/overflow are all ignored, and the reference image

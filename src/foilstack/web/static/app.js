@@ -139,3 +139,22 @@ function wireCardSearch(box, opts) {
   run();
   return run;
 }
+
+/* Timestamps are rendered by the server, which is in UTC and has no idea where
+   the reader is — so "Aug 27 01:20" was a scan imported at nine the previous
+   evening. Anything carrying a machine-readable `datetime` gets restated in the
+   reader's own zone once the page is up. The server's text stands until then,
+   and stands for good if this never runs, so the column is never empty. */
+function localTimes(root) {
+  $$('time[data-local]', root).forEach(el => {
+    const at = new Date(el.getAttribute('datetime'));
+    if (isNaN(at)) return;
+    el.textContent = at.toLocaleString([], {
+      month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+    });
+    el.title = at.toLocaleString();
+  });
+}
+
+// This file is loaded at the end of <body>, so everything above it is parsed.
+localTimes();
