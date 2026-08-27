@@ -193,6 +193,16 @@
             <button class="qalt-fix" type="button" data-fix>wrong card?</button>
             {% endif %}
           </div>
+          {# Only where a runner-up shares the name. That is the case the
+             pictures cannot settle, and the only one worth spending a line
+             telling someone where to look. #}
+          {% if r.twin %}
+          <div class="qtell" title="This: {{ r.name }}{% if r.set_name %} · {{ r.set_name }}{% endif %}{% if r.number %} · #{{ r.number }}{% endif %}{% if r.variant %} · {{ r.variant }}{% endif %}
+Also matched ({{ r.twin.pct }}): {{ r.name }}{% if r.twin.set_name %} · {{ r.twin.set_name }}{% endif %}{% if r.twin.number %} · #{{ r.twin.number }}{% endif %}{% if r.twin.variant %} · {{ r.twin.variant }}{% endif %}">
+            same artwork · check the
+            {%- for look in r.twin.looks %} <b>{{ look }}</b>{{ '' if loop.last else ' ·' }}{%- endfor %}
+          </div>
+          {% endif %}
         </div>
         <div class="qconf">
           {% if r.chosen %}{{ chosen_icon() }}{% else %}

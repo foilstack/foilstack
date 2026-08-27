@@ -41,6 +41,26 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _tells_apart(card, rival) -> list[str]:
+    """What to look at on the card itself to choose between two printings.
+
+    Named after the region a reader has to inspect rather than the column that
+    differs, because "differs by set" is a fact about the database and "check
+    the set symbol" is an instruction about the object in your hand. This is
+    the whole difficulty of the queue: a reprint shares its artwork exactly, so
+    the picture cannot settle it and the answer is always in a few square
+    millimetres of small print.
+    """
+    looks = []
+    if (card.set_name or "") != (rival.set_name or ""):
+        looks.append("set symbol")
+    if (card.number or "") != (rival.number or ""):
+        looks.append("number")
+    if (card.variant or "") != (rival.variant or ""):
+        looks.append("printing")
+    return looks
+
+
 def _queue_rows(session, user_id: int) -> list[dict]:
     """The match queue: scans still waiting on a decision.
 
@@ -107,14 +127,40 @@ def _queue_rows(session, user_id: int) -> list[dict]:
                 if top is not None and top.card_id != chosen.id
                 else ""
             )
+        # The dangerous rival is the one sharing the name. A reprint's artwork
+        # is identical, so the pictures cannot settle it and the answer is in
+        # the small print; a differently-named candidate is a different picture
+        # and the reader can already judge that for themselves.
+        twin = None
+        if card is not None:
+            for c in scan.candidates:
+                if c.card_id == card.id or c.card.name != card.name:
+                    continue
+                looks = _tells_apart(card, c.card)
+                if looks:
+                    twin = {
+                        "set_name": c.card.set_name or "",
+                        "number": c.card.number or "",
+                        "variant": c.card.variant or "",
+                        "looks": looks,
+                        "pct": f"{c.score * 100:.0f}%",
+                    }
+                break
+
         rows.append(
             {
                 "scan_id": scan.id,
+                "twin": twin,
                 "filename": scan.filename,
                 "needs_review": needs_review,
                 "chosen": chosen is not None,
                 "card_id": card.id if card else None,
                 "name": card.name if card else "Unidentified",
+                # Separately as well as inside `meta`, so a comparison against
+                # the twin can line the two printings up field by field.
+                "set_name": (card.set_name or "") if card else "",
+                "number": (card.number or "") if card else "",
+                "variant": (card.variant or "") if card else "",
                 "image_url": card.image_url if card else None,
                 "market": (card.market or 0.0) if card else 0.0,
                 # What this card costs in each printing, so the queue can show the
@@ -152,6 +198,7 @@ def _queue_rows(session, user_id: int) -> list[dict]:
                         "name": c.card.name,
                         "variant": c.card.variant or "",
                         "set_name": c.card.set_name or "",
+                        "number": c.card.number or "",
                         "game": c.card.game,
                         "pct": f"{c.score * 100:.0f}%",
                     }

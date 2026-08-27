@@ -1273,6 +1273,130 @@ def test_uploads_that_are_neither_one_archive_nor_images_are_refused(app_and_dat
     assert "expected one .zip archive" in response.json()["detail"]
 
 
+def _twin_scan(session, owner_id, *, rival_set, rival_number):
+    """A scan whose top match has a same-named rival, and the ids to clean up."""
+    from foilstack import db
+
+    mine = db.Card(
+        source="t",
+        source_id=f"t:twin-a-{rival_set}-{rival_number}",
+        name="Twin Card",
+        game="mtg",
+        set_name="First Printing",
+        number="1",
+        market=1.0,
+    )
+    rival = db.Card(
+        source="t",
+        source_id=f"t:twin-b-{rival_set}-{rival_number}",
+        name="Twin Card",
+        game="mtg",
+        set_name=rival_set,
+        number=rival_number,
+        market=90.0,
+    )
+    session.add_all([mine, rival])
+    session.commit()
+    job = db.ImportJob(user_id=owner_id, filename="twin.zip", status="done", total=1)
+    session.add(job)
+    session.commit()
+    scan = db.Scan(
+        job_id=job.id,
+        user_id=owner_id,
+        filename="twin.jpg",
+        stored_path="1/card.jpg",
+        status="pending",
+    )
+    session.add(scan)
+    session.commit()
+    session.add_all(
+        [
+            db.Candidate(scan_id=scan.id, card_id=mine.id, score=0.94, rank=0),
+            db.Candidate(scan_id=scan.id, card_id=rival.id, score=0.91, rank=1),
+        ]
+    )
+    session.commit()
+    return scan, job, [mine, rival]
+
+
+def _cleanup(session, scan, job, cards):
+    from sqlalchemy import delete
+
+    from foilstack import db
+
+    session.execute(delete(db.Candidate).where(db.Candidate.scan_id == scan.id))
+    session.delete(scan)
+    session.delete(job)
+    session.commit()
+    for c in cards:
+        session.delete(c)
+    session.commit()
+
+
+def test_a_reprint_rival_names_the_part_of_the_card_to_check(app_and_data):
+    """The pictures cannot separate two printings, so the row has to.
+
+    A reprint shares its artwork exactly. Putting the scan beside the
+    catalogue image proves nothing in that case, and the difference is a set
+    symbol a few pixels wide, so the row says which small print decides it.
+    """
+    from foilstack import db
+
+    app, ids = app_and_data
+    session = db.session()
+    owner_id = session.get(db.ImportJob, ids["job"]).user_id
+    scan, job, cards = _twin_scan(session, owner_id, rival_set="Second Printing", rival_number="1")
+
+    body = _signed_in(app).get("/app").text
+    assert "same artwork · check the" in body
+    assert "<b>set symbol</b>" in body
+    # The number is identical here, so naming it would send someone to squint
+    # at the one thing that cannot settle it.
+    assert "<b>number</b>" not in body
+
+    _cleanup(session, scan, job, cards)
+    session.close()
+
+
+def test_a_rival_in_the_same_set_names_the_number_instead(app_and_data):
+    """Same set, different number: the symbol is no help and must not be cited."""
+    from foilstack import db
+
+    app, ids = app_and_data
+    session = db.session()
+    owner_id = session.get(db.ImportJob, ids["job"]).user_id
+    scan, job, cards = _twin_scan(session, owner_id, rival_set="First Printing", rival_number="373")
+
+    body = _signed_in(app).get("/app").text
+    assert "<b>number</b>" in body
+    assert "<b>set symbol</b>" not in body
+
+    _cleanup(session, scan, job, cards)
+    session.close()
+
+
+def test_a_differently_named_rival_says_nothing(app_and_data):
+    """Two different cards are two different pictures, which a reader can judge.
+
+    Spending a line telling them where to squint would be noise on the rows
+    that least need it.
+    """
+    from foilstack import db
+
+    app, ids = app_and_data
+    session = db.session()
+    owner_id = session.get(db.ImportJob, ids["job"]).user_id
+    scan, job, cards = _twin_scan(session, owner_id, rival_set="Second Printing", rival_number="9")
+    cards[1].name = "A Different Card"
+    session.commit()
+
+    body = _signed_in(app).get("/app").text
+    assert "same artwork · check the" not in body
+
+    _cleanup(session, scan, job, cards)
+    session.close()
+
+
 def _with_setting(monkeypatch, web, **changes):
     """Run the app with `changes` applied to its Settings.
 

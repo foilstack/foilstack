@@ -495,6 +495,20 @@ body.app {
   background: var(--surface);
 }
 .qrow.review { background: var(--warn-tint); }
+
+/* Where to look, when the pictures cannot help.
+
+   A reprint shares its artwork exactly, so the two images in this row are the
+   same image and comparing them proves nothing. What separates the printings
+   is a set symbol a few pixels wide and a collector number smaller still, and
+   knowing which of those to go and squint at is most of the work. Shown only
+   on rows where a runner-up carries the same name, which is the only case
+   where it is true. */
+.qtell {
+  margin-top: 3px;
+  font-family: var(--mono); font-size: 10.5px; color: var(--warn);
+}
+.qtell b { font-weight: 600; }
 .thumb {
   width: 46px; height: 64px; flex: 0 0 46px;
   border: 1px solid var(--rule); border-radius: 2px;
