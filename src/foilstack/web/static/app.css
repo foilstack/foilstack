@@ -436,6 +436,26 @@ body.app {
 .matcher .strong { color: var(--green); }
 .setting-note { color: var(--muted); font-size: 11.5px; margin-top: 10px; line-height: 1.5; }
 
+/* The prose under the match settings answers two questions that only need
+   answering once — why finish is yours to set, and what auto-accept actually
+   checks. Fourteen lines of it sat between the chips and "Recent imports",
+   so the answer to "did my last import work" was below the fold on a laptop.
+   Kept reachable rather than resident. */
+.why { margin-top: 10px; }
+.why > summary {
+  font-family: var(--mono); font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--faint);
+  display: flex; align-items: center; gap: 6px;
+  cursor: pointer; user-select: none;
+  /* Both are needed: the second is the only one Safari listens to. */
+  list-style: none;
+}
+.why > summary::-webkit-details-marker { display: none; }
+.why > summary::before { content: "+"; font-size: 12px; line-height: 1; }
+.why[open] > summary::before { content: "\2212"; }
+.why > summary:hover { color: var(--muted); }
+.why .setting-note:first-of-type { margin-top: 6px; }
+
 /* ---------- the match queue ---------- */
 .qrow {
   /* `flex-wrap: wrap` means items wrap when their *base* sizes overflow —
