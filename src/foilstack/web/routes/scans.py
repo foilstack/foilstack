@@ -64,6 +64,31 @@ def _row_price(prices: dict[str, float], finish: str, fallback: float) -> float:
     return max(matching or list(prices.values()))
 
 
+def _price_map(printings: dict) -> dict[str, float]:
+    """Per-printing market prices keyed by sub-type, with the unpriced dropped."""
+    return {name: row.market for name, row in printings.items() if row.market is not None}
+
+
+def _card_meta(card) -> str:
+    """The line under a card's name in the queue: game, set, number, price.
+
+    Shared with `api_choose`, which has to reproduce it exactly. Correcting a
+    match rewrites this line in the browser, and building the string in two
+    places is how the corrected row came to be the one row on the page with no
+    price under it.
+    """
+    return " · ".join(
+        part
+        for part in [
+            card.game,
+            card.set_name,
+            f"#{card.number}" if card.number else None,
+            _money(card.market) if card.market is not None else None,
+        ]
+        if part
+    )
+
+
 def _queue_rows(session, user_id: int) -> list[dict]:
     """The match queue: scans still waiting on a decision.
 
@@ -146,23 +171,8 @@ def _queue_rows(session, user_id: int) -> list[dict]:
                 # What this card costs in each printing, so the queue can show the
                 # price for the finish that is actually selected. Before this the
                 # row showed the plain printing's price whatever the toggle said.
-                "prices": {
-                    name: row.market
-                    for name, row in (priced.get(card.id, {}) if card else {}).items()
-                    if row.market is not None
-                },
-                "meta": " · ".join(
-                    p
-                    for p in [
-                        card.game if card else None,
-                        card.set_name if card else None,
-                        f"#{card.number}" if card and card.number else None,
-                        _money(card.market) if card and card.market is not None else None,
-                    ]
-                    if p
-                )
-                if card
-                else scan.filename,
+                "prices": _price_map(priced.get(card.id, {})) if card else {},
+                "meta": _card_meta(card) if card else scan.filename,
                 "alt": alt,
                 "score": top.score if top else 0.0,
                 "pct": f"{(top.score if top else 0) * 100:.0f}%",
@@ -506,7 +516,19 @@ def api_choose(
         raise HTTPException(400, "no such card")
     scan.chosen_card_id = card.id
     session.commit()
-    return {"ok": True, "card_id": card.id}
+    # The prices and the meta line for the card that was just picked. The row
+    # rewrites both in the browser, and it has nowhere else to get them: the
+    # panel it was picked from lists names and sets, not per-printing prices.
+    # Without these the corrected row lost its price and did not get it back
+    # until it was committed and had become inventory — the one row on the
+    # screen with no number on it being, of course, the one a person had just
+    # taken a deliberate interest in.
+    return {
+        "ok": True,
+        "card_id": card.id,
+        "prices": _price_map(inventory._prices_for(session, {card.id}).get(card.id, {})),
+        "meta": _card_meta(card),
+    }
 
 
 def _confirm(

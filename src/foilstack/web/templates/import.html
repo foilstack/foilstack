@@ -427,9 +427,6 @@ $$('.qrow').forEach(row => {
     row.dataset.cond = b.dataset.cond;
   }));
   const foil = $('.foil-toggle', row);
-  const priceEl = $('.qprice', row);
-  let prices = {};
-  try { prices = JSON.parse(row.dataset.prices || '{}'); } catch (e) { prices = {}; }
 
   // What this batch was imported as. Read before the first setFoil() below,
   // which is the last moment the row is guaranteed to still be showing it.
@@ -451,15 +448,29 @@ $$('.qrow').forEach(row => {
     foil.title = v === imported
       ? 'Foil or non-foil' : 'changed from this import\'s default';
     // The price for the printing this finish resolves to — dearest match, the
-    // same rule pricing uses — so the number on screen is the number the card
-    // will be worth if committed as it stands.
+    // same rule pricing and the queue's ordering use — so the number on screen
+    // is the number the card will be worth if committed as it stands.
+    //
+    // Both of these are read fresh on every call rather than captured when the
+    // row was wired, because correcting a match replaces them: the prices
+    // belong to a different card afterwards, and `.qmeta` is rebuilt, which
+    // means the span held from wiring time is a detached node nothing on the
+    // page can see. Held that way, the toggle went on quietly writing prices
+    // into an element that had been thrown away.
+    let prices = {};
+    try { prices = JSON.parse(row.dataset.prices || '{}'); } catch (e) { prices = {}; }
+    const priceEl = $('.qprice', row);
     const names = Object.keys(prices);
     const matching = names.filter(n => /foil/i.test(n) === (v === 'foil'));
     const use = (matching.length ? matching : names)
       .sort((a, b) => prices[b] - prices[a])[0];
-    priceEl.textContent = use === undefined ? '' :
+    if (priceEl) priceEl.textContent = use === undefined ? '' :
       '$' + Number(prices[use]).toFixed(2) + ' · ';
   }
+  // Redraw after something other than the toggle changes the row's prices,
+  // which is how `applyPick` gets the corrected card's number on screen
+  // without reaching into this closure.
+  row.addEventListener('prices-changed', () => setFoil(row.dataset.finish));
   // Seeded from the default the scan was imported under, which the server has
   // already rendered — read back rather than re-decided, so the markup and the
   // price below it cannot disagree. Setting it once at import covers the batch
@@ -521,15 +532,31 @@ async function applyPick(row, box, pick) {
   row.dataset.card = pick.dataset.pick;
   $('.qname', row).textContent = pick.dataset.name;
   $('.qname', row).classList.remove('faint');
-  $('.qmeta', row).innerHTML = '<span class="qprice"></span>' + pick.dataset.sub;
+
+  // Rebuilt rather than assigned as innerHTML. The text is a card's set name
+  // arriving from a catalogue this project does not control, and putting it
+  // through the HTML parser to draw four words of plain text is a needless
+  // way to be wrong later.
+  //
+  // `meta` comes from the server so that this line reads exactly as the one
+  // the queue renders, price included; `sub` is the fallback for a response
+  // too old to carry it.
+  const meta = $('.qmeta', row);
+  meta.textContent = '';
+  const priceSpan = document.createElement('span');
+  priceSpan.className = 'qprice';
+  meta.append(priceSpan, saved.meta || pick.dataset.sub);
 
   const ref = $('.thumb.ref img', row);
   if (ref) ref.src = '/card/' + pick.dataset.pick + '/image';
 
-  // The stored per-printing prices belonged to the card that was replaced.
-  // Blanking them shows no price rather than the wrong one; the real figure
-  // is computed against the corrected card once it is inventory.
-  row.dataset.prices = '{}';
+  // The corrected card's own prices, which arrived with the save. These used
+  // to be blanked and left blank: showing no price rather than the wrong one
+  // was right as far as it went, but nothing ever put the right one back, so
+  // the row a person had just deliberately corrected was the only one on the
+  // screen with no price under it until it was committed.
+  row.dataset.prices = JSON.stringify(saved.prices || {});
+  row.dispatchEvent(new Event('prices-changed'));
 
   // The match bar measured the encoder's confidence in a card that is no
   // longer on this row. A chosen card has no score — it has a person, which

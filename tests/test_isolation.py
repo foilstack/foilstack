@@ -1730,3 +1730,75 @@ def test_a_scan_that_matched_nothing_sorts_below_one_that_did(app_and_data):
         order = _queue_order(client.get("/app").text)
 
     assert order.index(cheap) < order.index(unmatched)
+
+
+@contextmanager
+def _priced_card(printings, market=None):
+    """One catalogue card with per-printing prices, torn down afterwards."""
+    from foilstack import db
+
+    session = db.session()
+    card = db.Card(
+        source="t",
+        source_id=f"priced:{uuid.uuid4().hex[:10]}",
+        name="Corrected Card",
+        game="mtg",
+        set_name="Some Set",
+        number="42",
+        market=market,
+    )
+    session.add(card)
+    session.commit()
+    for sub_type, price in printings.items():
+        session.add(db.CardPrice(card_id=card.id, sub_type=sub_type, market=price))
+    session.commit()
+    try:
+        yield card.id
+    finally:
+        session.query(db.CardPrice).filter(db.CardPrice.card_id == card.id).delete()
+        session.commit()
+        session.delete(session.get(db.Card, card.id))
+        session.commit()
+        session.close()
+
+
+def test_correcting_a_match_hands_back_the_new_card_s_price(app_and_data):
+    """The corrected row had nowhere to get it, so it showed nothing.
+
+    Picking a card rewrites the row in the browser, and the panel it was picked
+    from lists names and sets, not per-printing prices. The old code blanked
+    the prices of the card being replaced — right, as far as it went — and
+    never put anything back, so the one row a person had just taken a
+    deliberate interest in was the only one on screen with no price under it,
+    until it was committed and became inventory.
+    """
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    with _priced_card({"Normal": 3.5, "Foil": 21.0}, market=3.5) as card_id:
+        saved = client.post(f"/api/scans/{ids['scan']}/choose", data={"card_id": card_id}).json()
+
+    assert saved["ok"] is True
+    assert saved["prices"] == {"Normal": 3.5, "Foil": 21.0}
+    # The meta line, rendered by the server so the corrected row reads exactly
+    # as one the queue drew itself — the price included, which is the half the
+    # browser could not have built on its own.
+    assert saved["meta"] == "mtg · Some Set · #42 · $3.50"
+
+
+def test_a_printing_with_no_price_is_left_out_rather_than_sent_as_null(app_and_data):
+    """The row's price rule takes the dearest of what it is given.
+
+    A `null` in that map sorts as a number in JavaScript and would win or lose
+    the comparison by accident, putting `$null` under a card's name.
+    """
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    with _priced_card({"Normal": 1.25, "Foil": None}) as card_id:
+        saved = client.post(f"/api/scans/{ids['scan']}/choose", data={"card_id": card_id}).json()
+
+    assert saved["prices"] == {"Normal": 1.25}
+    # No market on the card either, so the meta line simply stops after the
+    # number rather than trailing a separator with nothing behind it.
+    assert saved["meta"] == "mtg · Some Set · #42"
