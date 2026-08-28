@@ -42,6 +42,28 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _row_price(prices: dict[str, float], finish: str, fallback: float) -> float:
+    """What this row is worth as it currently stands, for ordering the queue.
+
+    The same rule the row's own price label uses, deliberately: among the
+    printings stored for the card, keep the ones whose foil-ness matches the
+    finish this scan was imported under, and take the dearest. Anything else
+    and the queue would sort by one number while displaying another, which is
+    worse than not sorting at all — the reader cannot see the key.
+
+    Falls back to `card.market` when the card has no per-printing prices, which
+    is what the row's meta line shows in that case, and to zero for a scan that
+    matched nothing. Both sink to the bottom, where they belong: a row with no
+    identified card has no value to confirm, and the "No match" tab is how you
+    go looking for those on purpose.
+    """
+    if not prices:
+        return fallback
+    want_foil = finish == "foil"
+    matching = [v for name, v in prices.items() if ("foil" in name.lower()) == want_foil]
+    return max(matching or list(prices.values()))
+
+
 def _queue_rows(session, user_id: int) -> list[dict]:
     """The match queue: scans still waiting on a decision.
 
@@ -183,6 +205,21 @@ def _queue_rows(session, user_id: int) -> list[dict]:
                 "finish": scan.job.default_finish or "nonfoil",
             }
         )
+
+    # Dearest first, so the cards worth getting right are the ones in front of
+    # you. Confirming a queue is work that tends to be abandoned part-way, and
+    # where it stops is arbitrary — ordering by value makes the part that got
+    # done the part that mattered.
+    #
+    # A stable sort, so rows of equal value keep the newest-first order the
+    # query gave them and a fresh import still opens with its own cards on top
+    # of older ones worth the same. That is most of them: an unpriced card and
+    # an unmatched scan both key to zero.
+    #
+    # Note this reorders the 400 rows the query returned, which are the newest
+    # 400. A queue longer than that was already only partly visible; this does
+    # not change what is on the page, only the order of it.
+    rows.sort(key=lambda r: _row_price(r["prices"], r["finish"], r["market"]), reverse=True)
     return rows
 
 

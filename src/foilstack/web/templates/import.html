@@ -7,7 +7,7 @@
 </span>
 {%- endmacro %}
 {% block title %}Import scans · foilstack{% endblock %}
-{% block status %}{% if active %}import running · {{ active.processed }}/{{ active.total }}{% elif counts.all %}{{ counts.all }} scans waiting · {{ counts.nomatch }} with no match{% else %}queue clear · drop some scans to begin{% endif %}{% endblock %}
+{% block status %}{% if active %}import running · {{ active.processed }}/{{ active.total }}{% elif counts.all %}{{ counts.all }} scans to confirm · {{ counts.nomatch }} with no match{% else %}queue clear · drop some scans to begin{% endif %}{% endblock %}
 
 {% block screen %}
 <div class="split">
@@ -46,10 +46,19 @@
       </div>
     </div>
 
+    {# Two of these counted something other than what they were called.
+       "matched" was `job.processed`, which increments for every scan the
+       importer finishes — including the ones that matched nothing and the ones
+       that errored — so a batch where half the images failed still reported
+       them as matched. And "waiting" is not part of this import at all: it is
+       the review queue, which outlives the job and holds rows from earlier
+       batches too. Sat in a row of progress numbers it read as "waiting to be
+       identified" and looked stuck, because it does not move while an archive
+       uploads. #}
     <div class="tiles-3" id="stats" {% if not active %}hidden{% endif %}>
-      <div class="tile-sm"><div class="k">scans</div><div class="v" id="t-scans">{{ active.total if active else 0 }}</div></div>
-      <div class="tile-sm"><div class="k">matched</div><div class="v" id="t-matched">{{ active.processed if active else 0 }}</div></div>
-      <div class="tile-sm"><div class="k">waiting</div><div class="v" id="t-review">{{ counts.all }}</div></div>
+      <div class="tile-sm" title="Images found in this archive"><div class="k">scans</div><div class="v" id="t-scans">{{ active.total if active else 0 }}</div></div>
+      <div class="tile-sm" title="Scans the matcher has finished with, including any that found nothing"><div class="k">processed</div><div class="v" id="t-processed">{{ active.processed if active else 0 }}</div></div>
+      <div class="tile-sm" title="Cards in the review queue waiting for you to confirm them, including any left over from earlier imports"><div class="k">to confirm</div><div class="v" id="t-review">{{ counts.all }}</div></div>
     </div>
 
     <div style="display: flex; gap: 8px;" id="actions" {% if not active %}hidden{% endif %}>
@@ -276,7 +285,7 @@ function pick(files) {
   $('#stage').textContent = 'ready';
   setBar(0);
   $('#t-scans').textContent = '—';
-  $('#t-matched').textContent = '0';
+  $('#t-processed').textContent = '0';
   show(chip, true); show($('#stats'), true); show($('#actions'), true); show(drop, false);
 }
 function reset() {
@@ -401,7 +410,7 @@ async function poll(id) {
   // yet — there is no denominator to divide by, so the bar sweeps instead of
   // claiming 0%.
   $('#t-scans').textContent = job.total || '—';
-  $('#t-matched').textContent = job.processed;
+  $('#t-processed').textContent = job.processed;
   if (job.status === 'failed') { fail('failed — ' + (job.message || '')); return; }
   setBar(job.total ? Math.round(100 * job.processed / job.total) : null);
   $('#stage').textContent = STAGES[job.status] || job.status;

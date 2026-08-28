@@ -1602,3 +1602,131 @@ def test_one_batch_of_defaults_does_not_leak_onto_another(app_and_data):
     # those answers are.
     assert "foil-toggle on" in damaged_row
     assert "foil-toggle on" in played_row
+
+
+@contextmanager
+def _waiting_scans_worth(ids, markets):
+    """A batch waiting in the queue, one scan per value in `markets`.
+
+    Its own cards, because the thing under test is an ordering by price and the
+    fixture's single card would give every row the same key. A `None` market
+    means a scan that matched nothing at all: no card, no candidate.
+    """
+    from foilstack import db
+
+    session = db.session()
+    owner_id = session.get(db.Scan, ids["scan"]).user_id
+    job = db.ImportJob(
+        user_id=owner_id,
+        filename="worth.zip",
+        status="done",
+        total=len(markets),
+        processed=len(markets),
+    )
+    session.add(job)
+    session.commit()
+
+    made = []
+    for i, market in enumerate(markets):
+        card = None
+        if market is not None:
+            card = db.Card(
+                source="t",
+                source_id=f"worth:{uuid.uuid4().hex[:10]}",
+                name=f"Card worth {market}",
+                game="mtg",
+                market=market,
+            )
+            session.add(card)
+            session.commit()
+        scan = db.Scan(
+            job_id=job.id,
+            user_id=owner_id,
+            filename=f"worth-{i}.jpg",
+            stored_path="1/card.jpg",
+            status="pending",
+        )
+        session.add(scan)
+        session.commit()
+        if card is not None:
+            session.add(db.Candidate(scan_id=scan.id, card_id=card.id, score=0.8, rank=0))
+            session.commit()
+        made.append((scan.id, card.id if card else None))
+    try:
+        yield [scan_id for scan_id, _ in made]
+    finally:
+        for scan_id, _ in made:
+            session.delete(session.get(db.Scan, scan_id))
+        session.commit()
+        for _, card_id in made:
+            if card_id is not None:
+                session.delete(session.get(db.Card, card_id))
+        session.delete(session.get(db.ImportJob, job.id))
+        session.commit()
+        session.close()
+
+
+def _queue_order(html: str) -> list[int]:
+    """The scan ids of the queue rows, in the order the page puts them."""
+    return [int(n) for n in re.findall(r'id="scan-(\d+)"', html)]
+
+
+def test_the_queue_puts_the_dearest_card_first(app_and_data):
+    """Confirming a queue is work that gets abandoned part-way.
+
+    Where it stops is arbitrary, so the order decides which cards got the
+    attention. Newest-first spent it on whichever scans happened to be last out
+    of the archive; by value, the part that gets done is the part that pays.
+    """
+    worth = [3.0, 40.0, 0.5, 12.0]
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    # Deliberately neither ascending nor descending as inserted, so that
+    # "as created" and "newest first" both fail this rather than passing on a
+    # coincidence.
+    with _waiting_scans_worth(ids, worth) as scans:
+        order = _queue_order(client.get("/app").text)
+
+    by_scan = dict(zip(scans, worth, strict=True))
+    ours = [s for s in order if s in by_scan]
+    assert len(ours) == len(worth), "the batch is not all on the page"
+    assert ours == sorted(ours, key=lambda s: -by_scan[s])
+    assert by_scan[ours[0]] == 40.0
+
+
+def test_cards_worth_the_same_keep_their_newest_first_order(app_and_data):
+    """The sort is stable, and that is the whole reason it can be.
+
+    Most of a real queue keys to the same number — unpriced cards and unmatched
+    scans are all zero — so an unstable sort would shuffle the bulk of the page
+    on every reload, and a card someone was halfway through deciding about
+    would move out from under them.
+    """
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    with _waiting_scans_worth(ids, [7.0, 7.0, 7.0]) as scans:
+        order = _queue_order(client.get("/app").text)
+
+    ours = [s for s in order if s in set(scans)]
+    assert ours == sorted(scans, reverse=True)
+
+
+def test_a_scan_that_matched_nothing_sorts_below_one_that_did(app_and_data):
+    """It has no value to confirm, and no Confirm button either.
+
+    Putting it above a card worth money would spend the top of the page on the
+    one row that cannot be actioned from there. The "No match" tab is how you
+    go looking for these deliberately.
+    """
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    # The unmatched scan is created last, so it is the newest and would lead
+    # the page under the order this replaced. Created first it sorted below the
+    # priced card either way, and the test proved nothing.
+    with _waiting_scans_worth(ids, [0.25, None]) as (cheap, unmatched):
+        order = _queue_order(client.get("/app").text)
+
+    assert order.index(cheap) < order.index(unmatched)

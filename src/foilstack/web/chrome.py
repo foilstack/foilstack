@@ -190,8 +190,14 @@ def _chrome(session, request: Request, user: db.User, settings: Settings) -> dic
     return {
         "version": __version__,
         "git_sha": settings.git_sha,
-        # Recomputed per request: the stylesheet is bind-mounted during
-        # development, so caching this would defeat the point of having it.
+        # Recomputed per request rather than cached. Running from a
+        # checkout — `scripts/preview.py`, or plain `uv run` — the static files
+        # change underneath a live process, and a cached hash would serve the
+        # new CSS behind the old query string, which is the exact staleness
+        # this exists to prevent. In a container the files cannot change, so
+        # the recomputation costs a few file hashes and buys nothing; it is
+        # kept because one code path that is always right beats two that
+        # disagree about which environment they are in.
         "asset_v": _asset_version(),
         "catalog_cards": session.scalar(select(func.count(db.Card.id))) or 0,
         "vector_count": search.count(session, settings.embed_model),
