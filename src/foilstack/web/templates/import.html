@@ -7,7 +7,7 @@
 </span>
 {%- endmacro %}
 {% block title %}Import scans · foilstack{% endblock %}
-{% block status %}{% if active %}import running · {{ active.processed }}/{{ active.total }}{% elif counts.all %}{{ counts.all }} scans waiting · {{ counts.nomatch }} with no match{% else %}queue clear · drop some scans to begin{% endif %}{% endblock %}
+{% block status %}{% if active %}import running · {{ active.processed }}/{{ active.total }}{% elif counts.all %}{{ counts.all }} scans to confirm · {{ counts.nomatch }} with no match{% else %}queue clear · drop some scans to begin{% endif %}{% endblock %}
 
 {% block screen %}
 <div class="split">
@@ -22,7 +22,7 @@
       <input type="file" id="file" name="archive" multiple
              accept=".zip,.jpg,.jpeg,.png,.tif,.tiff,.webp" hidden>
       <div class="drop" id="drop" {% if active %}hidden{% endif %}>
-        <div class="drop-card" aria-hidden="true"><i></i></div>
+        <div class="cardfan" aria-hidden="true"><i></i></div>
         <div class="drop-title">Drop your card scans here</div>
         <div class="drop-sub">one image per card, or a .zip of them<br>
           up to {{ "{:,}".format(max_images) }} scans · {{ max_mb }} MB per upload</div>
@@ -32,7 +32,7 @@
 
     <div class="filechip" id="filechip" {% if not active %}hidden{% endif %}>
       <div class="filechip-row">
-        <div class="filechip-thumb"></div>
+        <div class="cardfan cardfan-sm" aria-hidden="true"><i></i></div>
         <div class="filechip-body">
           <div class="filechip-name" id="fname">{{ active.filename if active }}</div>
           <div class="filechip-meta" id="fmeta">{{ 'matching…' if active }}</div>
@@ -46,10 +46,19 @@
       </div>
     </div>
 
+    {# Two of these counted something other than what they were called.
+       "matched" was `job.processed`, which increments for every scan the
+       importer finishes — including the ones that matched nothing and the ones
+       that errored — so a batch where half the images failed still reported
+       them as matched. And "waiting" is not part of this import at all: it is
+       the review queue, which outlives the job and holds rows from earlier
+       batches too. Sat in a row of progress numbers it read as "waiting to be
+       identified" and looked stuck, because it does not move while an archive
+       uploads. #}
     <div class="tiles-3" id="stats" {% if not active %}hidden{% endif %}>
-      <div class="tile-sm"><div class="k">scans</div><div class="v" id="t-scans">{{ active.total if active else 0 }}</div></div>
-      <div class="tile-sm"><div class="k">matched</div><div class="v" id="t-matched">{{ active.processed if active else 0 }}</div></div>
-      <div class="tile-sm"><div class="k">waiting</div><div class="v" id="t-review">{{ counts.all }}</div></div>
+      <div class="tile-sm" title="Images found in this archive"><div class="k">scans</div><div class="v" id="t-scans">{{ active.total if active else 0 }}</div></div>
+      <div class="tile-sm" title="Scans the matcher has finished with, including any that found nothing"><div class="k">processed</div><div class="v" id="t-processed">{{ active.processed if active else 0 }}</div></div>
+      <div class="tile-sm" title="Cards in the review queue waiting for you to confirm them, including any left over from earlier imports"><div class="k">to confirm</div><div class="v" id="t-review">{{ counts.all }}</div></div>
     </div>
 
     <div style="display: flex; gap: 8px;" id="actions" {% if not active %}hidden{% endif %}>
@@ -163,7 +172,8 @@
       {% for r in rows %}
       <div class="qrow {{ 'review' if r.needs_review }}" id="scan-{{ r.scan_id }}"
            data-scan="{{ r.scan_id }}" data-card="{{ r.card_id or '' }}"
-           data-cond="NM" data-finish="nonfoil" data-review="{{ 1 if r.needs_review else 0 }}"
+           data-cond="{{ r.condition }}" data-finish="{{ r.finish }}"
+           data-review="{{ 1 if r.needs_review else 0 }}"
            data-prices='{{ r.prices|tojson }}'>
         <div class="thumb">
           <img src="/scan/{{ r.scan_id }}/image" alt="" loading="lazy">
@@ -201,12 +211,17 @@
           {% endif %}
         </div>
         <div class="qcond">
-          {% for c in conditions[:4] %}
-          <button class="chip chip-sm {{ 'on' if c == 'NM' }}" type="button" data-cond="{{ c }}">{{ c }}</button>
+          {% for c in conditions %}
+          <button class="chip chip-sm {{ 'on' if c == r.condition }}" type="button" data-cond="{{ c }}">{{ c }}</button>
           {% endfor %}
         </div>
         <div class="qfoil">
-          <button class="chip chip-sm foil-toggle" type="button" title="Foil or non-foil">Non-foil</button>
+          {# Rendered in its final state rather than left to the script to
+             correct, so a foil batch does not flash "Non-foil" first. Filled
+             because a freshly rendered row is always showing what its import
+             asked for; the script clears it if someone toggles away. #}
+          <button class="chip chip-sm foil-toggle on"
+                  type="button" title="Foil or non-foil">{{ 'Foil' if r.finish == 'foil' else 'Non-foil' }}</button>
           {% if r.ambiguous %}
           <span class="pill warn qambig" title="This card has several foil printings at different prices. Commit, then name the printing on the card page.">?</span>
           {% endif %}
@@ -243,6 +258,7 @@ const drop = $('#drop'), fileInput = $('#file'), chip = $('#filechip');
 let chosen = null, settings = { cond: 'NM', thr: {{ auto_accept }}, finish: 'nonfoil' };
 
 const ZIP_RE = /\.zip$/i, IMAGE_RE = /\.(jpe?g|png|tiff?|webp)$/i;
+const MB = 1048576;
 
 function show(el, on) { el.hidden = !on; }
 
@@ -265,16 +281,18 @@ function pick(files) {
   chosen = good;
   const bytes = good.reduce((n, f) => n + f.size, 0);
   $('#fname').textContent = good.length === 1 ? good[0].name : good.length + ' images';
-  $('#fmeta').textContent = (bytes / 1048576).toFixed(1) + ' MB';
-  $('#pct').textContent = '0%';
+  $('#fmeta').textContent = (bytes / MB).toFixed(1) + ' MB';
   $('#stage').textContent = 'ready';
-  $('#bar').style.width = '0%';
+  setBar(0);
   $('#t-scans').textContent = '—';
-  $('#t-matched').textContent = '0';
+  $('#t-processed').textContent = '0';
   show(chip, true); show($('#stats'), true); show($('#actions'), true); show(drop, false);
 }
 function reset() {
   chosen = null; fileInput.value = '';
+  // Including the sweep: leaving it running under a hidden chip is a timer
+  // repainting the page for nothing.
+  setBar(0);
   show(chip, false); show($('#stats'), false); show($('#actions'), false); show(drop, true);
 }
 $('#choose').addEventListener('click', e => { e.stopPropagation(); fileInput.click(); });
@@ -301,6 +319,61 @@ chipSet($('#cond-set'), 'cond', String);
 chipSet($('#thr-set'), 'thr', parseFloat);
 chipSet($('#finish-set'), 'finish', String);
 
+/* The bar runs three times over one import: it fills as the archive goes up,
+   sweeps while the archive is opened and nobody yet knows how many scans are
+   inside, then fills again as those scans are matched. Three phases in one
+   bar rather than a single number over all of them, because the weighting
+   between them is not knowable — a 400 MB zip on a domestic upstream is
+   minutes of upload and seconds of matching, and the same zip from the same
+   machine the app runs on is the reverse. `#stage` names which one is
+   running, so the bar returning to the left reads as the next phase starting.
+
+   Pass null for indeterminate. That clears the inline width, which is what
+   lets the stylesheet's sweep take over. */
+function setBar(pct) {
+  $('#bar').parentElement.classList.toggle('busy', pct === null);
+  $('#bar').style.width = pct === null ? '' : pct + '%';
+  $('#pct').textContent = pct === null ? '' : pct + '%';
+}
+
+/* XMLHttpRequest for the one thing fetch still cannot do: say how much of the
+   request body has gone out. Without it the only progress on offer starts
+   after the upload has finished, which on a large archive is a bar that spends
+   the long half of the wait sitting at zero and the short half moving. */
+function upload(body, onProgress) {
+  return new Promise(resolve => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/import');
+    xhr.upload.addEventListener('progress', e => {
+      if (e.lengthComputable) onProgress(e.loaded, e.total);
+    });
+    // A refused connection, a dropped one and a CORS failure all arrive as an
+    // error with status 0 and no body — resolved rather than rejected so the
+    // one caller handles every ending in the same place.
+    ['load', 'error', 'abort', 'timeout'].forEach(e =>
+      xhr.addEventListener(e, () => resolve(xhr)));
+    xhr.send(body);
+  });
+}
+
+/* Nothing got as far as a percentage, so the label keeps the whole line: a
+   server's complaint runs to two lines in this pane, and a "0%" left sitting
+   at the end of the first one reads as part of the sentence. */
+function fail(why) {
+  $('#stage').textContent = why;
+  setBar(0);
+  $('#pct').textContent = '';
+  $('#go').disabled = false;
+  $('#go').textContent = 'Start import';
+}
+
+function uploadError(xhr, fallback) {
+  // errorDetail() takes a fetch Response and cannot read this. Status 0 is
+  // never the server's answer — it is the request never arriving.
+  if (!xhr.status) return 'connection lost during upload';
+  try { return JSON.parse(xhr.responseText).detail || fallback; } catch (e) { return fallback; }
+}
+
 $('#go').addEventListener('click', async () => {
   if (!chosen || !chosen.length) return;
   $('#go').disabled = true;
@@ -310,27 +383,38 @@ $('#go').addEventListener('click', async () => {
   body.append('auto_accept', settings.thr);
   body.append('default_condition', settings.cond);
   body.append('default_finish', settings.finish);
-  const res = await fetch('/api/import', { method: 'POST', body });
-  if (!res.ok) {
-    $('#stage').textContent = await errorDetail(res, 'upload failed');
-    $('#go').disabled = false; $('#go').textContent = 'Start import';
+
+  $('#stage').textContent = 'uploading';
+  setBar(0);
+  const xhr = await upload(body, (sent, total) => {
+    setBar(Math.round(100 * sent / total));
+    // Megabytes as well as the percentage. On a long upload this is the line
+    // that distinguishes a slow connection from a stalled one, because it
+    // keeps moving between whole percents.
+    $('#fmeta').textContent =
+      (sent / MB).toFixed(1) + ' / ' + (total / MB).toFixed(1) + ' MB';
+  });
+  if (xhr.status !== 200) {
+    fail(uploadError(xhr, 'upload failed'));
     return;
   }
-  poll((await res.json()).job_id);
+  $('#stage').textContent = STAGES.pending;
+  setBar(null);
+  poll(JSON.parse(xhr.responseText).job_id);
 });
 
 const STAGES = { pending: 'unpacking scans', matching: 'matching against catalogue', done: 'done', failed: 'failed' };
 async function poll(id) {
   const job = await (await fetch('/api/jobs/' + id)).json();
-  const pct = job.total ? Math.round(100 * job.processed / job.total) : 0;
-  $('#bar').style.width = pct + '%';
-  $('#pct').textContent = pct + '%';
-  $('#stage').textContent = job.status === 'failed'
-    ? 'failed — ' + (job.message || '') : (STAGES[job.status] || job.status);
-  $('#t-scans').textContent = job.total;
-  $('#t-matched').textContent = job.processed;
+  // A `total` of zero is not zero scans, it is an archive nobody has opened
+  // yet — there is no denominator to divide by, so the bar sweeps instead of
+  // claiming 0%.
+  $('#t-scans').textContent = job.total || '—';
+  $('#t-processed').textContent = job.processed;
+  if (job.status === 'failed') { fail('failed — ' + (job.message || '')); return; }
+  setBar(job.total ? Math.round(100 * job.processed / job.total) : null);
+  $('#stage').textContent = STAGES[job.status] || job.status;
   if (job.status === 'done') { location.href = '/app?filter=review'; return; }
-  if (job.status === 'failed') { $('#go').disabled = false; $('#go').textContent = 'Start import'; return; }
   setTimeout(() => poll(id), 700);
 }
 {% if active %}poll({{ active.id }});{% endif %}
@@ -343,27 +427,55 @@ $$('.qrow').forEach(row => {
     row.dataset.cond = b.dataset.cond;
   }));
   const foil = $('.foil-toggle', row);
-  // Seeded from the import default, so setting it once above covers the batch
-  // and the per-row control is only for the exceptions.
-  const priceEl = $('.qprice', row);
-  let prices = {};
-  try { prices = JSON.parse(row.dataset.prices || '{}'); } catch (e) { prices = {}; }
+
+  // What this batch was imported as. Read before the first setFoil() below,
+  // which is the last moment the row is guaranteed to still be showing it.
+  const imported = row.dataset.finish === 'foil' ? 'foil' : 'nonfoil';
 
   function setFoil(v) {
+    // Normalised, not stored as given. This is what the row commits, and an
+    // empty or unrecognised value would be sent to a route that rejects it —
+    // turning a stale template or a hand-edited attribute into "could not
+    // confirm that card" with nothing on screen to explain it.
+    v = v === 'foil' ? 'foil' : 'nonfoil';
     row.dataset.finish = v;
     foil.textContent = v === 'foil' ? 'Foil' : 'Non-foil';
-    foil.classList.toggle('on', v === 'foil');
+    // Filled means "as this batch was imported", so the rows that stand out
+    // are the ones somebody has changed by hand. Keyed to the import default
+    // rather than to foil: a batch declared foil at the door is not the
+    // exception on its own screen, and marking every row of it was noise.
+    foil.classList.toggle('on', v === imported);
+    foil.title = v === imported
+      ? 'Foil or non-foil' : 'changed from this import\'s default';
     // The price for the printing this finish resolves to — dearest match, the
-    // same rule pricing uses — so the number on screen is the number the card
-    // will be worth if committed as it stands.
+    // same rule pricing and the queue's ordering use — so the number on screen
+    // is the number the card will be worth if committed as it stands.
+    //
+    // Both of these are read fresh on every call rather than captured when the
+    // row was wired, because correcting a match replaces them: the prices
+    // belong to a different card afterwards, and `.qmeta` is rebuilt, which
+    // means the span held from wiring time is a detached node nothing on the
+    // page can see. Held that way, the toggle went on quietly writing prices
+    // into an element that had been thrown away.
+    let prices = {};
+    try { prices = JSON.parse(row.dataset.prices || '{}'); } catch (e) { prices = {}; }
+    const priceEl = $('.qprice', row);
     const names = Object.keys(prices);
     const matching = names.filter(n => /foil/i.test(n) === (v === 'foil'));
     const use = (matching.length ? matching : names)
       .sort((a, b) => prices[b] - prices[a])[0];
-    priceEl.textContent = use === undefined ? '' :
+    if (priceEl) priceEl.textContent = use === undefined ? '' :
       '$' + Number(prices[use]).toFixed(2) + ' · ';
   }
-  setFoil(settings.finish);
+  // Redraw after something other than the toggle changes the row's prices,
+  // which is how `applyPick` gets the corrected card's number on screen
+  // without reaching into this closure.
+  row.addEventListener('prices-changed', () => setFoil(row.dataset.finish));
+  // Seeded from the default the scan was imported under, which the server has
+  // already rendered — read back rather than re-decided, so the markup and the
+  // price below it cannot disagree. Setting it once at import covers the batch
+  // and the per-row control is only for the exceptions.
+  setFoil(row.dataset.finish);
   foil.addEventListener('click', () => setFoil(row.dataset.finish === 'foil' ? 'nonfoil' : 'foil'));
 
   // The one-click runner-up stays a fast path: a glance, a click, committed.
@@ -420,15 +532,31 @@ async function applyPick(row, box, pick) {
   row.dataset.card = pick.dataset.pick;
   $('.qname', row).textContent = pick.dataset.name;
   $('.qname', row).classList.remove('faint');
-  $('.qmeta', row).innerHTML = '<span class="qprice"></span>' + pick.dataset.sub;
+
+  // Rebuilt rather than assigned as innerHTML. The text is a card's set name
+  // arriving from a catalogue this project does not control, and putting it
+  // through the HTML parser to draw four words of plain text is a needless
+  // way to be wrong later.
+  //
+  // `meta` comes from the server so that this line reads exactly as the one
+  // the queue renders, price included; `sub` is the fallback for a response
+  // too old to carry it.
+  const meta = $('.qmeta', row);
+  meta.textContent = '';
+  const priceSpan = document.createElement('span');
+  priceSpan.className = 'qprice';
+  meta.append(priceSpan, saved.meta || pick.dataset.sub);
 
   const ref = $('.thumb.ref img', row);
   if (ref) ref.src = '/card/' + pick.dataset.pick + '/image';
 
-  // The stored per-printing prices belonged to the card that was replaced.
-  // Blanking them shows no price rather than the wrong one; the real figure
-  // is computed against the corrected card once it is inventory.
-  row.dataset.prices = '{}';
+  // The corrected card's own prices, which arrived with the save. These used
+  // to be blanked and left blank: showing no price rather than the wrong one
+  // was right as far as it went, but nothing ever put the right one back, so
+  // the row a person had just deliberately corrected was the only one on the
+  // screen with no price under it until it was committed.
+  row.dataset.prices = JSON.stringify(saved.prices || {});
+  row.dispatchEvent(new Event('prices-changed'));
 
   // The match bar measured the encoder's confidence in a card that is no
   // longer on this row. A chosen card has no score — it has a person, which

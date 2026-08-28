@@ -29,6 +29,7 @@ from fastapi import (
 )
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from foilstack import db, importing, inventory, search
 from foilstack.config import Settings
@@ -39,6 +40,53 @@ from foilstack.web.deps import api_owner, db_session, owner, settings_dep
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _row_price(prices: dict[str, float], finish: str, fallback: float) -> float:
+    """What this row is worth as it currently stands, for ordering the queue.
+
+    The same rule the row's own price label uses, deliberately: among the
+    printings stored for the card, keep the ones whose foil-ness matches the
+    finish this scan was imported under, and take the dearest. Anything else
+    and the queue would sort by one number while displaying another, which is
+    worse than not sorting at all — the reader cannot see the key.
+
+    Falls back to `card.market` when the card has no per-printing prices, which
+    is what the row's meta line shows in that case, and to zero for a scan that
+    matched nothing. Both sink to the bottom, where they belong: a row with no
+    identified card has no value to confirm, and the "No match" tab is how you
+    go looking for those on purpose.
+    """
+    if not prices:
+        return fallback
+    want_foil = finish == "foil"
+    matching = [v for name, v in prices.items() if ("foil" in name.lower()) == want_foil]
+    return max(matching or list(prices.values()))
+
+
+def _price_map(printings: dict) -> dict[str, float]:
+    """Per-printing market prices keyed by sub-type, with the unpriced dropped."""
+    return {name: row.market for name, row in printings.items() if row.market is not None}
+
+
+def _card_meta(card) -> str:
+    """The line under a card's name in the queue: game, set, number, price.
+
+    Shared with `api_choose`, which has to reproduce it exactly. Correcting a
+    match rewrites this line in the browser, and building the string in two
+    places is how the corrected row came to be the one row on the page with no
+    price under it.
+    """
+    return " · ".join(
+        part
+        for part in [
+            card.game,
+            card.set_name,
+            f"#{card.number}" if card.number else None,
+            _money(card.market) if card.market is not None else None,
+        ]
+        if part
+    )
 
 
 def _queue_rows(session, user_id: int) -> list[dict]:
@@ -57,6 +105,9 @@ def _queue_rows(session, user_id: int) -> list[dict]:
     """
     scans = session.scalars(
         select(db.Scan)
+        # Every row reads its job's import defaults, and four hundred rows
+        # asking for them one at a time is four hundred queries.
+        .options(selectinload(db.Scan.job))
         .where(
             db.Scan.user_id == user_id,
             db.Scan.status.in_(("pending", "unmatched", "error")),
@@ -120,23 +171,8 @@ def _queue_rows(session, user_id: int) -> list[dict]:
                 # What this card costs in each printing, so the queue can show the
                 # price for the finish that is actually selected. Before this the
                 # row showed the plain printing's price whatever the toggle said.
-                "prices": {
-                    name: row.market
-                    for name, row in (priced.get(card.id, {}) if card else {}).items()
-                    if row.market is not None
-                },
-                "meta": " · ".join(
-                    p
-                    for p in [
-                        card.game if card else None,
-                        card.set_name if card else None,
-                        f"#{card.number}" if card and card.number else None,
-                        _money(card.market) if card and card.market is not None else None,
-                    ]
-                    if p
-                )
-                if card
-                else scan.filename,
+                "prices": _price_map(priced.get(card.id, {})) if card else {},
+                "meta": _card_meta(card) if card else scan.filename,
                 "alt": alt,
                 "score": top.score if top else 0.0,
                 "pct": f"{(top.score if top else 0) * 100:.0f}%",
@@ -166,8 +202,34 @@ def _queue_rows(session, user_id: int) -> list[dict]:
                 # the answer instead of empty.
                 "query": card.name if card else "",
                 "game": card.game if card else "",
+                # The defaults this scan was imported under. Read off the job
+                # rather than off the settings panel, because the panel is
+                # aimed at the next import and this queue outlives the one
+                # that filled it — two batches waiting together, one graded
+                # NM and one DMG, each want their own answer.
+                #
+                # Only the starting position. The per-row chips still decide
+                # what gets committed, so a default that is right for most of
+                # a batch costs nothing on the cards it is wrong for.
+                "condition": scan.job.default_condition or "NM",
+                "finish": scan.job.default_finish or "nonfoil",
             }
         )
+
+    # Dearest first, so the cards worth getting right are the ones in front of
+    # you. Confirming a queue is work that tends to be abandoned part-way, and
+    # where it stops is arbitrary — ordering by value makes the part that got
+    # done the part that mattered.
+    #
+    # A stable sort, so rows of equal value keep the newest-first order the
+    # query gave them and a fresh import still opens with its own cards on top
+    # of older ones worth the same. That is most of them: an unpriced card and
+    # an unmatched scan both key to zero.
+    #
+    # Note this reorders the 400 rows the query returned, which are the newest
+    # 400. A queue longer than that was already only partly visible; this does
+    # not change what is on the page, only the order of it.
+    rows.sort(key=lambda r: _row_price(r["prices"], r["finish"], r["market"]), reverse=True)
     return rows
 
 
@@ -454,7 +516,19 @@ def api_choose(
         raise HTTPException(400, "no such card")
     scan.chosen_card_id = card.id
     session.commit()
-    return {"ok": True, "card_id": card.id}
+    # The prices and the meta line for the card that was just picked. The row
+    # rewrites both in the browser, and it has nowhere else to get them: the
+    # panel it was picked from lists names and sets, not per-printing prices.
+    # Without these the corrected row lost its price and did not get it back
+    # until it was committed and had become inventory — the one row on the
+    # screen with no number on it being, of course, the one a person had just
+    # taken a deliberate interest in.
+    return {
+        "ok": True,
+        "card_id": card.id,
+        "prices": _price_map(inventory._prices_for(session, {card.id}).get(card.id, {})),
+        "meta": _card_meta(card),
+    }
 
 
 def _confirm(

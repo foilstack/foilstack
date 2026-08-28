@@ -55,9 +55,9 @@ FRAME_MS = 100
 # second reads as broken; less scrolling at ten reads as brisk.
 # The GIF is the README's copy, and the README is where a stranger meets this
 # project. 640px was chosen to fit the 2048 KB commit hook; that hook turned
-# out never to have applied here — it only checks files being *added*, and
-# these two have been tracked since the beginning — so the width was paying a
-# tax that was not being collected.
+# out never to have applied here — it only checks files being *added*, and the
+# GIF has been tracked since the beginning — so the width was paying a tax that
+# was not being collected.
 #
 # 1000px is what GitHub's content column actually renders, and the palette is
 # close to free: at 800px, 192 colours came out fractionally *smaller* than

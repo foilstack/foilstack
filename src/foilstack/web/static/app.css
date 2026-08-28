@@ -384,19 +384,23 @@ body.app {
    The two cards behind are pseudo-elements. The front one has to be a real
    child, because a pseudo-element always paints over its parent's background
    and there is no way to bring the parent in front of its own pseudos without
-   a negative z-index that would also drop it behind the drop zone. */
-.drop-card {
-  position: relative; width: 42px; height: 58px;
+   a negative z-index that would also drop it behind the drop zone.
+
+   Shared with the file chip, which showed the same plain rectangle the drop
+   zone was given this treatment to get rid of — one mark for "card scans",
+   before and after a file is chosen. */
+.cardfan {
+  position: relative; width: 42px; height: 58px; flex: 0 0 auto;
 }
-.drop-card::before, .drop-card::after, .drop-card > i {
+.cardfan::before, .cardfan::after, .cardfan > i {
   content: ""; position: absolute; inset: 0;
   border: 1px solid var(--edge); border-radius: 3px; background: var(--surface);
 }
-.drop-card::before { transform: rotate(-9deg) translate(-4px, 2px); }
-.drop-card::after { transform: rotate(9deg) translate(4px, 2px); }
+.cardfan::before { transform: rotate(-9deg) translate(-4px, 2px); }
+.cardfan::after { transform: rotate(9deg) translate(4px, 2px); }
 /* An art window and two lines of text: enough of a card face to be read as
    one at 42px, without pretending to be any card in particular. */
-.drop-card > i {
+.cardfan > i {
   /* ::after paints after child content, so without this the right-hand card
      of the fan covers the face of the one meant to be in front. */
   display: block; z-index: 1;
@@ -404,6 +408,20 @@ body.app {
     linear-gradient(var(--rule), var(--rule)) 5px 5px / 30px 23px no-repeat,
     linear-gradient(var(--rule-soft), var(--rule-soft)) 5px 33px / 30px 3px no-repeat,
     linear-gradient(var(--rule-soft), var(--rule-soft)) 5px 39px / 19px 3px no-repeat,
+    var(--surface);
+}
+/* Half size, for the file chip. The two text lines go: at 24px they are a
+   pair of grey smudges rather than lines of text, and the art window alone
+   still reads as a card face. Everything else scales from the same
+   proportions, so the two marks are recognisably the same object. */
+.cardfan-sm { width: 24px; height: 33px; }
+.cardfan-sm::before { transform: rotate(-9deg) translate(-2px, 1px); }
+.cardfan-sm::after { transform: rotate(9deg) translate(2px, 1px); }
+.cardfan-sm > i {
+  border-radius: 2px;
+  background:
+    linear-gradient(var(--rule), var(--rule)) 3px 3px / 16px 13px no-repeat,
+    linear-gradient(var(--rule-soft), var(--rule-soft)) 3px 19px / 16px 2px no-repeat,
     var(--surface);
 }
 .drop-title { font-size: 13px; font-weight: 600; }
@@ -422,11 +440,9 @@ body.app {
   border: 1px solid var(--rule); border-radius: 3px;
   background: var(--surface-2); padding: 10px;
 }
-.filechip-row { display: flex; align-items: center; gap: 8px; }
-.filechip-thumb {
-  width: 22px; height: 28px; flex: 0 0 22px;
-  border: 1px solid var(--rule); border-radius: 2px; background: var(--surface);
-}
+/* The fan overhangs its own box by a few pixels either side, so the row pads
+   for it rather than letting the left-hand card sit under the chip's edge. */
+.filechip-row { display: flex; align-items: center; gap: 12px; padding-left: 3px; }
 .filechip-body { flex: 1; min-width: 0; }
 .filechip-name {
   font-weight: 600; font-size: 12.5px;
@@ -441,10 +457,31 @@ body.app {
   background: var(--track); overflow: hidden;
 }
 .track i { display: block; height: 4px; background: var(--green); width: 0; transition: width .2s; }
+/* Indeterminate: work that is genuinely happening but has nothing to count
+   yet — the archive is being unpacked and nobody knows how many scans are in
+   it. Parking the bar at 0% instead says no progress has been made, which
+   directly after an upload bar reached 100% reads as a stall. The width comes
+   from here rather than from the inline style the script sets, so the sweep
+   has something to move. */
+.track.busy > i { width: 34%; animation: track-sweep 1.15s ease-in-out infinite; }
+@keyframes track-sweep {
+  from { transform: translateX(-105%); }
+  to { transform: translateX(300%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Still distinct from a stalled 0%, without anything moving. */
+  .track.busy > i { width: 100%; animation: none; opacity: .4; }
+}
 .track-labels {
-  display: flex; justify-content: space-between; margin-top: 5px;
+  /* `align-items: baseline` and a gap, because the left label is a stage name
+     most of the time and a wrapped two-line error the rest of it — without
+     them the percentage sat inside the first line of the message. */
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 10px; margin-top: 5px;
   font-family: var(--mono); font-size: 10.5px; color: var(--muted);
 }
+.track-labels > :first-child { min-width: 0; }
+.track-labels > :last-child { flex: 0 0 auto; }
 
 .tiles-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .tile-sm {
@@ -526,7 +563,11 @@ body.app {
   font-family: var(--mono); font-size: 10.5px; color: var(--muted);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.qmain { flex: 1 1 120px; min-width: 104px; }
+/* Basis at the minimum, not above it. Flex wraps on base sizes, so a basis
+   wider than the column can actually be narrowed to buys nothing at full
+   width — grow takes the slack either way — and costs a breakpoint's worth
+   of room at the bottom of the range. */
+.qmain { flex: 1 1 104px; min-width: 104px; }
 .qname {
   font-size: 13px; font-weight: 600;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -610,7 +651,17 @@ body.app {
   fill: none; stroke: currentColor; stroke-width: 1.5;
   stroke-linecap: round; stroke-linejoin: round;
 }
-.qcond { width: 112px; flex: 0 0 112px; display: flex; gap: 3px; }
+/* Five chips, not four. DMG was sliced off the end to save room, which left
+   the one condition the seller is most likely to be looking at a scan of
+   choosable in the import defaults and on the card page but not here — so a
+   damaged card could only be marked damaged after it was already inventory.
+
+   The fifth chip is paid for out of the other four rather than out of the
+   row: at 1280 the row has about 133px to give this column before the
+   actions wrap onto a line of their own, and five chips at the default
+   padding want 138. Tighter padding and a 2px gap bring them to 124. */
+.qcond { width: 128px; flex: 0 0 128px; display: flex; gap: 2px; }
+.qcond .chip-sm { padding: 0 4px; }
 .qactions {
   flex: 0 1 auto; display: flex; gap: 4px; align-items: center; justify-content: flex-end;
 }
@@ -853,23 +904,11 @@ tr.is-sold .rowname { color: var(--faint); }
 }
 .qdrop:hover { color: var(--warn); }
 /* Foil is a toggle rather than a pair of chips: it has exactly two states and
-   the row is already dense. `on` is foil, which is the exception worth seeing. */
+   the row is already dense. `on` is whatever the import asked for, so the
+   exception worth seeing is a row that has been changed away from it — which
+   `on` used to get wrong for any batch imported as foil. */
 .foil-toggle { width: 100%; }
 .qfoil .chip-sm { width: 100%; justify-content: center; }
-
-/* Between a 13" laptop and a desktop the queue row is the tightest thing on
-   screen, and when it overflowed the actions wrapped onto a line of their own.
-   The arrow is decoration and the filename is repeated on the card page, so
-   they are what goes first — the scan, the match and the controls stay. */
-@media (max-width: 1400px) {
-  .qarrow { display: none; }
-  /* The commit button is the point of this bar; a running total is not worth
-     pushing it onto a line of its own. */
-  .wide-only { display: none; }
-}
-@media (max-width: 1200px) {
-  .qfile { display: none; }
-}
 
 @media (max-width: 860px) {
   .drawer { width: 100%; border-left: none; border-top: 1px solid var(--rule); top: auto; height: 70vh; }
@@ -981,7 +1020,11 @@ code {
      pushing it onto a line of its own. */
   .wide-only { display: none; }
 }
-@media (max-width: 1200px) {
+/* 1280 and not 1200, which is where the filename used to go. Between the
+   two the row was a few pixels short and the actions dropped onto a line of
+   their own — visible before the condition chips grew by one, and wider
+   after it. The filename is the cheapest thing on the row to lose. */
+@media (max-width: 1280px) {
   .qfile { display: none; }
 }
 

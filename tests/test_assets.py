@@ -41,8 +41,9 @@ def test_the_templates_actually_version_their_assets():
 @pytest.mark.parametrize("name", sorted(_versioned_assets()))
 def test_changing_a_versioned_asset_changes_the_version(name, tmp_path, monkeypatch):
     """Edit each versioned file in turn; the asset version must move."""
-    # A copy, because the real files are bind-mounted in development and this
-    # test writes to them.
+    # A copy, because this test writes to the files it checks — appending to
+    # the repository's real stylesheet to see whether the hash moves would
+    # leave the edit behind on any run that failed before cleaning up.
     shutil.copytree(chrome.BASE_DIR / "static", tmp_path / "static")
     monkeypatch.setattr(chrome, "BASE_DIR", tmp_path)
 

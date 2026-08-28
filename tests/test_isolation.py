@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import re
 import uuid
+from contextlib import contextmanager
 
 import pytest
 from sqlalchemy import create_engine, select, text
@@ -1490,3 +1491,314 @@ def test_serving_a_scan_does_not_hold_a_database_connection(app_and_data):
 
     assert response.status_code == 200
     assert after == before, f"leaked {after - before} connection(s) serving a scan"
+
+
+def _queue_row(html: str, scan_id: int) -> str:
+    """The one row for this scan, sliced out of the import screen.
+
+    Asserting against the whole page would pass on a chip belonging to some
+    other row, which is precisely the mistake the tests below exist to catch.
+    """
+    for chunk in html.split('class="qrow'):
+        if f'id="scan-{scan_id}"' in chunk:
+            return chunk
+    raise AssertionError(f"scan {scan_id} is not in the queue")
+
+
+@contextmanager
+def _waiting_scan(ids, **job_settings):
+    """A second batch waiting in the queue, torn down afterwards.
+
+    Its own job rather than the fixture's, because the fixture is module-scoped
+    and a test that edited its import settings in place would hand them to
+    every test that ran after it.
+    """
+    from foilstack import db
+
+    session = db.session()
+    owner_id = session.get(db.Scan, ids["scan"]).user_id
+    job = db.ImportJob(
+        user_id=owner_id, filename="b.zip", status="done", total=1, processed=1, **job_settings
+    )
+    session.add(job)
+    session.commit()
+    scan = db.Scan(
+        job_id=job.id,
+        user_id=owner_id,
+        filename="second.jpg",
+        stored_path="1/card.jpg",
+        status="pending",
+    )
+    session.add(scan)
+    session.commit()
+    session.add(db.Candidate(scan_id=scan.id, card_id=ids["card"], score=0.71, rank=0))
+    session.commit()
+    scan_id = scan.id
+    try:
+        yield scan_id
+    finally:
+        session.delete(session.get(db.Scan, scan_id))
+        session.delete(session.get(db.ImportJob, job.id))
+        session.commit()
+        session.close()
+
+
+def test_a_queue_row_opens_on_the_defaults_its_import_was_given(app_and_data):
+    """ "Default condition" reached only the scans that auto-accepted.
+
+    Which is to say: only the ones nobody ever looks at. A batch graded DMG
+    came back to the review queue as NM, so the setting changed nothing about
+    the cards actually being confirmed — and grading each row by hand is the
+    work the default exists to save.
+    """
+    from foilstack import inventory
+
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    with _waiting_scan(ids, default_condition="DMG", default_finish="foil") as scan_id:
+        row = _queue_row(client.get("/app").text, scan_id)
+
+    assert 'data-cond="DMG"' in row
+    assert 'data-finish="foil"' in row
+    # Not just the dataset the commit reads: the chip a person sees selected
+    # and the value that would be committed have to be the same claim.
+    assert 'chip-sm on" type="button" data-cond="DMG"' in row
+    assert ">Foil<" in row
+    assert ">Non-foil<" not in row
+    # Filled, because the row is still showing what the import asked for. The
+    # class used to be pinned to foil, so a batch imported as non-foil had no
+    # row on the screen marked as set to anything.
+    assert "foil-toggle on" in row
+    # Every grade is reachable from the row. DMG used to be sliced off the end
+    # of the chips to save horizontal room, which left the worst grade settable
+    # in the import defaults and on the card page but not while confirming —
+    # so a damaged card could only be marked damaged once it was inventory.
+    for condition in inventory.CONDITIONS:
+        assert f'data-cond="{condition}"' in row
+
+
+def test_one_batch_of_defaults_does_not_leak_onto_another(app_and_data):
+    """Two imports can be waiting at once, and they are graded separately.
+
+    The reason these are read off each scan's own job rather than off the
+    settings panel, which knows only about the next import.
+    """
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    with (
+        _waiting_scan(ids, default_condition="DMG", default_finish="foil") as damaged,
+        _waiting_scan(ids, default_condition="LP", default_finish="nonfoil") as played,
+    ):
+        html = client.get("/app").text
+        damaged_row, played_row = _queue_row(html, damaged), _queue_row(html, played)
+
+    assert 'data-cond="DMG"' in damaged_row
+    assert 'data-finish="foil"' in damaged_row
+    assert 'data-cond="LP"' in played_row
+    assert 'data-finish="nonfoil"' in played_row
+    # Both are filled: each is showing its own batch's answer, opposite though
+    # those answers are.
+    assert "foil-toggle on" in damaged_row
+    assert "foil-toggle on" in played_row
+
+
+@contextmanager
+def _waiting_scans_worth(ids, markets):
+    """A batch waiting in the queue, one scan per value in `markets`.
+
+    Its own cards, because the thing under test is an ordering by price and the
+    fixture's single card would give every row the same key. A `None` market
+    means a scan that matched nothing at all: no card, no candidate.
+    """
+    from foilstack import db
+
+    session = db.session()
+    owner_id = session.get(db.Scan, ids["scan"]).user_id
+    job = db.ImportJob(
+        user_id=owner_id,
+        filename="worth.zip",
+        status="done",
+        total=len(markets),
+        processed=len(markets),
+    )
+    session.add(job)
+    session.commit()
+
+    made = []
+    for i, market in enumerate(markets):
+        card = None
+        if market is not None:
+            card = db.Card(
+                source="t",
+                source_id=f"worth:{uuid.uuid4().hex[:10]}",
+                name=f"Card worth {market}",
+                game="mtg",
+                market=market,
+            )
+            session.add(card)
+            session.commit()
+        scan = db.Scan(
+            job_id=job.id,
+            user_id=owner_id,
+            filename=f"worth-{i}.jpg",
+            stored_path="1/card.jpg",
+            status="pending",
+        )
+        session.add(scan)
+        session.commit()
+        if card is not None:
+            session.add(db.Candidate(scan_id=scan.id, card_id=card.id, score=0.8, rank=0))
+            session.commit()
+        made.append((scan.id, card.id if card else None))
+    try:
+        yield [scan_id for scan_id, _ in made]
+    finally:
+        for scan_id, _ in made:
+            session.delete(session.get(db.Scan, scan_id))
+        session.commit()
+        for _, card_id in made:
+            if card_id is not None:
+                session.delete(session.get(db.Card, card_id))
+        session.delete(session.get(db.ImportJob, job.id))
+        session.commit()
+        session.close()
+
+
+def _queue_order(html: str) -> list[int]:
+    """The scan ids of the queue rows, in the order the page puts them."""
+    return [int(n) for n in re.findall(r'id="scan-(\d+)"', html)]
+
+
+def test_the_queue_puts_the_dearest_card_first(app_and_data):
+    """Confirming a queue is work that gets abandoned part-way.
+
+    Where it stops is arbitrary, so the order decides which cards got the
+    attention. Newest-first spent it on whichever scans happened to be last out
+    of the archive; by value, the part that gets done is the part that pays.
+    """
+    worth = [3.0, 40.0, 0.5, 12.0]
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    # Deliberately neither ascending nor descending as inserted, so that
+    # "as created" and "newest first" both fail this rather than passing on a
+    # coincidence.
+    with _waiting_scans_worth(ids, worth) as scans:
+        order = _queue_order(client.get("/app").text)
+
+    by_scan = dict(zip(scans, worth, strict=True))
+    ours = [s for s in order if s in by_scan]
+    assert len(ours) == len(worth), "the batch is not all on the page"
+    assert ours == sorted(ours, key=lambda s: -by_scan[s])
+    assert by_scan[ours[0]] == 40.0
+
+
+def test_cards_worth_the_same_keep_their_newest_first_order(app_and_data):
+    """The sort is stable, and that is the whole reason it can be.
+
+    Most of a real queue keys to the same number — unpriced cards and unmatched
+    scans are all zero — so an unstable sort would shuffle the bulk of the page
+    on every reload, and a card someone was halfway through deciding about
+    would move out from under them.
+    """
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    with _waiting_scans_worth(ids, [7.0, 7.0, 7.0]) as scans:
+        order = _queue_order(client.get("/app").text)
+
+    ours = [s for s in order if s in set(scans)]
+    assert ours == sorted(scans, reverse=True)
+
+
+def test_a_scan_that_matched_nothing_sorts_below_one_that_did(app_and_data):
+    """It has no value to confirm, and no Confirm button either.
+
+    Putting it above a card worth money would spend the top of the page on the
+    one row that cannot be actioned from there. The "No match" tab is how you
+    go looking for these deliberately.
+    """
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    # The unmatched scan is created last, so it is the newest and would lead
+    # the page under the order this replaced. Created first it sorted below the
+    # priced card either way, and the test proved nothing.
+    with _waiting_scans_worth(ids, [0.25, None]) as (cheap, unmatched):
+        order = _queue_order(client.get("/app").text)
+
+    assert order.index(cheap) < order.index(unmatched)
+
+
+@contextmanager
+def _priced_card(printings, market=None):
+    """One catalogue card with per-printing prices, torn down afterwards."""
+    from foilstack import db
+
+    session = db.session()
+    card = db.Card(
+        source="t",
+        source_id=f"priced:{uuid.uuid4().hex[:10]}",
+        name="Corrected Card",
+        game="mtg",
+        set_name="Some Set",
+        number="42",
+        market=market,
+    )
+    session.add(card)
+    session.commit()
+    for sub_type, price in printings.items():
+        session.add(db.CardPrice(card_id=card.id, sub_type=sub_type, market=price))
+    session.commit()
+    try:
+        yield card.id
+    finally:
+        session.query(db.CardPrice).filter(db.CardPrice.card_id == card.id).delete()
+        session.commit()
+        session.delete(session.get(db.Card, card.id))
+        session.commit()
+        session.close()
+
+
+def test_correcting_a_match_hands_back_the_new_card_s_price(app_and_data):
+    """The corrected row had nowhere to get it, so it showed nothing.
+
+    Picking a card rewrites the row in the browser, and the panel it was picked
+    from lists names and sets, not per-printing prices. The old code blanked
+    the prices of the card being replaced — right, as far as it went — and
+    never put anything back, so the one row a person had just taken a
+    deliberate interest in was the only one on screen with no price under it,
+    until it was committed and became inventory.
+    """
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    with _priced_card({"Normal": 3.5, "Foil": 21.0}, market=3.5) as card_id:
+        saved = client.post(f"/api/scans/{ids['scan']}/choose", data={"card_id": card_id}).json()
+
+    assert saved["ok"] is True
+    assert saved["prices"] == {"Normal": 3.5, "Foil": 21.0}
+    # The meta line, rendered by the server so the corrected row reads exactly
+    # as one the queue drew itself — the price included, which is the half the
+    # browser could not have built on its own.
+    assert saved["meta"] == "mtg · Some Set · #42 · $3.50"
+
+
+def test_a_printing_with_no_price_is_left_out_rather_than_sent_as_null(app_and_data):
+    """The row's price rule takes the dearest of what it is given.
+
+    A `null` in that map sorts as a number in JavaScript and would win or lose
+    the comparison by accident, putting `$null` under a card's name.
+    """
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    with _priced_card({"Normal": 1.25, "Foil": None}) as card_id:
+        saved = client.post(f"/api/scans/{ids['scan']}/choose", data={"card_id": card_id}).json()
+
+    assert saved["prices"] == {"Normal": 1.25}
+    # No market on the card either, so the meta line simply stops after the
+    # number rather than trailing a separator with nothing behind it.
+    assert saved["meta"] == "mtg · Some Set · #42"
