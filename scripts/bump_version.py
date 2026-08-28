@@ -35,10 +35,19 @@ VERSION_FILE = ROOT / "src" / "foilstack" / "__init__.py"
 # string elsewhere in the file cannot be rewritten by accident.
 PATTERN = re.compile(r'^(__version__\s*=\s*")(\d+)\.(\d+)\.(\d+)(")$', re.MULTILINE)
 
-# Git writes one of these while a multi-commit operation is in flight.
+# Git writes one of these while a multi-commit operation is in flight, and
+# removes it when the operation finishes or is aborted.
+#
+# `REBASE_HEAD` is deliberately absent, and used to be here. It is not a flight
+# marker: git writes it during a rebase and then leaves it behind for good, as
+# a reference to the commit that was being replayed. Trusting it meant that the
+# first rebase anyone did in a checkout silently disabled the version bump for
+# every commit after it, in that checkout, permanently — the hook went on
+# reporting success while doing nothing, which is the worst way for a guard to
+# fail. A rebase in flight is `rebase-merge` or `rebase-apply` below, both of
+# which git does clean up.
 IN_PROGRESS = (
     "MERGE_HEAD",
-    "REBASE_HEAD",
     "CHERRY_PICK_HEAD",
     "REVERT_HEAD",
     "rebase-merge",

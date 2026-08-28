@@ -143,3 +143,21 @@ def test_only_the_version_line_is_rewritten(repo):
 
     assert '__version__ = "0.1.1"' in target.read_text()
     assert 'MIN_SUPPORTED = "1.2.3"' in target.read_text()
+
+
+def test_a_finished_rebase_does_not_disable_the_bump(repo):
+    """`REBASE_HEAD` outlives the rebase that wrote it, so it cannot gate this.
+
+    Git leaves the ref behind when a rebase completes, as a pointer to the
+    commit it replayed. While it counted as "an operation in progress", the
+    first rebase in a checkout turned the version bump off for every commit
+    after it — silently, and for good, because nothing ever removes the file.
+    The hook kept exiting zero and reporting success the whole time.
+    """
+    (repo / ".git" / "REBASE_HEAD").write_text("deadbeef\n")
+    (repo / "src" / "foilstack" / "thing.py").write_text("x = 2\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+
+    result = _run(repo)
+    assert result.returncode == 0
+    assert _version(repo) == '__version__ = "0.1.1"'
