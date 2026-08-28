@@ -90,6 +90,14 @@ class SourcePlugin(Protocol):
     name: str
     #: Every game this plugin can fetch.
     games: list[str]
+    #: Human names for those slugs, where the slug is not one. `dragonballz`
+    #: and `fleshandblood` are cache keys and CLI arguments, not something to
+    #: show a reader, and the landing page names the games this can do — so
+    #: somewhere has to hold "Flesh and Blood". It lives beside the slugs it
+    #: translates rather than in the template, because the plugin that adds a
+    #: game is the thing that knows what the game is called. Optional: a slug
+    #: with no entry is title-cased, which is right for "pokemon" and "magic".
+    labels: dict[str, str]
     #: The one it was constructed for. Read by the CLI when re-constructing a
     #: plugin for a different set, so it is part of the contract rather than an
     #: implementation detail.

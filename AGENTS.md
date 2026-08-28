@@ -65,10 +65,29 @@ uv run python scripts/preview.py --demo src/foilstack/web/static/demo
 ```
 
 Same disposable database as `--shots`, so nobody's real inventory is ever on
-camera. It writes three committed files — a full-frame WebP the landing page
-prefers, a 2:3 crop of the review queue for phones, and a GIF the README falls
-back to — plus a gitignored webm, which is the one to post anywhere that takes
-real video.
+camera. It writes one committed file — the GIF the README shows — plus a
+gitignored webm, which is the one to post anywhere that takes real video. It
+used to write two animated WebPs as well, for a landing page that played the
+animation in its hero; the landing page uses stills now and those were deleted.
+
+**Re-shoot the landing stills when you change a screen one of them shows.** The
+same rule, for the same reason, on the other set of images:
+
+```bash
+uv run python scripts/preview.py --landing src/foilstack/web/static/shots
+```
+
+Four committed files: the review queue (the hero), a card page with its price
+trend, the listing run, and `og.png` — which is not a screenshot but a composed
+card, because a link preview is rendered about 500px wide in a feed and an
+application screen at that size is a grey rectangle.
+
+The stills replaced a 3.0 MB animated WebP that was 94% of the landing page's
+weight and the largest thing painted inside the fold. It also carried its own
+copy of the application nav bar, so it announced a stale version number in the
+middle of the hero for as long as nobody re-recorded it. The whole set is now
+about 450 KB, and each still goes out of date on its own rather than all at
+once.
 
 Then watch it. Every fault this has had was invisible in the code and obvious in
 the output: scrolls that silently moved nothing and vanished from the GIF when

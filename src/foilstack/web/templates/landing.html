@@ -4,7 +4,28 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>foilstack: scan your cards, get a marketplace CSV</title>
-<meta name="description" content="Drop in a zip of card scans. Get an identified, priced inventory and a marketplace CSV. Open source, self-hostable, your scans never leave the host.">
+<meta name="description" content="Drop in a folder of card scans. Get an identified, priced inventory and a marketplace CSV. {{ games | length }} games, open source, self-hostable, your scans never leave the host.">
+<link rel="canonical" href="{{ origin }}/">
+
+{# Link previews. Absent until now, which meant every paste of this URL into
+   Reddit, Discord or a group chat rendered as a bare link — on a project whose
+   entire distribution is people pasting the URL. The image has to be absolute:
+   the crawler fetching it has no page to resolve a relative path against, and
+   a relative one fails silently on every platform at once. #}
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="foilstack">
+<meta property="og:title" content="Scans in. Priced CSV out.">
+<meta property="og:description" content="Drop in a folder of card scans. Get an identified, priced inventory and a marketplace CSV. {{ games | length }} games, open source, self-hostable.">
+<meta property="og:url" content="{{ origin }}/">
+<meta property="og:image" content="{{ origin }}/static/shots/og.png?v={{ asset_v }}">
+<meta property="og:image:width" content="2400">
+<meta property="og:image:height" content="1260">
+<meta property="og:image:alt" content="foilstack. Scans in, priced CSV out: card scans become an identified, priced inventory and a marketplace CSV.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Scans in. Priced CSV out.">
+<meta name="twitter:description" content="Drop in a folder of card scans. Get an identified, priced inventory and a marketplace CSV. {{ games | length }} games, open source, self-hostable.">
+<meta name="twitter:image" content="{{ origin }}/static/shots/og.png?v={{ asset_v }}">
+
 <link rel="icon" href="/static/brand/favicon.svg?v={{ asset_v }}" type="image/svg+xml">
 <link rel="alternate icon" href="/static/brand/favicon-32.png?v={{ asset_v }}" sizes="32x32">
 <link rel="apple-touch-icon" href="/static/brand/apple-touch-icon.png?v={{ asset_v }}">
@@ -16,7 +37,9 @@
   <a class="brand" href="/"><img class="brand-mark" src="/static/brand/mark.svg?v={{ asset_v }}" alt="" width="20" height="20"><b>foilstack</b><span class="ver">v{{ version }}{% if git_sha %}<span class="sha" title="build">{{ git_sha }}</span>{% endif %}</span></a>
   <nav>
     <a href="#how">How it works</a>
-    <a href="#printings">Why the review queue</a>
+    <a href="#printings">The review queue</a>
+    <a href="#games">Games</a>
+    <a href="#prices">Prices</a>
     <a href="#selfhost">Self-host</a>
     <a href="https://github.com/foilstack/foilstack">Source</a>
     {% if viewer %}
@@ -33,8 +56,8 @@
   <p class="eyebrow">AGPL-3.0 · SELF-HOSTABLE · YOUR SCANS STAY PUT</p>
   <h1>Scans in. Priced CSV out.</h1>
   <p class="lede">
-    Drop in a <code>.zip</code> of card scans. Get back an identified, priced
-    inventory and a CSV your marketplace already accepts.
+    Drop in a folder of card scans, or a <code>.zip</code> of them. Get back an
+    identified, priced inventory and a CSV your marketplace already accepts.
   </p>
   <div class="hero-actions">
     {% if viewer %}
@@ -52,24 +75,20 @@
     {% else %}Your scans are processed on the host running this and are never sent anywhere else.{% endif %}
   </p>
 
-  {# WebP first: the same run at 1600px and without the 256-colour banding,
-     which is what makes it legible on a screen that paints two device pixels
-     per CSS pixel. The GIF is the fallback and is 640px, so it is the one
-     that looks soft — every browser has one, and almost none of them use it. #}
-  <figure class="hero-demo">
-    <picture>
-      {# The phone copy first: sources are matched in order, so this has to sit
-         above the full-frame one or the wide source always wins. It is the
-         same crop the stylesheet applies below 640px, done once at record
-         time — which makes it both smaller to fetch and sharper, since the
-         browser is no longer magnifying a slice of a downscaled frame. #}
-      <source media="(max-width: 640px)"
-              srcset="/static/demo/foilstack-mobile.webp?v={{ asset_v }}" type="image/webp">
-      <source srcset="/static/demo/foilstack.webp?v={{ asset_v }}" type="image/webp">
-      <img src="/static/demo/foilstack.gif?v={{ asset_v }}" width="1000" height="625"
-           alt="Reviewing matched cards, confirming them into inventory, opening a card to see its price trend, and exporting the selection as a marketplace CSV">
-    </picture>
-    <figcaption>The whole loop, including fixing a match it got wrong, in under twenty seconds. No narration: there is nothing to listen to.</figcaption>
+  {# A still, not the animation it replaced.
+     The animation was three megabytes of the page's three and a bit, it was
+     the largest thing painted inside the fold, and it went stale the moment a
+     screen it showed was redesigned — a visitor could read an old version
+     number off it in the middle of the hero. A screenshot of the one screen
+     that does the persuading costs about a fortieth of that and says the same
+     thing, and the other screens are now shown where the text makes their
+     claim rather than all at once, up front, in twenty seconds nobody has
+     agreed to spend yet. #}
+  <figure class="shot shot-hero">
+    <img src="/static/shots/queue.webp?v={{ asset_v }}" width="2000" height="1250"
+         fetchpriority="high" decoding="async"
+         alt="The review queue: each scanned card beside the catalogue card it matched, with a confidence score, the runners-up it beat, and buttons to confirm the match or correct it.">
+    <figcaption>The review queue. Your scan on the left, what it matched on the right, and the runners-up it beat.</figcaption>
   </figure>
 </section>
 
@@ -77,7 +96,8 @@
   <h2 class="band-h">Four steps, one archive</h2>
   <div class="steps">
     <div class="step"><div class="step-n">01</div><h3>Import</h3>
-      <p>A <code>.zip</code> of images, one card per file. Filenames don't matter.</p></div>
+      <p>Images straight from a scanner, one card per file, loose or in a
+         <code>.zip</code>. Filenames don't matter. Front of the card is enough.</p></div>
     <div class="step"><div class="step-n">02</div><h3>Match</h3>
       <p>Every image is encoded and searched against a catalogue of reference card
          images. Confident matches go straight through.</p></div>
@@ -85,132 +105,203 @@
       <p>Everything else waits in a queue with its runners-up and their scores, so
          you decide the close calls.</p></div>
     <div class="step"><div class="step-n">04</div><h3>Export</h3>
-      <p>A TCGplayer or eBay CSV you upload yourself. Nothing here touches a
-         marketplace on your behalf.</p></div>
+      <p>{{ exporters | join(' or ') }}: a CSV you upload yourself. Nothing here
+         touches a marketplace on your behalf.</p></div>
   </div>
+  <p class="band-note">
+    Any flatbed will do, and so will a phone on a tripod: the matcher wants a
+    readable front, not a studio. <code>jpg</code>, <code>png</code>,
+    <code>tif</code> and <code>webp</code>, up to
+    {{ "{:,}".format(max_images) }} scans and {{ max_mb }} MB per upload.
+  </p>
 </section>
 
 <section class="band band-tint" id="printings">
-  <h2 class="band-h">Why there is a review queue</h2>
-  <p class="band-lede">
-    Reprints share artwork. Image search gives you a name you can trust and a
-    printing you cannot. The same illustration appears in set after set,
-    separated on the card by a symbol a few pixels wide.
-  </p>
-  {# The confidence bar is the app's own — same markup, same classes, same
-     integer rounding as the review queue renders. Two bars this close beside
-     that price gap is the argument, and it makes it faster than the numbers
-     did. #}
-  <div class="proof">
-    <div class="proof-row proof-head">
-      <span>One scan of Charizard 004/102
-        <span class="pill warn" title="This card has several printings at different prices">?</span>
-      </span>
-      <span>match</span>
-      <span class="num">market</span>
+  <div class="band-inner">
+    <h2 class="band-h">Why there is a review queue</h2>
+    <p class="band-lede">
+      Reprints share artwork. Image search gives you a name you can trust and a
+      printing you cannot. The same illustration appears in set after set,
+      separated on the card by a symbol a few pixels wide.
+    </p>
+    {# The confidence bar is the app's own — same markup, same classes, same
+       integer rounding as the review queue renders. Two bars this close beside
+       that price gap is the argument, and it makes it faster than the numbers
+       did. #}
+    <div class="proof">
+      <div class="proof-row proof-head">
+        <span>One scan of Charizard 004/102
+          <span class="pill warn" title="This card has several printings at different prices">?</span>
+        </span>
+        <span>match</span>
+        <span class="num">market</span>
+      </div>
+      <div class="proof-row">
+        <span class="proof-card">
+          {% if proof_ids[0] %}<span class="thumb-xs ref"><img src="/card/{{ proof_ids[0] }}/image" alt="" loading="lazy"></span>{% endif %}
+          Base Set · Holofoil
+        </span>
+        <span class="conf">
+          <span class="track"><i style="width: 93%"></i></span>
+          <span class="lbl">93% match</span>
+        </span>
+        <span class="num">$855.52</span>
+      </div>
+      <div class="proof-row alt">
+        <span class="proof-card">
+          {% if proof_ids[1] %}<span class="thumb-xs ref"><img src="/card/{{ proof_ids[1] }}/image" alt="" loading="lazy"></span>{% endif %}
+          Base Set (Shadowless) · 1st Edition Holofoil
+        </span>
+        <span class="conf">
+          <span class="track"><i style="width: 91%"></i></span>
+          <span class="lbl">91% match</span>
+        </span>
+        <span class="num">$10,000.00</span>
+      </div>
     </div>
-    <div class="proof-row">
-      <span class="proof-card">
-        {% if proof_ids[0] %}<span class="thumb-xs ref"><img src="/card/{{ proof_ids[0] }}/image" alt="" loading="lazy"></span>{% endif %}
-        Base Set · Holofoil
-      </span>
-      <span class="conf">
-        <span class="track"><i style="width: 93%"></i></span>
-        <span class="lbl">93% match</span>
-      </span>
-      <span class="num">$855.52</span>
-    </div>
-    <div class="proof-row alt">
-      <span class="proof-card">
-        {% if proof_ids[1] %}<span class="thumb-xs ref"><img src="/card/{{ proof_ids[1] }}/image" alt="" loading="lazy"></span>{% endif %}
-        Base Set (Shadowless) · 1st Edition Holofoil
-      </span>
-      <span class="conf">
-        <span class="track"><i style="width: 91%"></i></span>
-        <span class="lbl">91% match</span>
-      </span>
-      <span class="num">$10,000.00</span>
-    </div>
+    <p class="proof-note">
+      Both prices are real rows from the catalogue foilstack fetched, and the
+      bars are the review queue's own. The two scores are illustrative. A scan
+      of your card produces its own.
+    </p>
+    <p class="band-note">
+      The same illustration, printed twice, separated by a small black symbol and
+      the word "Shadowless", and by eleven and a half thousand dollars. A tool
+      that shows you only the winner will eventually sell that card for $855.
+      So auto-accept requires a high score, a clear margin over the runner-up,
+      <em>and</em>, when the runner-up is the same card in another printing,
+      prices close enough that being wrong doesn't matter.
+    </p>
   </div>
-  <p class="proof-note">
-    Both prices are real rows from the catalogue foilstack fetched, and the
-    bars are the review queue's own. The two scores are illustrative. A scan
-    of your card produces its own.
+</section>
+
+<section class="band" id="games">
+  <h2 class="band-h">{{ games | length }} games, out of the box</h2>
+  <p class="band-lede">
+    Every one of these is a catalogue the install fetches for itself, on your
+    machine, from the source plugins that ship with it. Ingest only the games
+    you sell: each one is a separate command, and nothing is downloaded until
+    you ask for it.
   </p>
+  <ul class="chips">
+    {% for game in games %}<li>{{ game }}</li>{% endfor %}
+  </ul>
   <p class="band-note">
-    The same illustration, printed twice, separated by a small black symbol and
-    the word "Shadowless", and by eleven and a half thousand dollars. A tool
-    that shows you only the winner will eventually sell that card for $855.
-    So auto-accept requires a high score, a clear margin over the runner-up,
-    <em>and</em>, when the runner-up is the same card in another printing,
-    prices close enough that being wrong doesn't matter.
+    Missing yours? A source plugin is one Python file with one method that
+    yields rows. <a href="https://github.com/foilstack/foilstack">The one that
+    covers all {{ games | length }} above</a> is about two hundred lines, and
+    it is the worked example.
   </p>
 </section>
 
-<section class="band" id="prices">
-  <h2 class="band-h">It keeps up with the market</h2>
-  <div class="two-up four-up">
-    <div>
-      <h3>Priced per printing, not per card</h3>
-      <p>A foil is priced as a foil. Where several printings all answer to
-         "foil", you name the one you hold and the price follows it. Until you
-         do, the dearest match is used and the row says <code>guessed</code>,
-         because an overpriced card sits unsold where an underpriced one is
-         already gone.</p>
+<section class="band band-tint" id="prices">
+  <div class="band-inner">
+    <h2 class="band-h">It keeps up with the market</h2>
+    <div class="two-up four-up">
+      <div>
+        <h3>Priced per printing, not per card</h3>
+        <p>A foil is priced as a foil. Where several printings all answer to
+           "foil", you name the one you hold and the price follows it. Until you
+           do, the dearest match is used and the row says <code>guessed</code>,
+           because an overpriced card sits unsold where an underpriced one is
+           already gone.</p>
+      </div>
+      <div>
+        <h3>A price history you own</h3>
+        <p>Prices sync daily and every move is recorded, so each card carries its
+           own trend rather than a number with no past. Upstream keeps only today,
+           so this is history that exists because you ran it.</p>
+      </div>
+      <div>
+        <h3>One line per card</h3>
+        <p>Four copies of the same card is one row with a quantity, not four rows
+           to scroll past. Open it to see every copy, its condition, what you paid
+           and what it is worth now.</p>
+      </div>
+      <div>
+        <h3>Sold is a state, not a delete</h3>
+        <p>Mark a card sold and it leaves your stock totals while staying in the
+           record with what it fetched, so the margin column means something.</p>
+      </div>
     </div>
-    <div>
-      <h3>A price history you own</h3>
-      <p>Prices sync daily and every move is recorded, so each card carries its
-         own trend rather than a number with no past. Upstream keeps only today,
-         so this is history that exists because you ran it.</p>
-    </div>
-    <div>
-      <h3>One line per card</h3>
-      <p>Four copies of the same card is one row with a quantity, not four rows
-         to scroll past. Open it to see every copy, its condition, what you paid
-         and what it is worth now.</p>
-    </div>
-    <div>
-      <h3>Sold is a state, not a delete</h3>
-      <p>Mark a card sold and it leaves your stock totals while staying in the
-         record with what it fetched, so the margin column means something.</p>
-    </div>
+    <figure class="shot">
+      <img src="/static/shots/card.webp?v={{ asset_v }}" width="2000" height="1640"
+           loading="lazy" decoding="async"
+           alt="A single card's page: every copy held with its condition and what it cost, beside a chart of the card's market price over time.">
+      <figcaption>One card, every copy you hold, and the price trend that only exists because your install has been recording it.</figcaption>
+    </figure>
   </div>
+</section>
+
+<section class="band" id="export">
+  <h2 class="band-h">It ends in a file you upload</h2>
+  <p class="band-lede">
+    Select what you want to list, pick a channel, and download the CSV. There is
+    no API client behind any of these names, no OAuth token held and no key
+    stored: nothing here can list, reprice or sell anything on your behalf,
+    because nothing here can reach a marketplace at all.
+  </p>
+  <figure class="shot">
+    <img src="/static/shots/listings.webp?v={{ asset_v }}" width="2000" height="1250"
+         loading="lazy" decoding="async"
+         alt="The listing screen: selected inventory rows with their asking prices, a channel picker, and a button that downloads the marketplace CSV.">
+    <figcaption>{{ exporters | join(' and ') }} today. An exporter is a column mapping in a TOML file, so a new one is a file, not a release.</figcaption>
+  </figure>
 </section>
 
 <section class="band band-tint" id="selfhost">
-  <h2 class="band-h">Or run the whole thing yourself</h2>
-  <p class="band-lede">
-    Three containers and a Postgres volume. No telemetry, no upload of your
-    images to anyone, and, running it yourself, no account to create: one
-    implicit owner holds everything, and the login screen never appears.
-  </p>
-  <pre class="code-block"><code>git clone https://github.com/foilstack/foilstack.git
+  <div class="band-inner">
+    <h2 class="band-h">Or run the whole thing yourself</h2>
+    <p class="band-lede">
+      Three containers and a Postgres volume. No telemetry, no upload of your
+      images to anyone, and, running it yourself, no account to create: one
+      implicit owner holds everything, and the login screen never appears.
+    </p>
+    <pre class="code-block"><code>git clone https://github.com/foilstack/foilstack.git
 cd foilstack &amp;&amp; cp .env.example .env
 docker compose up -d          # migrations run on start
 
 docker compose exec web foilstack ingest --source tcgcsv --game pokemon
 docker compose exec web foilstack embed</code></pre>
-  <div class="two-up">
-    <div>
-      <h3>Bring your own catalogue</h3>
-      <p>Source plugins fetch card data from upstream on <em>your</em> machine.
-         This project redistributes no prices and no images. Adding a game or a
-         sport means writing one plugin.</p>
-    </div>
-    <div>
-      <h3>Exporters are just files</h3>
-      <p>A marketplace exporter is a TOML column mapping, not code. Anyone can
-         read one in ten seconds and be certain it does nothing else.</p>
+    <div class="two-up">
+      <div>
+        <h3>Bring your own catalogue</h3>
+        <p>Source plugins fetch card data from upstream on <em>your</em> machine.
+           This project redistributes no prices and no images. Adding a game or a
+           sport means writing one plugin.</p>
+      </div>
+      <div>
+        <h3>Exporters are just files</h3>
+        <p>A marketplace exporter is a TOML column mapping, not code. Anyone can
+           read one in ten seconds and be certain it does nothing else.</p>
+      </div>
     </div>
   </div>
 </section>
 
 <footer class="site-foot">
-  <span>foilstack · AGPL-3.0</span>
-  <span><a href="https://github.com/foilstack/foilstack">github.com/foilstack/foilstack</a></span>
-  <span><a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">Buy me a coffee</a></span>
-  <span class="dim">Running this for yourself or your own shop triggers no licence obligations.</span>
+  {# The section links live here as well as in the header. The header's are
+     hidden on a phone — four wrapped anchor rows was a fifth of the viewport,
+     permanently, because the header is sticky — and hiding navigation without
+     putting it anywhere is how you lose it. #}
+  <nav class="foot-links">
+    <a href="#how">How it works</a>
+    <a href="#printings">The review queue</a>
+    <a href="#games">Games</a>
+    <a href="#prices">Prices</a>
+    <a href="#export">Export</a>
+    <a href="#selfhost">Self-host</a>
+  </nav>
+  <nav class="foot-links">
+    <a href="https://github.com/foilstack/foilstack">github.com/foilstack/foilstack</a>
+    <a href="/privacy">Privacy</a>
+    <a href="/terms">Terms</a>
+    <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">Buy me a coffee</a>
+  </nav>
+  <p class="foot-fine">
+    foilstack {{ version }} · AGPL-3.0 ·
+    Running this for yourself or your own shop triggers no licence obligations.
+  </p>
 </footer>
 
 </body>

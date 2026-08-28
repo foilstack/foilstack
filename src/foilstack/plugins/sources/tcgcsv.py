@@ -90,9 +90,27 @@ def _extended(product: dict, field: str) -> str | None:
     return None
 
 
+# What each slug is actually called, for the places a human reads it. Only the
+# ones a title-case of the slug gets wrong are here; "pokemon" and "magic" come
+# out fine on their own, and listing them anyway would mean two places to
+# update the day a name changes.
+LABELS: dict[str, str] = {
+    "magic": "Magic: The Gathering",
+    "yugioh": "Yu-Gi-Oh!",
+    "onepiece": "One Piece",
+    "starwars": "Star Wars Unlimited",
+    "fleshandblood": "Flesh and Blood",
+    "finalfantasy": "Final Fantasy",
+    "dragonballz": "Dragon Ball Z",
+    "dragonballsuper": "Dragon Ball Super",
+    "dragonballfusion": "Dragon Ball Fusion World",
+}
+
+
 class TCGCSVSource:
     name = "tcgcsv"
     games: ClassVar[list[str]] = list(CATEGORIES)
+    labels: ClassVar[dict[str, str]] = LABELS
 
     def __init__(self, game: str = "pokemon", set_code: str | None = None) -> None:
         if game not in CATEGORIES:

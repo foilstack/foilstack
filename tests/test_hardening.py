@@ -140,7 +140,11 @@ def test_a_detached_head_is_read(tmp_path):
 @pytest.mark.parametrize(
     "path,expected",
     [
-        ("/static/demo/foilstack.webp", "image/webp"),
+        # A landing still rather than the demo animation: the two animated
+        # WebPs this used to name existed only for the landing hero, which
+        # now uses stills, and were deleted with it. The mime question is
+        # the same one and these are the files that answer it now.
+        ("/static/shots/queue.webp", "image/webp"),
         ("/static/fonts/jetbrains-mono-latin.woff2", "font/woff2"),
         ("/static/app.css", "text/css"),
         ("/static/brand/mark.svg", "image/svg+xml"),

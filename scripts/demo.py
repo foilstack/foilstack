@@ -35,12 +35,10 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeout
 # or the queue, which are the two things worth seeing.
 WIDTH, HEIGHT = 1000, 625
 
-# Capture at twice the CSS size. The page is laid out at 1000 CSS pixels and
-# the landing page displays it at 1000 too, so at a scale factor of 1 there
-# were exactly enough pixels for a monitor nobody has owned for a decade —
-# every modern laptop and phone doubles it on the way to the screen, and the
-# result is the soft, slightly smeared demo this replaced. The frames get
-# bigger; the WebP quality setting is what pays for it.
+# Capture at twice the CSS size, then downsample into the GIF. Sampling at 1x
+# and writing at 1x gave exactly enough pixels for a monitor nobody has owned
+# for a decade; every modern laptop and phone doubles on the way to the screen,
+# and the result was the soft, slightly smeared demo this replaced.
 DEVICE_SCALE = 2
 
 # Milliseconds per frame in the finished GIF. 100ms (10fps) is smooth enough
@@ -48,10 +46,9 @@ DEVICE_SCALE = 2
 # not become a forty megabyte file.
 FRAME_MS = 100
 
-# The GIF is written smaller and with a reduced palette. At full width and 192
-# colours it ran to five megabytes, which is a README image a reader watches
-# load — and past the repository's own large-file hook, which is right to
-# object. The WebP keeps the full size for anywhere that can play it.
+# The GIF is written smaller than it is captured, and with a reduced palette.
+# At full width and 192 colours it ran to five megabytes, which is a README
+# image a reader watches load.
 #
 # The scroll beats are deliberately short for the same reason. Halving the
 # frame rate would also fit under the limit, but a scroll at five frames a
@@ -69,52 +66,6 @@ FRAME_MS = 100
 # 256 lands at 5.2 and would be betting the README's only picture on it.
 GIF_WIDTH = 1000
 GIF_COLORS = 192
-
-# What the WebP costs.
-#
-# This was 46 for one release, chosen to fit the repository's 2048 KB commit
-# hook. That hook never applied: `check-added-large-files` only inspects files
-# being *added*, and this one has been tracked since the beginning, so every
-# re-record went through as a modification and was waved past. The quality was
-# paying for a limit nobody was enforcing, and it showed — text edges were
-# visibly soft against the same frames at 72.
-#
-# 72 rather than 80: side by side at the size a retina screen paints, 80 is
-# marginally cleaner on card art and indistinguishable on text, for another
-# 550 KB. This is a hero image on a landing page, not an archive master.
-WEBP_QUALITY = 72
-
-# Written at the width it was captured — no downsample.
-#
-# Also a leftover from the phantom size limit: 1600 was the widest that fit
-# under it, which made the landing page upscale by 1.25 on top of whatever the
-# screen was already doing. At 2000 the desktop case is exactly 1:1 on a
-# device-pixel-ratio of 2, which is the common one.
-#
-# Mobile is the case that stays hard. The hero crops to a 2:3 slice with
-# `object-fit: cover`, which zooms *in* — so a phone needs more pixels per
-# visible area than a desktop does, not fewer. Serving phones a smaller file
-# would blur the one view that is already most magnified. Fixing that properly
-# means recording a pre-cropped variant of just the queue column, which is a
-# second asset and a second beat list, and is not done here.
-WEBP_WIDTH = 2000
-
-# The phone copy, cropped rather than shrunk.
-#
-# The landing page already crops the hero on a phone — `aspect-ratio: 2/3` with
-# `object-fit: cover`, right-aligned onto the review queue, because the whole
-# thousand-pixel frame at three hundred is a grey smudge. Doing that crop in
-# the browser means the phone downloads the entire frame and throws most of it
-# away, and `cover` on a 2:3 box *magnifies* what is left — so the one view
-# that is already blown up largest was also the one with the fewest pixels
-# behind it.
-#
-# Cropping here fixes both ends: the file is smaller because it is 42% of the
-# frame, and it is sharper because those pixels are native rather than scaled
-# up. The geometry has to match the stylesheet exactly — right-aligned, full
-# height, width = height * 2/3 — or the phone crops an already-cropped image
-# and the queue slides out of frame.
-MOBILE_ASPECT = (2, 3)
 
 # The pointer the browser will not draw for us. Without it a click is a screen
 # that changes for no visible reason, which reads as a cut rather than an
@@ -341,16 +292,18 @@ def assemble(
     frame_ms: int = FRAME_MS,
     gif_width: int = GIF_WIDTH,
     gif_colors: int = GIF_COLORS,
-    webp_quality: int = WEBP_QUALITY,
-    webp_width: int = WEBP_WIDTH,
 ) -> None:
-    """Write the animation twice, for two different jobs.
+    """Write the animation as a GIF, for the README.
 
-    WebP at full size, because it keeps card art looking like card art and
-    costs a third of the bytes. GIF smaller and with a reduced palette, because
-    it is the format that plays absolutely everywhere a link gets pasted and it
-    is also the one that gets enormous — at full width and 192 colours this ran
-    to five megabytes, which is a README image people watch load.
+    A GIF and nothing else, now. This used to write two animated WebPs as well
+    — a full-size one and a pre-cropped phone copy — because the landing page
+    played the animation in its hero and needed both. The landing page now uses
+    stills, and those two files were 4.3 MB of a repository that nothing
+    referenced any more.
+
+    The GIF is the format that plays absolutely everywhere a link gets pasted,
+    which is the whole job here: it is the README's only picture, and the README
+    is where a stranger meets this project.
     """
     from PIL import Image
 
@@ -360,36 +313,6 @@ def assemble(
 
     images = [Image.open(f).convert("RGB") for f in files]
     out.parent.mkdir(parents=True, exist_ok=True)
-
-    webp = out.with_suffix(".webp")
-    wide = _resized(images, webp_width)
-    wide[0].save(
-        webp,
-        save_all=True,
-        append_images=wide[1:],
-        duration=frame_ms,
-        loop=0,
-        quality=webp_quality,
-        # method=6 is the slowest setting and the reason the whole thing fits:
-        # it buys about 8% over the default for a minute of encoding, which is
-        # a minute nobody spends twice.
-        method=6,
-    )
-
-    # The phone copy: the stylesheet's own crop, applied to the master.
-    mob_w = round(images[0].height * MOBILE_ASPECT[0] / MOBILE_ASPECT[1])
-    box = (images[0].width - mob_w, 0, images[0].width, images[0].height)
-    cropped = [im.crop(box) for im in images]
-    mobile = out.with_name(f"{out.name}-mobile.webp")
-    cropped[0].save(
-        mobile,
-        save_all=True,
-        append_images=cropped[1:],
-        duration=frame_ms,
-        loop=0,
-        quality=webp_quality,
-        method=6,
-    )
 
     small = _resized(images, gif_width)
     # One palette for the whole run, not one per frame. Per-frame palettes make
@@ -413,10 +336,7 @@ def assemble(
         # compositing artifacts would only appear near the end.
         disposal=1,
     )
-
-    for path in (webp, mobile, gif):
-        size = path.stat().st_size / 1048576
-        print(f"  {path}  {size:.1f} MB  ({len(images)} frames)")
+    print(f"  {gif}  {gif.stat().st_size / 1048576:.1f} MB  ({len(images)} frames)")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -429,8 +349,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--frame-ms", type=int, default=FRAME_MS)
     ap.add_argument("--gif-width", type=int, default=GIF_WIDTH)
     ap.add_argument("--gif-colors", type=int, default=GIF_COLORS)
-    ap.add_argument("--webp-quality", type=int, default=WEBP_QUALITY)
-    ap.add_argument("--webp-width", type=int, default=WEBP_WIDTH)
     ap.add_argument("--scale", type=int, default=DEVICE_SCALE, help="device pixel ratio")
     ap.add_argument("--keep-frames", action="store_true")
     args = ap.parse_args(argv)
@@ -469,8 +387,6 @@ def main(argv: list[str] | None = None) -> int:
         args.frame_ms,
         args.gif_width,
         args.gif_colors,
-        args.webp_quality,
-        args.webp_width,
     )
     if args.keep_frames:
         print(f"  frames kept in {frames_dir}")

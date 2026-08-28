@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+{# The shell for the plain prose pages that hang off the landing page.
+
+   Separate from base.html, which is the *application* shell: a fixed-height
+   frame with a rail and a status bar, built so a queue you are working through
+   stays on screen. A privacy policy in that frame would be a document trapped
+   in a pane, and it would also claim a signed-in session these pages do not
+   have and do not need. #}
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }} · foilstack</title>
+<meta name="robots" content="index, follow">
+<link rel="icon" href="/static/brand/favicon.svg?v={{ asset_v }}" type="image/svg+xml">
+<link rel="alternate icon" href="/static/brand/favicon-32.png?v={{ asset_v }}" sizes="32x32">
+<link rel="apple-touch-icon" href="/static/brand/apple-touch-icon.png?v={{ asset_v }}">
+<link rel="stylesheet" href="/static/app.css?v={{ asset_v }}">
+</head>
+<body class="site">
+
+<header class="site-nav">
+  <a class="brand" href="/"><img class="brand-mark" src="/static/brand/mark.svg?v={{ asset_v }}" alt="" width="20" height="20"><b>foilstack</b><span class="ver">v{{ version }}{% if git_sha %}<span class="sha" title="build">{{ git_sha }}</span>{% endif %}</span></a>
+  <nav>
+    <a href="/">Home</a>
+    <a href="https://github.com/foilstack/foilstack">Source</a>
+    <a class="btn btn-primary" href="/">Back to the front page</a>
+  </nav>
+</header>
+
+<main class="prose">
+  <h1>{{ title }}</h1>
+  {% block body %}{% endblock %}
+</main>
+
+<footer class="site-foot">
+  <nav class="foot-links">
+    <a href="/">Home</a>
+    <a href="https://github.com/foilstack/foilstack">github.com/foilstack/foilstack</a>
+    <a href="/privacy">Privacy</a>
+    <a href="/terms">Terms</a>
+    <a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">Buy me a coffee</a>
+  </nav>
+  <p class="foot-fine">
+    foilstack {{ version }} · AGPL-3.0 ·
+    Running this for yourself or your own shop triggers no licence obligations.
+  </p>
+</footer>
+
+</body>
+</html>

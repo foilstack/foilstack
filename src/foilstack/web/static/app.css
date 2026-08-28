@@ -69,8 +69,15 @@
    can see the rest of the queue while deciding on one card. */
 :root {
   --ink: #17171a;
-  --muted: #6f6f6b;
-  --faint: #9a9a95;
+  /* Both darkened to clear WCAG AA (4.5:1) against --paper.
+     --faint was #9a9a95, which measures 2.6:1 there and was carrying real
+     text, not decoration: the landing page's eyebrow, its figure captions, the
+     note under the price table, every field hint in the application. --muted
+     moved with it, from #6f6f6b, because it had only 4.58:1 of its own — so
+     leaving it put would have made the two indistinguishable and flattened the
+     hierarchy the pair exists to express. Now 6.0:1 and 4.5:1. */
+  --muted: #5d5d58;
+  --faint: #70706a;
   --rule: #dedbd5;
   --rule-soft: #ededea;
   --paper: #f4f4f2;
@@ -738,9 +745,15 @@ body.app {
   background: var(--surface-2); padding: 8px 10px; margin-bottom: 12px;
   font-family: var(--mono); font-size: 11px;
 }
-.panel-facts div { display: flex; justify-content: space-between; padding: 2px 0; }
-.panel-facts span { color: var(--muted); }
-.panel-facts b { font-weight: 500; }
+/* `space-between` alone leaves no gap the moment the value is wide enough to
+   fill the row, and a two-printing line does exactly that: "Printing" and
+   "1 1st Edition Holofoil, 1 Normal" ran together into "Printing1 1st Edition"
+   with no space at all. Found in a landing-page screenshot, which is a
+   humbling place to find it. The gap is the fix; `flex: none` stops the label
+   itself being squeezed instead. */
+.panel-facts div { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }
+.panel-facts span { color: var(--muted); flex: none; }
+.panel-facts b { font-weight: 500; text-align: right; }
 
 .panel-sold {
   border: 1px solid var(--rule-soft); border-radius: 3px;
@@ -1069,42 +1082,56 @@ body.site { background: var(--paper); }
 .hero-actions a { text-decoration: none; }
 .hero-note { font-size: 12.5px; color: var(--faint); }
 
-/* The demo. Framed rather than floated: a bare animation on a page this plain
-   reads as a stray image, and the frame says "this is the product". */
-.hero-demo { margin: 34px auto 0; max-width: 1000px; }
-.hero-demo picture { display: block; }
-.hero-demo img {
+/* Screenshots, framed rather than floated: a bare image on a page this plain
+   reads as a stray file, and the frame says "this is the product".
+
+   These replaced a single animated WebP in the hero. That file was 3.0 MB of a
+   3.2 MB page and was the largest thing painted inside the fold, so the whole
+   landing page's load was one image of an app doing something the reader had
+   not yet been told the point of. It also carried its own copy of the nav bar,
+   version number included, which meant it announced a stale build in 44px type
+   for two days after a release. Stills cost about a fortieth as much, go out
+   of date one screen at a time, and can be put where the sentence that makes
+   the claim is — instead of all of them at once, up front, in a twenty-second
+   loop nobody has agreed to watch. */
+.shot { margin: 32px auto 0; max-width: 1000px; }
+.shot img {
   display: block; width: 100%; height: auto; border: 1px solid var(--rule);
   border-radius: 8px; background: var(--surface);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 12px 32px rgba(0, 0, 0, 0.07);
 }
-.hero-demo figcaption {
+.shot figcaption {
   margin-top: 12px; font-size: 12px; color: var(--faint);
-  font-family: var(--mono);
+  font-family: var(--mono); line-height: 1.5;
 }
+.shot-hero { margin-top: 34px; }
 
-/* On a phone the whole frame is a thousand pixels of interface in three
-   hundred, which is a grey smudge rather than an argument. Crop into the
-   review queue instead — the one part that is legible at this size and the
-   part that does the persuading: a scan beside the card it matched. */
+/* A phone renders a 1440px-wide screen at 358, which is a grey smudge rather
+   than an argument. Rather than crop — the animation's answer, which needed a
+   second pre-cropped asset to stay sharp — let it scroll: the image keeps its
+   native proportions inside a box the reader can drag sideways, so the part
+   that persuades is legible at a size a phone can actually show. */
 @media (max-width: 640px) {
-  .hero-demo img {
-    /* 2/3 is not arbitrary: right-aligned, `cover` on this box shows the
-       original from x=583 onward, and the queue column starts at x=578. A
-       shorter box drags a strip of the import pane in with it, which reads as
-       a rendering fault rather than as a crop. */
-    aspect-ratio: 2 / 3;
-    object-fit: cover;
-    object-position: 100% 24%;
-  }
-  .hero-demo figcaption::after {
-    content: " Shown here: the review queue.";
-  }
+  .shot { overflow-x: auto; }
+  .shot img { width: 720px; max-width: none; }
+  .shot figcaption { position: sticky; left: 0; max-width: 100vw; }
 }
 
 .band { max-width: 980px; margin: 0 auto; padding: 54px 32px; }
-.band-tint { max-width: none; background: var(--surface); border-block: 1px solid var(--rule); }
-.band-tint > * { max-width: 980px; margin-inline: auto; }
+
+/* A full-bleed tint whose contents still sit on an untinted band's left edge.
+   That used to be `.band-tint > * { max-width: 980px; margin-inline: auto }`,
+   which centres whatever it is applied to — so the children carrying a
+   narrower measure of their own (.band-lede at 660px, .band-note at 700px)
+   centred themselves *inside* the band while the heading beside them did not.
+   One section, three different left edges: h2 at 230px, note at 370, lede at
+   390. Doing the centring once on a wrapper means the measures run from the
+   wrapper's edge, the way they do in every untinted band. */
+.band-tint {
+  max-width: none; background: var(--surface);
+  border-block: 1px solid var(--rule); padding-inline: 0;
+}
+.band-inner { max-width: 980px; margin-inline: auto; padding-inline: 32px; }
 .band-h { font-size: 24px; letter-spacing: -0.015em; margin-bottom: 12px; }
 .band-lede { color: var(--muted); font-size: 15px; max-width: 660px; line-height: 1.55; }
 .band-note { color: var(--muted); font-size: 13.5px; max-width: 700px; line-height: 1.6; margin-top: 16px; }
@@ -1176,14 +1203,50 @@ body.site { background: var(--paper); }
 .two-up h3 { font-size: 15px; margin-bottom: 6px; }
 .two-up p { color: var(--muted); font-size: 13.5px; line-height: 1.55; }
 
+/* The games this install can actually ingest, named. Read off the source
+   plugins rather than written into the page, so the list cannot promise a game
+   the install has no catalogue for. */
+.chips { list-style: none; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; padding: 0; }
+.chips li {
+  font-family: var(--mono); font-size: 12px; padding: 5px 10px;
+  border: 1px solid var(--rule); border-radius: 999px;
+  background: var(--surface); color: var(--ink);
+}
+
 .site-foot {
-  border-top: 1px solid var(--rule); padding: 26px 32px; display: flex;
-  gap: 18px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted);
+  border-top: 1px solid var(--rule); padding: 26px 32px 40px;
+  display: flex; flex-direction: column; gap: 12px;
+  font-size: 12.5px; color: var(--muted);
   max-width: 980px; margin: 40px auto 0;
 }
 .site-foot a { color: var(--muted); }
+.foot-links { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.foot-fine { color: var(--faint); font-size: 12px; line-height: 1.6; }
+
+/* ---------- the prose pages: privacy, terms ---------- */
+.prose { max-width: 720px; margin: 0 auto; padding: 44px 32px 8px; }
+.prose h1 { font-size: 30px; letter-spacing: -0.02em; margin-bottom: 14px; }
+.prose h2 { font-size: 17px; margin: 30px 0 8px; }
+.prose p, .prose li { color: var(--muted); font-size: 14.5px; line-height: 1.65; }
+.prose p { margin-bottom: 12px; }
+.prose-lede { font-size: 15.5px; }
+.prose ul { margin: 0 0 12px; padding-left: 20px; }
+.prose li { margin-bottom: 6px; }
+.prose b { color: var(--ink); font-weight: 600; }
+.prose a { color: var(--green); }
+
 @media (max-width: 720px) {
   .hero h1 { font-size: 32px; }
+  /* The header is sticky, so anything that wraps inside it is a cost paid on
+     every screen of scrolling — and at 390px the four section anchors wrapped
+     it to three rows and 129px, a seventh of the viewport, permanently. The
+     brand and the one button that matters fit on a single row. The links are
+     not lost: the footer carries the same list, which is where a phone reader
+     arrives anyway. */
+  .site-nav { padding: 10px 16px; }
+  .site-nav nav a:not(.btn) { display: none; }
+  .band-inner, .band, .hero { padding-inline: 20px; }
+  .site-foot { padding-inline: 20px; }
 }
 
 /* ---------- re-pointing an inventory row ---------- */
