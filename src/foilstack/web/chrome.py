@@ -79,20 +79,49 @@ def _asset_version() -> str:
         except OSError:
             return "0"
 
-    # The demo, by size and mtime rather than by content. It carries the same
-    # query string, so it has to be in the hash — a CDN held a stale
-    # `application/octet-stream` copy of it through a deploy that fixed exactly
-    # that, because the URL never changed. Reading three megabytes on every
+    # The imagery, by size and mtime rather than by content. It carries the
+    # same query string, so it has to be in the hash — a CDN held a stale
+    # `application/octet-stream` copy of the demo through a deploy that fixed
+    # exactly that, because the URL never changed. Reading megabytes on every
     # request to learn something `stat` already knows would be the wrong way to
     # fix it.
-    for name in ("demo/foilstack.webp", "demo/foilstack-mobile.webp", "demo/foilstack.gif"):
+    #
+    # Globbed rather than listed. The listed version was written when there was
+    # one animation, and the landing page now carries a handful of stills that
+    # are re-shot together whenever a screen changes; naming them individually
+    # means the next screenshot added to the page is the next one served stale.
+    # Sorted, because a hash of the same files in a different order is a
+    # different hash, and the glob order is the filesystem's business.
+    for path in sorted((BASE_DIR / "static").glob("shots/*")) + sorted(
+        (BASE_DIR / "static").glob("demo/*")
+    ):
         try:
-            info = (BASE_DIR / "static" / name).stat()
+            info = path.stat()
         except OSError:
             continue
+        name = path.relative_to(BASE_DIR / "static").as_posix()
         digest.update(f"{name}:{info.st_size}:{info.st_mtime_ns}".encode())
 
     return digest.hexdigest()[:10]
+
+
+def site_origin(request: Request, settings: Settings) -> str:
+    """The scheme and host to build absolute URLs from, without a trailing slash.
+
+    Link previews need them: the crawler that fetches `og:image` has no page to
+    resolve a relative path against, so a relative one simply produces no
+    thumbnail, silently, on every platform at once.
+
+    `FOILSTACK_SITE_URL` wins when set, because the request is not always a
+    reliable witness — this runs behind a tunnel, and a proxy that rewrites the
+    Host header would have the page advertise its own internal address to the
+    entire internet. Falling back to the request is still the right default: a
+    self-hoster who has never heard of this setting gets working previews on
+    whatever address they actually use.
+    """
+    if settings.site_url:
+        return settings.site_url
+    return str(request.base_url).rstrip("/")
 
 
 def _aware(when: dt.datetime) -> dt.datetime:

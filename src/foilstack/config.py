@@ -36,6 +36,7 @@ class Settings:
     login_attempts: int = 10
     login_window_s: int = 900
     git_sha: str = ""
+    site_url: str = ""
 
     @property
     def scans_dir(self) -> Path:
@@ -105,6 +106,13 @@ def get_settings() -> Settings:
         # Which commit is running. Baked into the image at build time; read
         # from the checkout when running straight from a clone.
         git_sha=os.getenv("FOILSTACK_GIT_SHA") or _git_sha_from_checkout(),
+        # The origin this instance is reached at, for the absolute URLs that
+        # link previews require: og:image is fetched by a machine that has no
+        # page to resolve a relative path against, so a relative one simply
+        # yields no thumbnail. Empty means "work it out from the request",
+        # which is right for a self-hoster who has no idea this setting
+        # exists and wrong behind a proxy that rewrites the Host header.
+        site_url=os.getenv("FOILSTACK_SITE_URL", "").rstrip("/"),
     )
 
 

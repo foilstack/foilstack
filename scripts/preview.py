@@ -9,6 +9,7 @@ come across.
     uv run python scripts/preview.py --port 8099        # serve until Ctrl-C
     uv run python scripts/preview.py --shots ./shots    # screenshot and exit
     uv run python scripts/preview.py --demo src/foilstack/web/static/demo   # record the walkthrough
+    uv run python scripts/preview.py --landing src/foilstack/web/static/shots  # the landing stills
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import create_engine, func, select, text
 
 EMAIL = "preview@foilstack.invalid"
 PASSWORD = "preview-only-password"
@@ -44,12 +45,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--port", type=int, default=8099)
     ap.add_argument("--shots", type=Path, default=None)
     ap.add_argument("--demo", type=Path, default=None, help="record the walkthrough and exit")
+    ap.add_argument(
+        "--landing", type=Path, default=None, help="shoot the landing-page stills and exit"
+    )
     ap.add_argument("--keep", action="store_true", help="leave the database behind")
     ap.add_argument("--width", type=int, default=1440)
     ap.add_argument("--height", type=int, default=900)
     ap.add_argument("--only", default=None, help="shoot just this screen by name")
     ap.add_argument("--scale", type=int, default=None, help="device pixel ratio for --demo")
-    ap.add_argument("--webp-quality", type=int, default=None, help="WebP quality for --demo")
     ap.add_argument("--keep-frames", action="store_true", help="leave --demo frames on disk")
     args = ap.parse_args(argv)
 
@@ -109,8 +112,27 @@ def main(argv: list[str] | None = None) -> int:
                     PASSWORD,
                     *(["--card", str(card_id)] if card_id else []),
                     *(["--scale", str(args.scale)] if args.scale else []),
-                    *(["--webp-quality", str(args.webp_quality)] if args.webp_quality else []),
                     *(["--keep-frames"] if args.keep_frames else []),
+                ]
+            )
+            proc.terminate()
+        elif args.landing:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from landing import main as shoot_landing
+
+            card_id = _first_card(preview_url)
+            shoot_landing(
+                [
+                    "--url",
+                    url,
+                    "--out",
+                    str(args.landing),
+                    "--email",
+                    EMAIL,
+                    "--password",
+                    PASSWORD,
+                    *(["--card", str(card_id)] if card_id else []),
+                    *(["--scale", str(args.scale)] if args.scale else []),
                 ]
             )
             proc.terminate()
@@ -466,12 +488,33 @@ def _seed(source_url: str, preview_url: str) -> None:
 
 
 def _first_card(preview_url: str) -> int | None:
+    """A stock line worth opening: one with a price history behind it.
+
+    The plain "first inventory row" this used to be was a coin toss, and both
+    the demo and the landing stills exist to show a price trend — a card page
+    reading "No price history for this card. Run foilstack sync-prices" is an
+    illustration of the feature being absent. It got through once, into a
+    screenshot placed directly under a paragraph about price history.
+
+    Preferring the card with the most recorded price points also picks the most
+    legible chart, since two points is a line segment rather than a trend.
+    Falls back to the old behaviour when nothing has been synced at all.
+    """
     from foilstack import db
 
     db.init(preview_url)
     session = db.session()
     try:
-        return session.scalar(select(db.InventoryItem.card_id).order_by(db.InventoryItem.id))
+        with_history = session.scalar(
+            select(db.InventoryItem.card_id)
+            .join(db.CardPriceHistory, db.CardPriceHistory.card_id == db.InventoryItem.card_id)
+            .group_by(db.InventoryItem.card_id)
+            .order_by(func.count().desc())
+            .limit(1)
+        )
+        return with_history or session.scalar(
+            select(db.InventoryItem.card_id).order_by(db.InventoryItem.id)
+        )
     finally:
         session.close()
 

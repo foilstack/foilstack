@@ -26,15 +26,16 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 
-from foilstack import __version__, db
+from foilstack import __version__, db, importing
 from foilstack.config import Settings, get_settings
 from foilstack.embedding import encoder_health
-from foilstack.plugins import export_plugins, source_plugins
+from foilstack.plugins import export_plugins, source_plugins, supported_games
 from foilstack.web import auth, proof
 from foilstack.web.chrome import (
     BASE_DIR,
     _asset_version,
     _chrome,
+    site_origin,
     templates,
 )
 from foilstack.web.deps import db_session, owner, settings_dep
@@ -169,6 +170,83 @@ def page_landing(
             # catalogue this instance built. Absent on a fresh install, and the
             # table simply renders without thumbnails.
             "proof_ids": proof.proof_card_ids(session),
+            # Named, not implied. "Adding a game means writing one plugin" was
+            # the only thing the page said about which games it does, which
+            # reads as "yours is not supported yet" to every visitor whose game
+            # is in fact already in the list.
+            "games": supported_games(),
+            "exporters": [spec.label for spec in export_plugins().values()],
+            # The real ceilings this install enforces, rendered rather than
+            # written into the copy. The page carries a screenshot of the
+            # import screen's own limits line, and a marketing number beside a
+            # screenshot contradicting it is the kind of thing a reader spots
+            # instantly and never fully trusts the page again after.
+            "max_images": importing.MAX_IMAGES,
+            "max_mb": settings.max_archive_mb,
+            # Absolute, for the link previews. See `site_origin`.
+            "origin": site_origin(request, settings),
+        },
+    )
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+def page_privacy(
+    request: Request,
+    settings: Settings = Depends(settings_dep),
+):
+    """What this instance holds, and for how long.
+
+    Exists because the hosted deployment takes accounts and stores people's
+    uploaded scans, and a front door asking for both while linking neither a
+    policy nor terms is a gap you notice from the outside long before anybody
+    inside does.
+
+    Deliberately generic about the operator: this is the same page in every
+    self-hosted copy, so it describes what the *software* does with data and
+    points at the operator for the rest, rather than inventing a company name
+    that is only true for one deployment.
+    """
+    return templates.TemplateResponse(
+        request,
+        "privacy.html",
+        {
+            "nav": "landing",
+            "title": "Privacy",
+            "version": __version__,
+            "git_sha": settings.git_sha,
+            "asset_v": _asset_version(),
+            "support_url": settings.support_url,
+            "multi_user": settings.multi_user,
+            "host_label": request.url.netloc or "localhost",
+            "max_account_mb": settings.max_account_mb,
+        },
+    )
+
+
+@app.get("/terms", response_class=HTMLResponse)
+def page_terms(
+    request: Request,
+    settings: Settings = Depends(settings_dep),
+):
+    """The terms the software itself imposes, which are nearly none.
+
+    Short on purpose. The licence is AGPL-3.0 and says most of it; what is left
+    is the part a hosted instance has to state plainly — that prices are
+    fetched from a third party and not warranted, and that an account can go
+    away.
+    """
+    return templates.TemplateResponse(
+        request,
+        "terms.html",
+        {
+            "nav": "landing",
+            "title": "Terms",
+            "version": __version__,
+            "git_sha": settings.git_sha,
+            "asset_v": _asset_version(),
+            "support_url": settings.support_url,
+            "multi_user": settings.multi_user,
+            "host_label": request.url.netloc or "localhost",
         },
     )
 

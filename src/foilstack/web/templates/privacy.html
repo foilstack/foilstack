@@ -1,0 +1,91 @@
+{% extends "site_page.html" %}
+
+{# Written about the software, not about a company.
+
+   Every self-hosted copy serves this same page, so a policy naming an
+   operator, a jurisdiction or a retention schedule would be false in all but
+   one deployment. What is true everywhere is what the code does with data, and
+   that is what this states. The operator of *this* host is named by hostname
+   and is where the rest of the questions go. #}
+
+{% block body %}
+<p class="prose-lede">
+  This page describes what the foilstack software stores and sends. It is
+  shipped with the source and is the same in every copy, so it can only speak
+  for the code. The instance you are reading it on is
+  <code>{{ host_label }}</code>, and whoever runs that host is the party
+  responsible for it.
+</p>
+
+<h2>What this software sends anywhere else</h2>
+<p>
+  Your images are not sent anywhere. Matching happens on the host running this,
+  against a catalogue that host downloaded for itself. There is no analytics
+  script, no tracking pixel, no error-reporting service and no telemetry of any
+  kind in this codebase; the pages load no third-party scripts, fonts or
+  images. You can confirm all of that by reading the source, which is the point
+  of it being AGPL.
+</p>
+<p>
+  The host does make outbound requests of its own, on a schedule and not
+  triggered by you: it fetches card data and prices from the upstream
+  catalogue its operator configured. Those requests carry no information about
+  you, your inventory or your scans. They ask for a whole game's price list.
+</p>
+
+<h2>What is stored{% if multi_user %} against your account{% endif %}</h2>
+<ul>
+  <li><b>Your email address and a password hash.</b> The password is hashed,
+      never stored in a form that can be read back.</li>
+  <li><b>The images you upload,</b> as files on the host's disk, plus
+      browser-sized copies generated from them.</li>
+  <li><b>Your inventory:</b> which cards you hold, their condition and
+      quantity, what you paid, what you have marked sold and for how much.</li>
+  <li><b>Import jobs and their results,</b> so a run that failed can say why.</li>
+</ul>
+<p>
+  Ordinary web server logs exist as well and record IP addresses and requested
+  URLs, as every web server does.
+</p>
+
+<h2>Cookies</h2>
+<p>
+  One, set only when you sign in. It holds a signed reference to your account
+  id and nothing else — no profile, no history, no identifier shared with
+  anybody. It is <code>HttpOnly</code>, so scripts cannot read it, and
+  <code>SameSite=Lax</code>. Signing out deletes it. There are no advertising
+  or analytics cookies, because there is no advertising or analytics.
+</p>
+
+<h2>Who can see your data</h2>
+<p>
+  {% if multi_user %}
+  No other account can see your scans, inventory or exports; every one of those
+  rows is filtered by account on the way out of the database. The operator of
+  this host has administrative access to the machine and therefore, like the
+  operator of any hosted service, to what is on it.
+  {% else %}
+  This instance runs in single-owner mode: there are no other accounts. What is
+  here belongs to whoever runs the host.
+  {% endif %}
+</p>
+
+<h2>Deleting things</h2>
+<p>
+  You can discard scans and delete inventory rows from inside the application
+  at any time. There is no self-serve button that deletes an entire account
+  yet; until there is, ask the operator of this host and they can remove the
+  account and its files directly.
+</p>
+{% if max_account_mb %}
+<p>
+  This host caps the scans one account may keep at {{ max_account_mb }} MB.
+</p>
+{% endif %}
+
+<h2>Changes</h2>
+<p>
+  This page is a file in the repository, so its history is the source history.
+  Any change to it is a commit you can read.
+</p>
+{% endblock %}

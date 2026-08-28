@@ -1,0 +1,64 @@
+{% extends "site_page.html" %}
+
+{# Short because the licence already says most of it, and because a landing
+   page that links "Terms" to four thousand words nobody reads has satisfied a
+   checkbox rather than told anyone anything. What is left after AGPL-3.0 is
+   the part a hosted instance genuinely has to state: the prices are somebody
+   else's numbers, and an account is not a guarantee. #}
+
+{% block body %}
+<p class="prose-lede">
+  The software is licensed under AGPL-3.0, and that licence — shipped in the
+  repository as <code>LICENSE</code> — governs the code itself, including its
+  warranty disclaimer. What follows covers using this particular host,
+  <code>{{ host_label }}</code>.
+</p>
+
+<h2>Prices are not advice</h2>
+<p>
+  Every number this shows comes from an upstream catalogue the host fetched. It
+  is a report of what that catalogue said, at the time it was asked, for a
+  printing the software believed your card to be. It is not an appraisal, not a
+  valuation and not a guarantee that anyone will pay it. Check the card before
+  you sell it: that is what the review queue is for, and it exists precisely
+  because a confident match can still be the wrong printing.
+</p>
+
+<h2>Matching can be wrong</h2>
+<p>
+  Identification is nearest-neighbour image search. It is good and it is not
+  perfect, and reprints that share artwork are the case it finds hardest.
+  Anything you export is yours to check first. Listing a card at another card's
+  price is a loss the software cannot undo for you.
+</p>
+
+<h2>Nothing here touches a marketplace</h2>
+<p>
+  Exports are files you download and upload yourself. This holds no API key, no
+  OAuth token and no marketplace credential, and cannot list, reprice, buy or
+  sell anything on your behalf. Your account with a marketplace is governed by
+  that marketplace's terms, not these.
+</p>
+
+{% if multi_user %}
+<h2>Your account</h2>
+<p>
+  Keep your password to yourself; anyone who has it has your inventory. This
+  host is run without a fee and therefore without a service commitment: it may
+  be unavailable, and accounts that are used to attack it or to store things
+  that are not card scans may be closed. Keep your own copy of anything you
+  would mind losing — the export button is right there, and the data is yours.
+</p>
+{% endif %}
+
+<h2>No warranty</h2>
+<p>
+  As set out at length in AGPL-3.0: this is provided as-is, without warranty of
+  any kind, and the people who wrote it are not liable for what it does. That
+  is the deal with software you did not pay for and can read every line of. If
+  it does something wrong,
+  <a href="https://github.com/foilstack/foilstack" target="_blank"
+     rel="noopener noreferrer">open an issue</a> — that is a fix for everyone,
+  which is more than a refund would be.
+</p>
+{% endblock %}
