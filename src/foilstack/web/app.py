@@ -28,18 +28,16 @@ from fastapi.staticfiles import StaticFiles
 
 from foilstack import __version__, db, importing
 from foilstack.config import Settings, get_settings
-from foilstack.embedding import encoder_health
-from foilstack.plugins import export_plugins, source_plugins, supported_games
+from foilstack.plugins import export_plugins, supported_games
 from foilstack.web import auth, proof
 from foilstack.web.chrome import (
     BASE_DIR,
     _asset_version,
-    _chrome,
     site_origin,
     templates,
 )
-from foilstack.web.deps import db_session, owner, settings_dep
-from foilstack.web.routes import accounts, listings, media, scans
+from foilstack.web.deps import db_session, settings_dep
+from foilstack.web.routes import accounts, listings, media, plugins, scans
 from foilstack.web.routes import inventory as inventory_routes
 
 logger = logging.getLogger(__name__)
@@ -73,6 +71,7 @@ app.include_router(scans.router)
 app.include_router(inventory_routes.router)
 app.include_router(listings.router)
 app.include_router(media.router)
+app.include_router(plugins.router)
 
 # Read once, at import, and used for exactly one thing: the size of the rate
 # limiter windows below, which are a property of the process rather than of a
@@ -260,28 +259,9 @@ def page_terms(
 # Screens
 # ==========================================================================
 
-
-@app.get("/plugins", response_class=HTMLResponse)
-async def page_plugins(
-    request: Request,
-    session=Depends(db_session),
-    user: db.User = Depends(owner),
-    settings: Settings = Depends(settings_dep),
-):
-    health = await encoder_health(settings.embedder_url)
-    return templates.TemplateResponse(
-        request,
-        "plugins.html",
-        {
-            "nav": "plugins",
-            "sources": source_plugins().values(),
-            "exporters": export_plugins().values(),
-            "encoder": health,
-            "encoder_url": settings.embedder_url,
-            "embed_model": settings.embed_model,
-            **_chrome(session, request, user, settings),
-        },
-    )
+# The authenticated screens all live in routers now. `/plugins` was the last
+# one here; it moved to `routes/plugins.py` when it grew the catalogue queries
+# that answer whether the plugins on it have actually done anything.
 
 
 # ==========================================================================

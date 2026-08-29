@@ -184,7 +184,14 @@ def _chrome(session, request: Request, user: db.User, settings: Settings) -> dic
     }
     unsynced = sorted(g for g in ingested if g not in runs)
     covered = [at for g, at in runs.items() if g in ingested and at is not None]
-    synced = min(covered) if covered else session.scalar(select(func.max(db.Card.updated_at)))
+    # No fallback to `max(cards.updated_at)`. That column moves on ingest, so
+    # an install that had never run a price sync in its life reported "synced
+    # just now" — the freshness of the catalogue quoted as the freshness of its
+    # prices, which are the two things this line exists to keep apart. It is
+    # also the single case where the claim is most wrong: those cards hold the
+    # prices they were ingested with and every day that passes is history
+    # TCGCSV will not sell back. `_ago(None)` says "never", which is true.
+    synced = min(covered) if covered else None
     sources = session.scalars(select(db.Card.source).distinct()).all()
 
     return {

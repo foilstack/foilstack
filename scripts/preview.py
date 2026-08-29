@@ -424,6 +424,38 @@ def _seed(source_url: str, preview_url: str) -> None:
         )
     session.commit()
 
+    # The sync log those prices imply, which the plugins screen reads to say
+    # whether each game is current and whether its history has been recovered.
+    #
+    # Seeded for the same reason the queue seeds runners-up: without these rows
+    # every game reads "never · not run", so the two columns that exist to show
+    # a healthy catalogue can only ever be looked at in their failure state.
+    # Magic gets a backfill and Pokemon does not, because that is the real
+    # shape of it — MTGJSON is the only enricher and it is a Magic project.
+    now = dt.datetime.now(dt.UTC)
+    for game, ago, printings, changed in (("magic", 2, 486, 31), ("pokemon", 5, 118, 9)):
+        session.add(
+            db.SyncState(
+                source="tcgcsv",
+                kind=f"prices:{game}",
+                upstream_stamp=(now - dt.timedelta(hours=ago)).isoformat(timespec="seconds"),
+                last_run_at=now - dt.timedelta(hours=ago),
+                rows_changed=changed,
+                message=f"{printings} printings, {changed} changed",
+            )
+        )
+    session.add(
+        db.SyncState(
+            source="mtgjson",
+            kind="backfill:magic",
+            upstream_stamp="5.2.2+20260826",
+            last_run_at=now - dt.timedelta(days=6),
+            rows_changed=1842,
+            message="2,904 daily prices read, 1,842 recorded",
+        )
+    )
+    session.commit()
+
     # One card with the ambiguity the picker exists for: three printings that
     # all answer to "foil", an order of magnitude apart.
     amb = unique[0]

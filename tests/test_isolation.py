@@ -1802,3 +1802,221 @@ def test_a_printing_with_no_price_is_left_out_rather_than_sent_as_null(app_and_d
     # No market on the card either, so the meta line simply stops after the
     # number rather than trailing a separator with nothing behind it.
     assert saved["meta"] == "mtg · Some Set · #42"
+
+
+# ==========================================================================
+# The plugins screen
+#
+# It was a manifest of installed code for long enough that the enrichment
+# registry shipped without it noticing — `foilstack plugins` listed MTGJSON,
+# `docs/plugins.md` had a section for it, and the one screen named after
+# plugins rendered two of the three kinds. These assert on what the page
+# claims, not on how it draws it.
+# ==========================================================================
+
+
+@contextmanager
+def _catalogue_game(game: str, name: str = "Backfilled", **sync):
+    """One card in its own game, plus any `sync_state` rows it needs.
+
+    Its own game rather than the fixture's, because the plugins page groups by
+    game and a test that leant on `mtg` would read whatever the tests before it
+    had left there. Cleans both tables up: a stray `sync_state` row is invisible
+    here and changes the footer figure on every other test in the module.
+    """
+    from foilstack import db
+
+    session = db.session()
+    card = db.Card(source="t", source_id=f"t:{game}", name=name, game=game, market=1.0)
+    session.add(card)
+    for kind, row in sync.items():
+        session.add(db.SyncState(kind=f"{kind}:{game}", **row))
+    session.commit()
+    card_id = card.id
+    session.close()
+    try:
+        yield card_id
+    finally:
+        session = db.session()
+        session.execute(text("DELETE FROM sync_state WHERE kind LIKE :k"), {"k": f"%:{game}"})
+        session.execute(text("DELETE FROM cards WHERE id = :id"), {"id": card_id})
+        session.commit()
+        session.close()
+
+
+def test_the_plugins_page_lists_enrichers_not_just_sources_and_exporters(app_and_data):
+    """The regression that prompted the rewrite.
+
+    `enrichment_plugins()` existed, the CLI printed it and the docs described
+    it; the page passed `sources` and `exporters` and nothing else, so the
+    whole enrichment feature was invisible in the interface. A page named after
+    plugins has to name every kind of plugin there is.
+    """
+    app, _ = app_and_data
+    body = _signed_in(app).get("/plugins").text
+
+    assert "mtgjson" in body, "the installed enricher is not on the page"
+    assert "tcgcsv" in body, "the installed source is not on the page"
+    assert "foilstack enrich --source mtgjson --game magic" in body, (
+        "the page has to say how to run the enricher it names"
+    )
+
+
+def test_the_plugins_page_names_games_rather_than_slugs(app_and_data):
+    """`dragonballfusion` is a cache key; the game is called Dragon Ball Fusion World.
+
+    The plugin contract carries `labels` precisely so a screen never has to
+    hardcode one. This page printed thirteen raw slugs into a single cell,
+    which is both wrong to read and what made the table wider than its panel.
+    """
+    app, _ = app_and_data
+    with _catalogue_game("dragonballfusion"):
+        body = _signed_in(app).get("/plugins").text
+
+    # The source's game list, which used to be thirteen raw slugs in one cell.
+    assert "Pokémon, Magic: The Gathering, Yu-Gi-Oh!" in body
+    assert "pokemon, magic, yugioh" not in body
+    # And the catalogue row, which would otherwise title-case the slug it
+    # groups by. `Dragonballfusion` is what "no label was consulted" looks like.
+    assert "Dragon Ball Fusion World" in body
+    assert "Dragonballfusion" not in body
+
+
+def test_a_game_with_no_price_sync_is_named_on_the_plugins_page(app_and_data):
+    """ "never" here is data loss in progress, not a stale cache.
+
+    TCGCSV mirrors the current day only, so a game whose sync has never run is
+    losing history permanently. The row says so in the tooltip a reader gets,
+    rather than leaving a blank cell to be interpreted.
+    """
+    app, _ = app_and_data
+    with _catalogue_game("neversynced"):
+        body = _signed_in(app).get("/plugins").text
+
+    assert "no price sync has ever run for neversynced" in body
+
+
+def test_a_backfill_that_has_run_is_reported_with_what_it_recorded(app_and_data):
+    """The one question `foilstack enrich` leaves an operator with.
+
+    It is the command most likely to be run twice by someone unsure whether the
+    first attempt finished, and until this page there was nowhere to look but
+    the logs. `sync_state` has held the answer the whole time.
+    """
+    import datetime as dt
+
+    app, _ = app_and_data
+    ran = dt.datetime.now(dt.UTC) - dt.timedelta(days=3)
+    with _catalogue_game(
+        "backfilled",
+        backfill={
+            "source": "mtgjson",
+            "upstream_stamp": "5.2.2+20260826",
+            "last_run_at": ran,
+            "rows_changed": 1842,
+            "message": "2,904 daily prices read, 1,842 recorded",
+        },
+    ):
+        body = _signed_in(app).get("/plugins").text
+
+    assert "3 d ago" in body
+    assert "2,904 daily prices read, 1,842 recorded" in body
+    assert "5.2.2+20260826" in body, "the upstream build is what makes a re-run decidable"
+
+
+def test_a_game_no_enricher_covers_is_not_reported_as_a_job_nobody_ran(app_and_data):
+    """Pokemon has no past to recover, and that is a fact rather than a failure.
+
+    MTGJSON is the only enricher and it is a Magic project. Printing "never"
+    against every other game would read as a backlog, and send someone looking
+    for a command that does not exist.
+    """
+    app, _ = app_and_data
+    with _catalogue_game("pokemon"):
+        body = _signed_in(app).get("/plugins").text
+
+    assert "no installed enricher covers pokemon" in body
+    assert "foilstack enrich --source mtgjson --game pokemon" not in body
+
+
+def test_encoded_counts_only_vectors_the_configured_model_can_search(app_and_data):
+    """A model swap leaves the old vectors in place and `search` cannot see them.
+
+    Counting every row in `card_embeddings` would report a fully encoded
+    catalogue that matching silently misses on — the exact failure the `model`
+    column exists to make visible.
+    """
+    from foilstack import db
+    from foilstack.config import get_settings
+
+    app, _ = app_and_data
+    with _catalogue_game("stalevectors") as card_id:
+        session = db.session()
+        session.add(
+            db.CardEmbedding(
+                card_id=card_id,
+                embedding=[0.0] * db.EMBEDDING_DIM,
+                model=get_settings().embed_model + "-previous",
+            )
+        )
+        session.commit()
+        session.close()
+        body = _signed_in(app).get("/plugins").text
+
+    # Scoped to this game by name. The assertion used to be "1 of 1 not
+    # encoded", which is equally true of every other unencoded game in the
+    # table — so it passed with the model filter deleted, which is the one
+    # thing it exists to catch.
+    assert "stalevectors: 1 of 1 cards not encoded" in body, (
+        "a vector from a retired model must not count as encoded"
+    )
+
+
+def test_the_footer_says_never_rather_than_inventing_a_sync_that_did_not_happen(app_and_data):
+    """`max(cards.updated_at)` is the freshness of the catalogue, not of its prices.
+
+    With no `sync_state` row at all the footer used to fall back to it and
+    report "synced just now" — on precisely the install where the claim is
+    most wrong, because those cards hold the prices they were ingested with
+    and every day that passes is history TCGCSV will not sell back.
+    """
+    app, _ = app_and_data
+    with _catalogue_game("unsyncedgame"):
+        body = _signed_in(app).get("/inventory").text
+
+    assert "synced never" in body
+    assert "synced just now" not in body, "an ingest is not a price sync"
+
+
+def test_the_footer_reports_the_oldest_run_once_one_has_happened(app_and_data):
+    """The fallback going away must not take the real figure with it.
+
+    `min`, not `max`: the line makes a claim about every price on screen, so it
+    has to be as old as the stalest game that has been synced at all.
+    """
+    import datetime as dt
+
+    app, _ = app_and_data
+    now = dt.datetime.now(dt.UTC)
+    with (
+        _catalogue_game(
+            "freshgame",
+            prices={
+                "source": "tcgcsv",
+                "last_run_at": now - dt.timedelta(hours=2),
+                "rows_changed": 1,
+            },
+        ),
+        _catalogue_game(
+            "stalegame",
+            prices={
+                "source": "tcgcsv",
+                "last_run_at": now - dt.timedelta(hours=9),
+                "rows_changed": 1,
+            },
+        ),
+    ):
+        body = _signed_in(app).get("/inventory").text
+
+    assert "synced 9 hr ago" in body, "the oldest synced game is the honest figure"
+    assert "synced 2 hr ago" not in body

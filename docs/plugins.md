@@ -13,6 +13,14 @@ the interface every other plugin uses, the interface is wrong.
 
 `foilstack plugins` lists what is installed and the games each source can fetch.
 
+The **Plugins** screen in the web interface answers the other half of that
+question: not what could run, but what has. It reads `cards`,
+`card_embeddings` and `sync_state` to show, per game actually ingested, how
+many cards are held, how many of them are encoded for the configured model —
+cards without a vector cannot be matched, and the failure is silent at scan
+time — when prices last synced, and whether a backfill has run. The manifest
+of installed plugins follows underneath it.
+
 ## Enrichment plugins
 
 These add to a catalogue somebody else ingested. They own no rows: they join
