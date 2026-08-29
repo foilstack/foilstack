@@ -39,6 +39,11 @@ dependencies = [
     "numpy>=1.26",
     "pillow>=10.0",
     "pydantic>=2.7",
+    # Runtime, not development, and declared rather than leaned on: it arrives
+    # transitively with uvicorn[standard], and a settings read that silently
+    # stops finding `.env` because a transitive dependency moved is the kind of
+    # break that points at the wrong thing.
+    "python-dotenv>=1.0",
 ]
 
 [project.urls]

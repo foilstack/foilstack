@@ -6,6 +6,21 @@ import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import quote
+
+from dotenv import find_dotenv, load_dotenv
+
+# Compose reads `.env` for its own `${VAR}` substitution, so the container path
+# always worked and only the host path was broken: nothing exported that file
+# to a plain `uv run`, and settings fell back to the built-in password to fail
+# against a database that was configured correctly. `override=False` leaves a
+# real environment variable winning, so a container — which sets them
+# explicitly and ships no `.env` — resolves exactly as it did before.
+# `tests/conftest.py` reads the file separately because it has to do so before
+# anything imports this module.
+_dotenv_path = find_dotenv(usecwd=True)
+if _dotenv_path:
+    load_dotenv(_dotenv_path, override=False)
 
 # The pooled width of DINOv3 ViT-L/16, and therefore the width of the
 # `halfvec` column. A constant rather than a setting because it is not
@@ -53,15 +68,34 @@ class Settings:
         return self.data_dir / "display"
 
 
+def _database_url() -> str:
+    """`DATABASE_URL` whole if it is set, else built from the `POSTGRES_*` parts.
+
+    Compose assembles the same URL from the same parts, so `.env` names the
+    password once — as a part — rather than once as a part and again inside a
+    whole URL. Two copies of a password in one file drift, and the failure when
+    they do names authentication rather than the edit that caused it.
+    """
+    explicit = os.getenv("DATABASE_URL")
+    if explicit:
+        return explicit
+    # No POSTGRES_HOST: this branch is the host-side path, where the port is
+    # published on loopback. Anything in the compose network is handed a whole
+    # DATABASE_URL and never reaches here.
+    return "postgresql+psycopg://{user}:{pw}@localhost:{port}/{db}".format(
+        user=quote(os.getenv("POSTGRES_USER", "foilstack"), safe=""),
+        pw=quote(os.getenv("POSTGRES_PASSWORD", "foilstack"), safe=""),
+        port=os.getenv("POSTGRES_PORT", "5434"),
+        db=os.getenv("POSTGRES_DB", "foilstack"),
+    )
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     data_dir = Path(os.getenv("FOILSTACK_DATA_DIR", "./data")).expanduser().resolve()
     return Settings(
         data_dir=data_dir,
-        database_url=os.getenv(
-            "DATABASE_URL",
-            "postgresql+psycopg://foilstack:foilstack@localhost:5434/foilstack",
-        ),
+        database_url=_database_url(),
         embedder_url=os.getenv("EMBEDDER_URL", "http://127.0.0.1:8100"),
         embed_model=os.getenv("EMBED_MODEL", "facebook/dinov3-vitl16-pretrain-lvd1689m"),
         # Deliberately high. The cost of a missed auto-accept is one click; the
