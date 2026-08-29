@@ -170,18 +170,23 @@
     <template id="tpl-chosen">{{ chosen_icon() }}</template>
     <div class="screen-scroll" id="queue">
       {% for g in groups %}
-      <section class="qgroup">
-        {# The upload these cards arrived in. Sections run newest first and the
-           cards inside them dearest first, so the batch just dropped is at the
-           top and the card worth most is the first decision in it. #}
-        <div class="qgroup-head">
+      {# The upload these cards arrived in. Sections run oldest first and the
+         cards inside them dearest first, so the backlog drains from the front
+         and the card worth most is the first decision in each batch.
+
+         A `<details>`, so collapsing costs no script and arrives with the
+         keyboard and the accessibility tree already working — the same idiom
+         the match-settings panel above uses. Open by default: a queue that
+         hid its own cards on load would be a screen with nothing on it. #}
+      <details class="qgroup" open>
+        <summary class="qgroup-head">
           <span class="qgroup-file" title="{{ g.filename }}">{{ g.filename }}</span>
           <span class="qgroup-meta">
             <time data-local datetime="{{ g.at.isoformat() }}">{{ g.at.strftime('%b %d %H:%M') }}</time>
             · {{ g.rows|length }} {{ 'card' if g.rows|length == 1 else 'cards' }}
             {%- if g.value %} · {{ g.value|money }}{% endif %}
           </span>
-        </div>
+        </summary>
       {% for r in g.rows %}
       <div class="qrow {{ 'review' if r.needs_review }}" id="scan-{{ r.scan_id }}"
            data-scan="{{ r.scan_id }}" data-card="{{ r.card_id or '' }}"
@@ -250,7 +255,7 @@
         <div class="qfix" hidden></div>
       </div>
       {% endfor %}
-      </section>
+      </details>
       {% endfor %}
       {% if not groups %}
       <div class="queue-empty">

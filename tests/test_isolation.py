@@ -1719,16 +1719,41 @@ def test_the_queue_keeps_each_upload_together(app_and_data):
     ours = [s for s in order if s in mine]
     assert len(ours) == 4, "the batches are not all on the page"
 
-    # The upload that landed last is decided first: it is the one the seller
-    # just dropped and came to this screen for.
-    assert set(ours[:2]) == set(newer)
-    assert set(ours[2:]) == set(older)
+    # Oldest upload first, so the backlog drains from the front rather than
+    # sinking further with every import.
+    assert set(ours[:2]) == set(older)
+    assert set(ours[2:]) == set(newer)
 
     # And inside each, dearest first — the ordering the whole queue used to
     # have, now scoped to a batch.
     worth = dict(zip(older + newer, [1.0, 30.0, 2.0, 50.0], strict=True))
-    assert worth[ours[0]] == 50.0
-    assert worth[ours[2]] == 30.0
+    assert worth[ours[0]] == 30.0
+    assert worth[ours[2]] == 50.0
+
+
+def test_every_upload_section_starts_expanded(app_and_data):
+    """Collapsing is the seller's move to make, not the page's.
+
+    The sections are `<details>`, so the whole feature is one attribute — and
+    losing it is not a visual blemish but a queue that renders with every card
+    hidden and no indication that anything is waiting. Worth an assertion
+    despite being markup: there is no behaviour to observe instead, and this
+    is the one way the feature fails catastrophically rather than untidily.
+    """
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    with (
+        _waiting_scans_worth(ids, [1.0], filename="older.zip"),
+        _waiting_scans_worth(ids, [2.0], filename="newer.zip"),
+    ):
+        html = client.get("/app").text
+
+    # Every opening `<details>` on the page, with its attributes — matched
+    # tolerantly so that adding one does not fail this for the wrong reason.
+    sections = [tag for tag in re.findall(r"<details\b[^>]*>", html) if "qgroup" in tag]
+    assert len(sections) >= 2, "the uploads are not rendering as sections"
+    assert all("open" in tag for tag in sections)
 
 
 def test_cards_worth_the_same_keep_their_newest_first_order(app_and_data):

@@ -33,10 +33,17 @@ PASSWORD = "preview-only-password"
 # screen shows what reviewing a batch is actually like.
 PENDING = 7
 
-# How many of those came in on the second, newer upload. Split so the queue
-# shows more than one section — with a remainder in the older one, because a
+# How many of those waiting came in on the second, newer upload. Split so the
+# queue shows more than one section — with the rest in the older one, because a
 # batch part-way through being reviewed is the ordinary state.
-FRESH = 4
+#
+# The dearest cards are deliberately in the *older* batch. The queue puts the
+# earliest upload first, and the landing hero and the README animation both
+# shoot the top of that list: leave the good cards in the recent batch and both
+# open on three twenty-cent commons, which is a screenshot that argues nothing.
+# Same reasoning as seeding runners-up — the fixture has to show what the
+# product does.
+RECENT = 3
 
 
 def _admin_url() -> str:
@@ -325,16 +332,16 @@ def _seed(source_url: str, preview_url: str) -> None:
         user_id=user.id,
         filename="binder-a.zip",
         status="done",
-        total=len(cards) - FRESH,
-        processed=len(cards) - FRESH,
+        total=len(cards) - RECENT,
+        processed=len(cards) - RECENT,
         created_at=dt.datetime.now(dt.UTC) - dt.timedelta(days=2),
     )
     newer = db.ImportJob(
         user_id=user.id,
         filename="singles-box.zip",
         status="done",
-        total=FRESH,
-        processed=FRESH,
+        total=RECENT,
+        processed=RECENT,
         created_at=dt.datetime.now(dt.UTC) - dt.timedelta(minutes=20),
     )
     session.add_all([older, newer])
@@ -344,9 +351,10 @@ def _seed(source_url: str, preview_url: str) -> None:
     # the rest committed so inventory does — including a duplicate and a sale.
     for i, card in enumerate(cards):
         scan = db.Scan(
-            # The freshest cards belong to the newer upload, so the queue opens
-            # on the batch that just landed.
-            job_id=newer.id if i < FRESH else older.id,
+            # The tail of the waiting scans is the recent drop; everything
+            # else — the rest of the queue and all the committed cards —
+            # belongs to the older archive that is still being worked through.
+            job_id=newer.id if PENDING - RECENT <= i < PENDING else older.id,
             user_id=user.id,
             filename=card["filename"],
             stored_path=card["stored_path"],

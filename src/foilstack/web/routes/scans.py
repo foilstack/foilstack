@@ -248,16 +248,22 @@ def _queue_rows(session, user_id: int) -> list[dict]:
 
 
 def _group_rows(rows: list[dict]) -> list[dict]:
-    """The queue split into one section per upload, newest upload first.
+    """The queue split into one section per upload, earliest upload first.
 
     Grouping is a partition of the list it is given, not a second sort: the
     rows arrive dearest-first from `_queue_rows` and keep that order inside
     each section. Sorting here instead would mean the queue's ordering rule
     lived in two places, and the two would drift.
 
-    Sections run newest upload first, matching "Recent imports" in the pane
-    beside them — a seller who has just dropped an archive expects its cards
-    at the top, and value is what orders the cards, not the batches.
+    Sections run oldest first, so the queue is worked in the order the batches
+    arrived and the backlog drains from the front. Newest-first read well on
+    the batch you had just dropped and badly on every one behind it: the
+    oldest cards sank further with each import and were the ones a part-way
+    review never reached.
+
+    That does put the archive you just uploaded at the bottom, which is what
+    the collapsible sections are for — fold the batches you are done with and
+    the new one comes up to meet you.
     """
     groups: dict[int, dict] = {}
     for row in rows:
@@ -275,7 +281,7 @@ def _group_rows(rows: list[dict]) -> list[dict]:
         # as market rather than the finish-aware price the rows show, so the
         # two numbers on the screen are the same measure.
         group["value"] += row["market"]
-    return sorted(groups.values(), key=lambda g: g["job_id"], reverse=True)
+    return sorted(groups.values(), key=lambda g: g["job_id"])
 
 
 @router.get("/app", response_class=HTMLResponse)
