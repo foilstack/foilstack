@@ -210,15 +210,14 @@ body.app {
   display: block; font-family: var(--mono); font-size: 10px;
   color: var(--muted); line-height: 1.4; margin-top: 2px;
 }
+/* Drawn rather than assembled out of borders, which is what this was: a box
+   with its top border removed for the cup and a pseudo-element for the handle.
+   Two shapes cannot make a handle meet a wall — there was always a gap — and
+   with no steam the result read at 14px as the letters "U p". */
 .coffee-cup {
-  width: 14px; height: 14px; flex: none; margin-top: 1px;
-  border: 1px solid var(--green); border-top: none;
-  border-radius: 0 0 5px 5px; background: var(--green-tint); position: relative;
-}
-.coffee-cup::after {
-  content: ""; position: absolute; right: -5px; top: 2px;
-  width: 5px; height: 6px;
-  border: 1px solid var(--green); border-left: none; border-radius: 0 4px 4px 0;
+  width: 16px; height: 16px; flex: none; margin-top: 1px;
+  fill: none; stroke: var(--green); stroke-width: 1.25;
+  stroke-linecap: round; stroke-linejoin: round;
 }
 
 /* ---------- account ---------- */
