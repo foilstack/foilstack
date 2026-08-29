@@ -277,7 +277,15 @@ def _seed(source_url: str, preview_url: str) -> None:
     # Enough waiting in the queue to fill the pane and to be worth scrolling.
     # Two was enough to prove the screen renders and far too few to show what
     # reviewing actually feels like.
-    pending = distinct[:PENDING]
+    #
+    # Seeded dearest first within the batch. The queue renders scans in the
+    # order they were imported, which for a fixture is simply the order they
+    # are created here — and the landing hero and the README animation are both
+    # stills of the top of that list. Left in catalogue order they open on a
+    # twenty-cent common. A seller photographing the good card first is an
+    # ordinary way for a real batch to arrive, so this is a plausible pile
+    # rather than a flattering one.
+    pending = sorted(distinct[:PENDING], key=lambda r: float(r["market"] or 0), reverse=True)
     cards = pending + distinct[PENDING:] + repeats[:2]
 
     db.init(preview_url)

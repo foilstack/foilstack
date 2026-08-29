@@ -1674,28 +1674,95 @@ def _queue_order(html: str) -> list[int]:
     return [int(n) for n in re.findall(r'id="scan-(\d+)"', html)]
 
 
-def test_the_queue_puts_the_dearest_card_first(app_and_data):
-    """Confirming a queue is work that gets abandoned part-way.
+def test_the_queue_follows_the_order_the_scans_arrived_in(app_and_data):
+    """The seller has the physical stack in their hand, in the order they
+    photographed it. A queue in any other order makes them hunt for each card
+    instead of working down the pile.
 
-    Where it stops is arbitrary, so the order decides which cards got the
-    attention. Newest-first spent it on whichever scans happened to be last out
-    of the archive; by value, the part that gets done is the part that pays.
+    This replaced dearest-first, so the values here are deliberately neither
+    ascending nor descending: an ordering by price would fail this, and so
+    would newest-first.
     """
     worth = [3.0, 40.0, 0.5, 12.0]
     app, ids = app_and_data
     client = _signed_in(app)
 
-    # Deliberately neither ascending nor descending as inserted, so that
-    # "as created" and "newest first" both fail this rather than passing on a
-    # coincidence.
     with _waiting_scans_worth(ids, worth) as scans:
         order = _queue_order(client.get("/app").text)
 
-    by_scan = dict(zip(scans, worth, strict=True))
-    ours = [s for s in order if s in by_scan]
+    ours = [s for s in order if s in set(scans)]
     assert len(ours) == len(worth), "the batch is not all on the page"
-    assert ours == sorted(ours, key=lambda s: -by_scan[s])
-    assert by_scan[ours[0]] == 40.0
+    # `_waiting_scans_worth` creates them in list order, which is what an
+    # import does with the files it extracts.
+    assert ours == scans
+
+
+def test_an_import_creates_its_scans_in_the_archives_order(app_and_data, tmp_path, monkeypatch):
+    """The link between the two ends, which nothing else covers.
+
+    `extract_archive` returns the archive's order and the queue renders scans
+    by ascending id, but those only meet if `run_import` creates one row per
+    file, in order, as it walks the list. It does that today because the loop
+    is sequential — and that is exactly the kind of property a later change
+    could break silently. Matching one image at a time is the slow part of an
+    import, so somebody will eventually be tempted to run several at once; if
+    they do, the ids interleave and the queue quietly stops matching the pile
+    the seller is holding.
+    """
+    import asyncio
+    import zipfile as zf
+
+    from foilstack import db, importing
+    from foilstack.config import get_settings
+
+    app, ids = app_and_data
+    client = _signed_in(app)
+    settings = get_settings()
+
+    # Alphabetically a, b, c, d — stored deliberately out of that order.
+    names = ["d-fourth.jpg", "b-second.jpg", "a-first.jpg", "c-third.jpg"]
+    archive = tmp_path / "stack.zip"
+    with zf.ZipFile(archive, "w") as z:
+        for n in names:
+            z.writestr(n, b"pretend jpeg")
+
+    # The encoder and the catalogue are not what is under test. Stubbed down to
+    # nothing so every scan lands "unmatched", which still puts it in the queue.
+    async def _no_vector(url, blob):
+        return [0.0]
+
+    monkeypatch.setattr(importing, "embed_image", _no_vector)
+    monkeypatch.setattr(importing.search, "count", lambda *a, **k: 1)
+    monkeypatch.setattr(importing.search, "search", lambda *a, **k: [])
+    monkeypatch.setattr(importing.images, "make_display_copy", lambda *a, **k: None)
+
+    session = db.session()
+    owner_id = session.get(db.Scan, ids["scan"]).user_id
+    job = db.ImportJob(user_id=owner_id, filename="stack.zip", status="pending")
+    session.add(job)
+    session.commit()
+    job_id = job.id
+
+    try:
+        asyncio.run(importing.run_import(job_id, archive, settings))
+
+        made = session.scalars(
+            select(db.Scan).where(db.Scan.job_id == job_id).order_by(db.Scan.id)
+        ).all()
+        assert [s.filename for s in made] == names, "rows were not created in archive order"
+
+        # And the screen agrees, which is the thing the seller actually sees.
+        html = client.get("/app").text
+        shown = [n for n in re.findall(r'<div class="qfile" title="([^"]+)"', html) if n in names]
+        assert shown == names
+        assert shown != sorted(names), "alphabetical would have passed by accident"
+    finally:
+        for scan in session.scalars(select(db.Scan).where(db.Scan.job_id == job_id)).all():
+            session.delete(scan)
+        session.commit()
+        session.delete(session.get(db.ImportJob, job_id))
+        session.commit()
+        session.close()
 
 
 def test_the_queue_keeps_each_upload_together(app_and_data):
@@ -1724,11 +1791,9 @@ def test_the_queue_keeps_each_upload_together(app_and_data):
     assert set(ours[:2]) == set(older)
     assert set(ours[2:]) == set(newer)
 
-    # And inside each, dearest first — the ordering the whole queue used to
-    # have, now scoped to a batch.
-    worth = dict(zip(older + newer, [1.0, 30.0, 2.0, 50.0], strict=True))
-    assert worth[ours[0]] == 30.0
-    assert worth[ours[2]] == 50.0
+    # And inside each, the order the scans arrived in.
+    assert ours[:2] == older
+    assert ours[2:] == newer
 
 
 def test_every_upload_section_starts_expanded(app_and_data):
@@ -1828,41 +1893,42 @@ def test_a_mangled_fold_cookie_costs_a_fold_not_the_page(app_and_data):
         client.cookies.clear()
 
 
-def test_cards_worth_the_same_keep_their_newest_first_order(app_and_data):
-    """The sort is stable, and that is the whole reason it can be.
+def test_price_does_not_disturb_the_arrival_order(app_and_data):
+    """Cards of wildly different value keep the order they were scanned in.
 
-    Most of a real queue keys to the same number — unpriced cards and unmatched
-    scans are all zero — so an unstable sort would shuffle the bulk of the page
-    on every reload, and a card someone was halfway through deciding about
-    would move out from under them.
+    This is the old dearest-first rule's own test, inverted. It earned its
+    place then and keeps it now for the opposite reason: the sort key changed,
+    and the cheapest card leading the page is the proof.
     """
     app, ids = app_and_data
     client = _signed_in(app)
 
-    with _waiting_scans_worth(ids, [7.0, 7.0, 7.0]) as scans:
+    with _waiting_scans_worth(ids, [0.05, 250.0, 7.0]) as scans:
         order = _queue_order(client.get("/app").text)
 
     ours = [s for s in order if s in set(scans)]
-    assert ours == sorted(scans, reverse=True)
+    assert ours == scans
+    assert ours[0] == scans[0], "the five-cent card was scanned first"
 
 
-def test_a_scan_that_matched_nothing_sorts_below_one_that_did(app_and_data):
-    """It has no value to confirm, and no Confirm button either.
+def test_a_scan_that_matched_nothing_keeps_its_place_in_the_pile(app_and_data):
+    """It used to be sorted to the bottom, because it has no value to confirm.
 
-    Putting it above a card worth money would spend the top of the page on the
-    one row that cannot be actioned from there. The "No match" tab is how you
-    go looking for these deliberately.
+    Under an arrival order it stays where it was scanned, and that is the more
+    useful answer: the card is somewhere in the stack the seller is holding,
+    and a row that has moved is one they cannot pair with the card in their
+    hand. The "No match" tab is still how you go looking for these on purpose.
     """
     app, ids = app_and_data
     client = _signed_in(app)
 
-    # The unmatched scan is created last, so it is the newest and would lead
-    # the page under the order this replaced. Created first it sorted below the
-    # priced card either way, and the test proved nothing.
-    with _waiting_scans_worth(ids, [0.25, None]) as (cheap, unmatched):
+    with _waiting_scans_worth(ids, [0.25, None, 4.0]) as scans:
         order = _queue_order(client.get("/app").text)
 
-    assert order.index(cheap) < order.index(unmatched)
+    ours = [s for s in order if s in set(scans)]
+    assert ours == scans
+    # Second in, second on the page — not last.
+    assert ours[1] == scans[1]
 
 
 @contextmanager

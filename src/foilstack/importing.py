@@ -153,7 +153,17 @@ def extract_archive(archive_path: Path, dest: Path) -> list[Path]:
                 logger.warning("archive truncated at %s images", MAX_IMAGES)
                 break
 
-    return sorted(written)
+    # Archive order, not filename order. `zf.infolist()` is the central
+    # directory, which is the order the entries were written — and for the
+    # loose images this application packs itself, that is the order the browser
+    # sent them, which is the order they were picked or dropped.
+    #
+    # It was `sorted(written)` from the first commit, with no reason recorded,
+    # and sorting throws away the only signal there is about how the seller
+    # meant the batch to read. They are working down a physical stack in the
+    # order they photographed it, and the queue follows this list: alphabetical
+    # is only the same thing when the filenames happen to be sequential.
+    return written
 
 
 async def run_import(job_id: int, archive_path: Path, settings: Settings) -> None:
