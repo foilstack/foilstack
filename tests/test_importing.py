@@ -21,6 +21,20 @@ def test_extracts_images_and_ignores_other_files(tmp_path):
     assert sorted(p.name for p in out) == ["a.jpg", "b.PNG"]
 
 
+def test_keeps_the_archives_own_order(tmp_path):
+    """The queue shows scans in the order they were imported, and this is where
+    that order is decided.
+
+    Deliberately not alphabetical, and deliberately not reverse-alphabetical
+    either: a sort in here would have to actively scramble these to pass, and
+    the previous implementation sorted.
+    """
+    names = ["c.jpg", "a.jpg", "b.jpg"]
+    archive = _zip(tmp_path, dict.fromkeys(names, b"x"))
+    out = extract_archive(archive, tmp_path / "out")
+    assert [p.name for p in out] == names
+
+
 def test_refuses_path_traversal(tmp_path):
     """Zip-slip: an entry named ../../evil.jpg must not land outside the target."""
     archive = _zip(tmp_path, {"../../evil.jpg": b"x"})

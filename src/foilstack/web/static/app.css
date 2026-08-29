@@ -527,6 +527,45 @@ body.app {
 .why .setting-note:first-of-type { margin-top: 6px; }
 
 /* ---------- the match queue ---------- */
+/* Not sticky, though it wants to be. `#queue` carries `overflow: auto` and so
+   claims the sticky scrollport, but it is never the box that actually scrolls
+   — `.pane-queue` grows to its content and `.split` scrolls the pair of panes.
+   A sticky heading therefore pins to a scrollport that never moves and slides
+   away with the rows, which is worse than not trying: it looks broken rather
+   than absent. Making it work means constraining the pane's height, and that
+   is a change to the whole screen's scrolling model. */
+.qgroup-head {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--surface-2);
+  cursor: pointer; user-select: none;
+  /* Both are needed: the second is the only one Safari listens to. */
+  list-style: none;
+}
+.qgroup-head::-webkit-details-marker { display: none; }
+/* The same `+` / `−` the settings panel discloses itself with, rather than a
+   triangle. Not decoration: this stylesheet already proves those two glyphs
+   render in the shipped webfonts, and a marker that lands as a tofu box is a
+   control nobody can read. */
+.qgroup-head::before {
+  content: "+"; font-family: var(--mono); font-size: 12px;
+  line-height: 1; color: var(--faint);
+}
+.qgroup[open] > .qgroup-head::before { content: "\2212"; }
+.qgroup-head:hover { background: var(--surface-3); }
+.qgroup-head:hover .qgroup-file { color: var(--muted); }
+.qgroup + .qgroup .qgroup-head { border-top: 1px solid var(--rule); }
+.qgroup-file {
+  /* Truncated by the column, not by a slice — same rule as the recent-imports
+     table. The full name stays on the title attribute. */
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-weight: 600; font-size: 12px;
+}
+.qgroup-meta {
+  flex: 0 0 auto; margin-left: auto;
+  font-family: var(--mono); font-size: 10px; color: var(--faint);
+}
 .qrow {
   /* `flex-wrap: wrap` means items wrap when their *base* sizes overflow —
      shrinking only happens afterwards, within a line. So a generous

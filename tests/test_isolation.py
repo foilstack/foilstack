@@ -1605,12 +1605,15 @@ def test_one_batch_of_defaults_does_not_leak_onto_another(app_and_data):
 
 
 @contextmanager
-def _waiting_scans_worth(ids, markets):
+def _waiting_scans_worth(ids, markets, filename="worth.zip"):
     """A batch waiting in the queue, one scan per value in `markets`.
 
     Its own cards, because the thing under test is an ordering by price and the
     fixture's single card would give every row the same key. A `None` market
     means a scan that matched nothing at all: no card, no candidate.
+
+    `filename` names the upload, so two of these nested are two batches the
+    queue has to keep apart.
     """
     from foilstack import db
 
@@ -1618,7 +1621,7 @@ def _waiting_scans_worth(ids, markets):
     owner_id = session.get(db.Scan, ids["scan"]).user_id
     job = db.ImportJob(
         user_id=owner_id,
-        filename="worth.zip",
+        filename=filename,
         status="done",
         total=len(markets),
         processed=len(markets),
@@ -1671,65 +1674,261 @@ def _queue_order(html: str) -> list[int]:
     return [int(n) for n in re.findall(r'id="scan-(\d+)"', html)]
 
 
-def test_the_queue_puts_the_dearest_card_first(app_and_data):
-    """Confirming a queue is work that gets abandoned part-way.
+def test_the_queue_follows_the_order_the_scans_arrived_in(app_and_data):
+    """The seller has the physical stack in their hand, in the order they
+    photographed it. A queue in any other order makes them hunt for each card
+    instead of working down the pile.
 
-    Where it stops is arbitrary, so the order decides which cards got the
-    attention. Newest-first spent it on whichever scans happened to be last out
-    of the archive; by value, the part that gets done is the part that pays.
+    This replaced dearest-first, so the values here are deliberately neither
+    ascending nor descending: an ordering by price would fail this, and so
+    would newest-first.
     """
     worth = [3.0, 40.0, 0.5, 12.0]
     app, ids = app_and_data
     client = _signed_in(app)
 
-    # Deliberately neither ascending nor descending as inserted, so that
-    # "as created" and "newest first" both fail this rather than passing on a
-    # coincidence.
     with _waiting_scans_worth(ids, worth) as scans:
         order = _queue_order(client.get("/app").text)
 
-    by_scan = dict(zip(scans, worth, strict=True))
-    ours = [s for s in order if s in by_scan]
+    ours = [s for s in order if s in set(scans)]
     assert len(ours) == len(worth), "the batch is not all on the page"
-    assert ours == sorted(ours, key=lambda s: -by_scan[s])
-    assert by_scan[ours[0]] == 40.0
+    # `_waiting_scans_worth` creates them in list order, which is what an
+    # import does with the files it extracts.
+    assert ours == scans
 
 
-def test_cards_worth_the_same_keep_their_newest_first_order(app_and_data):
-    """The sort is stable, and that is the whole reason it can be.
+def test_an_import_creates_its_scans_in_the_archives_order(app_and_data, tmp_path, monkeypatch):
+    """The link between the two ends, which nothing else covers.
 
-    Most of a real queue keys to the same number — unpriced cards and unmatched
-    scans are all zero — so an unstable sort would shuffle the bulk of the page
-    on every reload, and a card someone was halfway through deciding about
-    would move out from under them.
+    `extract_archive` returns the archive's order and the queue renders scans
+    by ascending id, but those only meet if `run_import` creates one row per
+    file, in order, as it walks the list. It does that today because the loop
+    is sequential — and that is exactly the kind of property a later change
+    could break silently. Matching one image at a time is the slow part of an
+    import, so somebody will eventually be tempted to run several at once; if
+    they do, the ids interleave and the queue quietly stops matching the pile
+    the seller is holding.
+    """
+    import asyncio
+    import zipfile as zf
+
+    from foilstack import db, importing
+    from foilstack.config import get_settings
+
+    app, ids = app_and_data
+    client = _signed_in(app)
+    settings = get_settings()
+
+    # Alphabetically a, b, c, d — stored deliberately out of that order.
+    names = ["d-fourth.jpg", "b-second.jpg", "a-first.jpg", "c-third.jpg"]
+    archive = tmp_path / "stack.zip"
+    with zf.ZipFile(archive, "w") as z:
+        for n in names:
+            z.writestr(n, b"pretend jpeg")
+
+    # The encoder and the catalogue are not what is under test. Stubbed down to
+    # nothing so every scan lands "unmatched", which still puts it in the queue.
+    async def _no_vector(url, blob):
+        return [0.0]
+
+    monkeypatch.setattr(importing, "embed_image", _no_vector)
+    monkeypatch.setattr(importing.search, "count", lambda *a, **k: 1)
+    monkeypatch.setattr(importing.search, "search", lambda *a, **k: [])
+    monkeypatch.setattr(importing.images, "make_display_copy", lambda *a, **k: None)
+
+    session = db.session()
+    owner_id = session.get(db.Scan, ids["scan"]).user_id
+    job = db.ImportJob(user_id=owner_id, filename="stack.zip", status="pending")
+    session.add(job)
+    session.commit()
+    job_id = job.id
+
+    try:
+        asyncio.run(importing.run_import(job_id, archive, settings))
+
+        made = session.scalars(
+            select(db.Scan).where(db.Scan.job_id == job_id).order_by(db.Scan.id)
+        ).all()
+        assert [s.filename for s in made] == names, "rows were not created in archive order"
+
+        # And the screen agrees, which is the thing the seller actually sees.
+        html = client.get("/app").text
+        shown = [n for n in re.findall(r'<div class="qfile" title="([^"]+)"', html) if n in names]
+        assert shown == names
+        assert shown != sorted(names), "alphabetical would have passed by accident"
+    finally:
+        for scan in session.scalars(select(db.Scan).where(db.Scan.job_id == job_id)).all():
+            session.delete(scan)
+        session.commit()
+        session.delete(session.get(db.ImportJob, job_id))
+        session.commit()
+        session.close()
+
+
+def test_the_queue_keeps_each_upload_together(app_and_data):
+    """Grouping outranks price, and only the order can show it.
+
+    The two batches here are chosen to interleave under a flat sort — the
+    older one holds the second-dearest card on the page — so a queue that
+    still ranked every row by value alone would put it between the newer
+    batch's two cards and fail here.
     """
     app, ids = app_and_data
     client = _signed_in(app)
 
-    with _waiting_scans_worth(ids, [7.0, 7.0, 7.0]) as scans:
+    with (
+        _waiting_scans_worth(ids, [1.0, 30.0], filename="older.zip") as older,
+        _waiting_scans_worth(ids, [2.0, 50.0], filename="newer.zip") as newer,
+    ):
+        order = _queue_order(client.get("/app").text)
+
+    mine = set(older) | set(newer)
+    ours = [s for s in order if s in mine]
+    assert len(ours) == 4, "the batches are not all on the page"
+
+    # Oldest upload first, so the backlog drains from the front rather than
+    # sinking further with every import.
+    assert set(ours[:2]) == set(older)
+    assert set(ours[2:]) == set(newer)
+
+    # And inside each, the order the scans arrived in.
+    assert ours[:2] == older
+    assert ours[2:] == newer
+
+
+def test_every_upload_section_starts_expanded(app_and_data):
+    """Collapsing is the seller's move to make, not the page's.
+
+    The sections are `<details>`, so the whole feature is one attribute — and
+    losing it is not a visual blemish but a queue that renders with every card
+    hidden and no indication that anything is waiting. Worth an assertion
+    despite being markup: there is no behaviour to observe instead, and this
+    is the one way the feature fails catastrophically rather than untidily.
+    """
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    with (
+        _waiting_scans_worth(ids, [1.0], filename="older.zip"),
+        _waiting_scans_worth(ids, [2.0], filename="newer.zip"),
+    ):
+        html = client.get("/app").text
+
+    # Every opening `<details>` on the page, with its attributes — matched
+    # tolerantly so that adding one does not fail this for the wrong reason.
+    sections = [tag for tag in re.findall(r"<details\b[^>]*>", html) if "qgroup" in tag]
+    assert len(sections) >= 2, "the uploads are not rendering as sections"
+    assert all("open" in tag for tag in sections)
+
+
+def _section(html: str, job_id: int) -> str:
+    """The opening `<details>` tag for one upload's section."""
+    found = [t for t in re.findall(r"<details\b[^>]*>", html) if f'data-job="{job_id}"' in t]
+    assert len(found) == 1, f"expected one section for job {job_id}, got {len(found)}"
+    return found[0]
+
+
+def _job_of(scan_id: int) -> tuple[int, int]:
+    from foilstack import db
+
+    session = db.session()
+    scan = session.get(db.Scan, scan_id)
+    out = (scan.job_id, scan.user_id)
+    session.close()
+    return out
+
+
+def test_a_folded_section_is_rendered_folded(app_and_data):
+    """The fold is applied by the server, and that is the whole point of it.
+
+    Restoring it in the browser is the obvious way and cannot be made to look
+    right: localStorage is unreadable until the page has parsed, so the queue
+    painted expanded and snapped shut once the script caught up — 56ms here,
+    123ms with the CPU throttled. Sent as a cookie, the answer is known while
+    the markup is being written and there is nothing to correct.
+    """
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    with (
+        _waiting_scans_worth(ids, [1.0], filename="older.zip") as older,
+        _waiting_scans_worth(ids, [2.0], filename="newer.zip") as newer,
+    ):
+        old_job, user_id = _job_of(older[0])
+        new_job, _ = _job_of(newer[0])
+        client.cookies.set(f"foilstack_folded_{user_id}", str(old_job))
+        html = client.get("/app").text
+        client.cookies.clear()
+
+    assert "open" not in _section(html, old_job)
+    # Only the one named. A fold is per upload, not a mode the screen is in.
+    assert "open" in _section(html, new_job)
+
+
+def test_a_mangled_fold_cookie_costs_a_fold_not_the_page(app_and_data):
+    """It is edited by a browser and survives in one for a year.
+
+    Anything at all can be in there by the time it comes back — a truncated
+    write, a hand-edit, a leftover from a different version of this screen. It
+    has to degrade to "nothing folded", because a 500 on the queue would mean
+    a seller could not reach their cards until they thought to clear cookies.
+    """
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    with _waiting_scans_worth(ids, [1.0], filename="older.zip") as older:
+        job_id, user_id = _job_of(older[0])
+        # None of these name this job. A value that does — including one with
+        # an empty element beside it, like "4,,7" — is not junk but a fold,
+        # and is covered above. Nor is `f"{job_id};DROP"`: a semicolon ends a
+        # cookie value in the header, so the server is handed a bare id and is
+        # right to fold on it. The digits have to be glued to something to
+        # stay junk.
+        junk = ("", "not-a-number", ",,,", "-3", "9" * 400, f"{job_id}x", "<script>")
+        for junk_value in junk:
+            client.cookies.set(f"foilstack_folded_{user_id}", junk_value)
+            got = client.get("/app")
+            assert got.status_code == 200, f"{junk_value!r} took the page down"
+            assert "open" in _section(got.text, job_id), f"{junk_value!r} folded it"
+        client.cookies.clear()
+
+
+def test_price_does_not_disturb_the_arrival_order(app_and_data):
+    """Cards of wildly different value keep the order they were scanned in.
+
+    This is the old dearest-first rule's own test, inverted. It earned its
+    place then and keeps it now for the opposite reason: the sort key changed,
+    and the cheapest card leading the page is the proof.
+    """
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    with _waiting_scans_worth(ids, [0.05, 250.0, 7.0]) as scans:
         order = _queue_order(client.get("/app").text)
 
     ours = [s for s in order if s in set(scans)]
-    assert ours == sorted(scans, reverse=True)
+    assert ours == scans
+    assert ours[0] == scans[0], "the five-cent card was scanned first"
 
 
-def test_a_scan_that_matched_nothing_sorts_below_one_that_did(app_and_data):
-    """It has no value to confirm, and no Confirm button either.
+def test_a_scan_that_matched_nothing_keeps_its_place_in_the_pile(app_and_data):
+    """It used to be sorted to the bottom, because it has no value to confirm.
 
-    Putting it above a card worth money would spend the top of the page on the
-    one row that cannot be actioned from there. The "No match" tab is how you
-    go looking for these deliberately.
+    Under an arrival order it stays where it was scanned, and that is the more
+    useful answer: the card is somewhere in the stack the seller is holding,
+    and a row that has moved is one they cannot pair with the card in their
+    hand. The "No match" tab is still how you go looking for these on purpose.
     """
     app, ids = app_and_data
     client = _signed_in(app)
 
-    # The unmatched scan is created last, so it is the newest and would lead
-    # the page under the order this replaced. Created first it sorted below the
-    # priced card either way, and the test proved nothing.
-    with _waiting_scans_worth(ids, [0.25, None]) as (cheap, unmatched):
+    with _waiting_scans_worth(ids, [0.25, None, 4.0]) as scans:
         order = _queue_order(client.get("/app").text)
 
-    assert order.index(cheap) < order.index(unmatched)
+    ours = [s for s in order if s in set(scans)]
+    assert ours == scans
+    # Second in, second on the page — not last.
+    assert ours[1] == scans[1]
 
 
 @contextmanager

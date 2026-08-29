@@ -169,7 +169,26 @@
 
     <template id="tpl-chosen">{{ chosen_icon() }}</template>
     <div class="screen-scroll" id="queue">
-      {% for r in rows %}
+      {% for g in groups %}
+      {# The upload these cards arrived in. Sections run oldest first and the
+         cards inside them dearest first, so the backlog drains from the front
+         and the card worth most is the first decision in each batch.
+
+         A `<details>`, so collapsing costs no script and arrives with the
+         keyboard and the accessibility tree already working — the same idiom
+         the match-settings panel above uses. Open by default: a queue that
+         hid its own cards on load would be a screen with nothing on it. #}
+      <details class="qgroup" data-job="{{ g.job_id }}"
+               {{- ' open' if g.job_id not in folded }}>
+        <summary class="qgroup-head">
+          <span class="qgroup-file" title="{{ g.filename }}">{{ g.filename }}</span>
+          <span class="qgroup-meta">
+            <time data-local datetime="{{ g.at.isoformat() }}">{{ g.at.strftime('%b %d %H:%M') }}</time>
+            · {{ g.rows|length }} {{ 'card' if g.rows|length == 1 else 'cards' }}
+            {%- if g.value %} · {{ g.value|money }}{% endif %}
+          </span>
+        </summary>
+      {% for r in g.rows %}
       <div class="qrow {{ 'review' if r.needs_review }}" id="scan-{{ r.scan_id }}"
            data-scan="{{ r.scan_id }}" data-card="{{ r.card_id or '' }}"
            data-cond="{{ r.condition }}" data-finish="{{ r.finish }}"
@@ -237,7 +256,9 @@
         <div class="qfix" hidden></div>
       </div>
       {% endfor %}
-      {% if not rows %}
+      </details>
+      {% endfor %}
+      {% if not groups %}
       <div class="queue-empty">
         {% if filter == 'matched' %}nothing matched is waiting
         {% elif filter == 'nomatch' %}everything waiting has a match
@@ -418,6 +439,45 @@ async function poll(id) {
   setTimeout(() => poll(id), 700);
 }
 {% if active %}poll({{ active.id }});{% endif %}
+
+/* ---------- folded sections ---------- */
+
+/* A cookie, not localStorage. The server has already rendered each section
+   folded or not — see `_folded_jobs` — so all this does is record what the
+   seller changes. localStorage was the first attempt and could only be read
+   after the page had parsed, which meant the queue painted expanded and then
+   snapped shut: 56ms of it here, 123ms with the CPU throttled.
+
+   Folded ids are what is stored, not open ones, so an empty cookie means
+   everything expanded — the right default both for a browser that has never
+   seen this screen and for an import that did not exist when the fold was
+   made. */
+const FOLD_COOKIE = 'foilstack_folded_{{ user.id }}';
+const FOLD_MAX = {{ folded_max }};
+
+function readFolded() {
+  const hit = document.cookie.split('; ').find(c => c.startsWith(FOLD_COOKIE + '='));
+  // Digits only. Whatever else is in there was not put there by this page,
+  // and the server discards it on the same rule.
+  return hit ? hit.slice(FOLD_COOKIE.length + 1).split(',').filter(v => /^\d+$/.test(v)) : [];
+}
+
+$$('.qgroup').forEach(group => {
+  const job = group.dataset.job;
+  group.addEventListener('toggle', () => {
+    // Re-read on every toggle rather than holding one list: two tabs on this
+    // screen would otherwise each write back a snapshot taken before the
+    // other's change, and the last to fold would erase the first.
+    const ids = readFolded().filter(id => id !== job);
+    if (!group.open) ids.push(job);
+    // `path=/app` so it rides along with this screen and its filter links and
+    // nothing else — at `/` it would be sent with every thumbnail too. Trimmed
+    // from the same end as the server reads, so the two agree about which
+    // folds survive.
+    document.cookie = FOLD_COOKIE + '=' + ids.slice(-FOLD_MAX).join(',') +
+      '; path=/app; max-age=31536000; SameSite=Lax';
+  });
+});
 
 /* ---------- queue rows ---------- */
 $$('.qrow').forEach(row => {
@@ -602,7 +662,14 @@ async function discardRow(row) {
 function fade(row) {
   row.style.transition = 'opacity .15s';
   row.style.opacity = 0;
-  setTimeout(() => { row.remove(); if (!$('.qrow')) location.reload(); }, 160);
+  setTimeout(() => {
+    const group = row.closest('.qgroup');
+    row.remove();
+    // A heading over no cards is worse than a count that has gone stale under
+    // one: the upload it names has nothing left to decide.
+    if (group && !$('.qrow', group)) group.remove();
+    if (!$('.qrow')) location.reload();
+  }, 160);
 }
 
 $('#commit').addEventListener('click', async () => {

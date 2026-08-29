@@ -33,6 +33,18 @@ PASSWORD = "preview-only-password"
 # screen shows what reviewing a batch is actually like.
 PENDING = 7
 
+# How many of those waiting came in on the second, newer upload. Split so the
+# queue shows more than one section — with the rest in the older one, because a
+# batch part-way through being reviewed is the ordinary state.
+#
+# The dearest cards are deliberately in the *older* batch. The queue puts the
+# earliest upload first, and the landing hero and the README animation both
+# shoot the top of that list: leave the good cards in the recent batch and both
+# open on three twenty-cent commons, which is a screenshot that argues nothing.
+# Same reasoning as seeding runners-up — the fixture has to show what the
+# product does.
+RECENT = 3
+
 
 def _admin_url() -> str:
     from foilstack.config import get_settings
@@ -265,7 +277,15 @@ def _seed(source_url: str, preview_url: str) -> None:
     # Enough waiting in the queue to fill the pane and to be worth scrolling.
     # Two was enough to prove the screen renders and far too few to show what
     # reviewing actually feels like.
-    pending = distinct[:PENDING]
+    #
+    # Seeded dearest first within the batch. The queue renders scans in the
+    # order they were imported, which for a fixture is simply the order they
+    # are created here — and the landing hero and the README animation are both
+    # stills of the top of that list. Left in catalogue order they open on a
+    # twenty-cent common. A seller photographing the good card first is an
+    # ordinary way for a real batch to arrive, so this is a plausible pile
+    # rather than a flattering one.
+    pending = sorted(distinct[:PENDING], key=lambda r: float(r["market"] or 0), reverse=True)
     cards = pending + distinct[PENDING:] + repeats[:2]
 
     db.init(preview_url)
@@ -312,21 +332,37 @@ def _seed(source_url: str, preview_url: str) -> None:
         )
     session.commit()
 
-    job = db.ImportJob(
+    # Two uploads, not one. The queue groups by the archive a scan arrived in,
+    # and a preview seeded from a single job renders one section heading and
+    # proves nothing about the screen — the same way seeding one candidate per
+    # scan used to hide the runner-up row.
+    older = db.ImportJob(
         user_id=user.id,
-        filename="preview-batch.zip",
+        filename="binder-a.zip",
         status="done",
-        total=len(cards),
-        processed=len(cards),
+        total=len(cards) - RECENT,
+        processed=len(cards) - RECENT,
+        created_at=dt.datetime.now(dt.UTC) - dt.timedelta(days=2),
     )
-    session.add(job)
+    newer = db.ImportJob(
+        user_id=user.id,
+        filename="singles-box.zip",
+        status="done",
+        total=RECENT,
+        processed=RECENT,
+        created_at=dt.datetime.now(dt.UTC) - dt.timedelta(minutes=20),
+    )
+    session.add_all([older, newer])
     session.commit()
 
     # Two scans left in the queue so the import screen has something to show,
     # the rest committed so inventory does — including a duplicate and a sale.
     for i, card in enumerate(cards):
         scan = db.Scan(
-            job_id=job.id,
+            # The tail of the waiting scans is the recent drop; everything
+            # else — the rest of the queue and all the committed cards —
+            # belongs to the older archive that is still being worked through.
+            job_id=newer.id if PENDING - RECENT <= i < PENDING else older.id,
             user_id=user.id,
             filename=card["filename"],
             stored_path=card["stored_path"],

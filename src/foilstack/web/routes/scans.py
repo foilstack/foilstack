@@ -42,28 +42,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _row_price(prices: dict[str, float], finish: str, fallback: float) -> float:
-    """What this row is worth as it currently stands, for ordering the queue.
-
-    The same rule the row's own price label uses, deliberately: among the
-    printings stored for the card, keep the ones whose foil-ness matches the
-    finish this scan was imported under, and take the dearest. Anything else
-    and the queue would sort by one number while displaying another, which is
-    worse than not sorting at all — the reader cannot see the key.
-
-    Falls back to `card.market` when the card has no per-printing prices, which
-    is what the row's meta line shows in that case, and to zero for a scan that
-    matched nothing. Both sink to the bottom, where they belong: a row with no
-    identified card has no value to confirm, and the "No match" tab is how you
-    go looking for those on purpose.
-    """
-    if not prices:
-        return fallback
-    want_foil = finish == "foil"
-    matching = [v for name, v in prices.items() if ("foil" in name.lower()) == want_foil]
-    return max(matching or list(prices.values()))
-
-
 def _price_map(printings: dict) -> dict[str, float]:
     """Per-printing market prices keyed by sub-type, with the unpriced dropped."""
     return {name: row.market for name, row in printings.items() if row.market is not None}
@@ -162,6 +140,17 @@ def _queue_rows(session, user_id: int) -> list[dict]:
             {
                 "scan_id": scan.id,
                 "filename": scan.filename,
+                # The upload this scan arrived in, which is what the queue
+                # groups by. Keyed by the job rather than by its name: the same
+                # archive sent twice is two uploads, and folding them together
+                # would drop cards from an older batch in among the ones that
+                # just landed.
+                "job_id": scan.job_id,
+                "job_filename": scan.job.filename,
+                # Two uploads can carry the same name — "3 images" is what any
+                # loose batch is called — so the section heading needs the
+                # time to tell them apart.
+                "job_at": scan.job.created_at,
                 "needs_review": needs_review,
                 "chosen": chosen is not None,
                 "card_id": card.id if card else None,
@@ -216,21 +205,99 @@ def _queue_rows(session, user_id: int) -> list[dict]:
             }
         )
 
-    # Dearest first, so the cards worth getting right are the ones in front of
-    # you. Confirming a queue is work that tends to be abandoned part-way, and
-    # where it stops is arbitrary — ordering by value makes the part that got
-    # done the part that mattered.
+    # The order the scans arrived in, which is the order they were in the
+    # archive. `run_import` writes one row per file and commits as it goes, so
+    # within a job the ids are the import order exactly — no column needed to
+    # record what the sequence already says.
     #
-    # A stable sort, so rows of equal value keep the newest-first order the
-    # query gave them and a fresh import still opens with its own cards on top
-    # of older ones worth the same. That is most of them: an unpriced card and
-    # an unmatched scan both key to zero.
+    # This replaced dearest-first. Ordering by value put the cards worth
+    # getting right at the top, which reads well as an argument and badly as a
+    # tool: a seller confirming a batch has the physical stack in their hand,
+    # in the order they photographed it, and a queue in any other order makes
+    # them hunt for each card instead of working down the pile. Value ordering
+    # optimised the part of the job that gets abandoned; matching the stack
+    # means less of it gets abandoned.
+    #
+    # Ascending, so the queue reads the way the pile does — first card
+    # scanned, first card decided.
     #
     # Note this reorders the 400 rows the query returned, which are the newest
     # 400. A queue longer than that was already only partly visible; this does
     # not change what is on the page, only the order of it.
-    rows.sort(key=lambda r: _row_price(r["prices"], r["finish"], r["market"]), reverse=True)
+    #
+    # `_group_rows` splits this list without re-sorting it, so this is also the
+    # order inside each upload's section.
+    rows.sort(key=lambda r: r["scan_id"])
     return rows
+
+
+def _group_rows(rows: list[dict]) -> list[dict]:
+    """The queue split into one section per upload, earliest upload first.
+
+    Grouping is a partition of the list it is given, not a second sort: the
+    rows arrive dearest-first from `_queue_rows` and keep that order inside
+    each section. Sorting here instead would mean the queue's ordering rule
+    lived in two places, and the two would drift.
+
+    Sections run oldest first, so the queue is worked in the order the batches
+    arrived and the backlog drains from the front. Newest-first read well on
+    the batch you had just dropped and badly on every one behind it: the
+    oldest cards sank further with each import and were the ones a part-way
+    review never reached.
+
+    That does put the archive you just uploaded at the bottom, which is what
+    the collapsible sections are for — fold the batches you are done with and
+    the new one comes up to meet you.
+    """
+    groups: dict[int, dict] = {}
+    for row in rows:
+        group = groups.get(row["job_id"])
+        if group is None:
+            group = groups[row["job_id"]] = {
+                "job_id": row["job_id"],
+                "filename": row["job_filename"],
+                "at": row["job_at"],
+                "rows": [],
+                "value": 0.0,
+            }
+        group["rows"].append(row)
+        # The same figure the bar totals for the whole queue, per upload. Left
+        # as market rather than the finish-aware price the rows show, so the
+        # two numbers on the screen are the same measure.
+        group["value"] += row["market"]
+    return sorted(groups.values(), key=lambda g: g["job_id"])
+
+
+# Named per account below, because a cookie belongs to the origin: one browser
+# can sign into several accounts on a multi-user install, and a job id is a row
+# number, so an unkeyed cookie would fold account B's queue to match account A's.
+FOLDED_COOKIE = "foilstack_folded"
+
+# A seller who folds every batch for a year would otherwise grow this without
+# limit, and an oversized cookie is not a slow request but a rejected one. The
+# browser trims to the same number from the same end.
+FOLDED_MAX = 200
+
+
+def _folded_jobs(request: Request, user_id: int) -> set[int]:
+    """Which upload sections this browser has folded shut.
+
+    A cookie rather than localStorage, which is where this started and could
+    not work: localStorage is only readable once the page has parsed, so the
+    queue rendered expanded and then snapped shut when the script caught up.
+    Measured at 56ms on this machine and 123ms with the CPU throttled six
+    times — not a subliminal frame but a visible jolt, on every single load,
+    on the one screen where folding is part of the workflow.
+
+    Sent with the request, the answer is known at render time and the markup is
+    right the first time, so there is nothing to correct and nothing to see.
+
+    Anything unparseable is ignored rather than raised on. This value is edited
+    by a browser and survives in one for a year; a stale or hand-mangled cookie
+    has to cost a fold, not the page.
+    """
+    raw = request.cookies.get(f"{FOLDED_COOKIE}_{user_id}", "")
+    return {int(part) for part in raw.split(",")[:FOLDED_MAX] if part.isdigit()}
 
 
 @router.get("/app", response_class=HTMLResponse)
@@ -269,7 +336,12 @@ def page_import(
             "nav": "import",
             "jobs": jobs,
             "active": active,
-            "rows": rows,
+            "groups": _group_rows(rows),
+            "folded": _folded_jobs(request, user.id),
+            # Shared with the browser so the two trim the cookie to the same
+            # length from the same end, rather than disagreeing about which
+            # folds survived.
+            "folded_max": FOLDED_MAX,
             "counts": counts,
             "filter": filter,
             "queue_value": sum(r["market"] for r in rows),
