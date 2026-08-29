@@ -151,10 +151,6 @@ Two settings that look like laziness and are not:
   this". A number that size gets ignored wholesale rather than fixed, and then
   the check means nothing. Tighten a module at a time as annotations arrive.
 
-`6c12bdd` reformatted the whole codebase and is listed in
-`.git-blame-ignore-revs`. Add a revision there only when the commit is
-genuinely mechanical.
-
 ## Tests
 
 ```bash
