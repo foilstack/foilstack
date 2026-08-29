@@ -1,6 +1,6 @@
 # Plugins
 
-Two kinds, with deliberately different amounts of power.
+Three kinds, with deliberately different amounts of power.
 
 ## Source plugins
 
@@ -12,6 +12,23 @@ special case on purpose: if the primary data source cannot be expressed through
 the interface every other plugin uses, the interface is wrong.
 
 `foilstack plugins` lists what is installed and the games each source can fetch.
+
+## Enrichment plugins
+
+These add to a catalogue somebody else ingested. They own no rows: they join
+onto cards a source already wrote, by the upstream id it recorded, which is why
+an enricher has to name the source it can speak to.
+
+The asymmetry with a source is the point. A source *is* a catalogue — it
+decides which cards exist and must supply an image for every one of them,
+because a row without an image is a card this application structurally cannot
+match. An enricher is allowed to know nothing about images at all.
+
+That is what lets `mtgjson` in. It publishes no card imagery — its own
+documentation sends you to Scryfall — so it could never satisfy the source
+contract, and what it has instead is three months of daily Magic prices for a
+catalogue that otherwise remembers only the days since you installed this. See
+[prices](prices.md#backfilling-magic).
 
 ## Export plugins
 

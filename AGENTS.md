@@ -16,16 +16,18 @@ Inventory becomes a CSV the seller uploads to a marketplace themselves.
 
 ```
 src/foilstack/
-  cli.py          ingest, embed, sets, rematch, sync-prices, migrate, plugins
+  cli.py          ingest, embed, sets, rematch, sync-prices, enrich, migrate,
+                  plugins
   config.py       nearly every setting, read once from the environment
   db.py           the schema. One row in `inventory` is one physical card
   search.py       nearest-neighbour over card_embeddings (cosine, HNSW)
   importing.py    archive → scans → candidates. Also `scan_path`
   inventory.py    pricing rules, stock lines, totals, export shaping
   prices.py       price history, and the inline SVG that draws it
+  enrich.py       backfilled days into history, without overwriting one
   images.py       display-sized copies of scans
   embedding.py    the client for the encoder. embedder/ is the service itself
-  plugins/        sources (tcgcsv) and exports (the CSV formats)
+  plugins/        sources (tcgcsv), enrichers (mtgjson), exports (CSV formats)
   web/
     app.py        the application object, the public pages, /healthz
     routes/       accounts, scans, inventory, listings, media
@@ -266,9 +268,17 @@ Two habits worth keeping:
   coarse one drives bulk entry and the fallback guess; the precise one, once a
   person sets it, is what pricing uses. Anything that drops `sub_type` on an
   edit silently restores a guess the seller had already corrected.
-* **Price history cannot be backfilled.** TCGCSV mirrors the current day only.
-  Anything that stops `sync-prices` running costs history permanently, so treat
-  a broken sync as data loss rather than a stale cache.
+* **Price history cannot be backfilled**, except for Magic and only ninety
+  days of it. TCGCSV mirrors the current day only, so anything that stops
+  `sync-prices` running costs history permanently — treat a broken sync as data
+  loss rather than a stale cache. `foilstack enrich` recovers what MTGJSON
+  holds, which is one game, three months, and a market price with no
+  low/mid/high beside it. It is a repair, not a backup, and it may only ever
+  *add* a day: a day `sync-prices` recorded carries the full spread from the
+  authoritative source, and the writer excludes it before composing the insert
+  and then says `ON CONFLICT DO NOTHING` anyway. Being safe to run twice
+  matters more than being efficient — the operator reaching for it is usually
+  the one unsure whether the last attempt finished.
 * **`sync_state` is keyed per source *and* game.** It was keyed per source
   once, and a successful Magic sync made every other catalogue believe its own
   first run was already up to date.
