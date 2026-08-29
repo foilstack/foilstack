@@ -1,8 +1,8 @@
 # Foilstack
 
-Open-source card scanning, inventory and listing export. Drop in a `.zip` of
-card scans, get back an identified, priced inventory and a CSV your marketplace
-will accept.
+Open-source card scanning, inventory and listing export. Drop in your card
+scans — loose images or a `.zip` of them — and get back an identified, priced
+inventory and a CSV your marketplace will accept.
 
 Runs on your own machine. **Your scans never leave the host.**
 
@@ -18,7 +18,8 @@ answer.*
 
 ## What it does
 
-1. **Import** — a `.zip` of card images, one image per card, any filenames.
+1. **Import** — card images, one image per card, any filenames: drop them in
+   loose or as a single `.zip`.
 2. **Match** — every image is encoded and searched against a catalogue of
    reference card images. High-confidence matches are accepted automatically;
    everything else waits in a review queue with its runners-up.
@@ -34,9 +35,11 @@ dozen sets at wildly different prices, separated on the physical card only by a
 set symbol a few pixels wide.
 
 So the top match is shown next to its rivals with their scores, rather than
-presented as an answer. The auto-accept threshold defaults to `0.92` and is
-deliberately conservative: a missed auto-accept costs you one click, a wrong one
-puts a real card on sale at another card's price.
+presented as an answer. The auto-accept threshold defaults to `0.94`, and the
+top match must also beat its runner-up by `0.04` — a high score alone is not
+evidence when the second-place card is the same artwork in a different
+printing. Both are deliberately conservative: a missed auto-accept costs you
+one click, a wrong one puts a real card on sale at another card's price.
 
 When the catalogue is wrong about all of its guesses, **search it by name and
 pick the right card yourself** — from the queue before committing, or from the

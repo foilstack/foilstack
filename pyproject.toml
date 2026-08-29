@@ -128,7 +128,7 @@ files = ["src/foilstack"]
 # Third-party stubs are patchy across sqlalchemy plugins, transformers and
 # torch; chasing them adds noise without finding bugs.
 ignore_missing_imports = true
-# Deliberately not `strict`. Strict reports 126 errors on this codebase, almost
+# Deliberately not `strict`. Strict reports 142 errors on this codebase, almost
 # all of them "add an annotation here" rather than "this is wrong" — a number
 # that large gets a blanket ignore rather than a fix, and then the check is
 # decoration. At this setting it found four real things: a mutable class

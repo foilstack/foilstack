@@ -9,28 +9,54 @@ Card photographs go in — loose files, or a `.zip` of them. Loose uploads are
 packed into an archive in `api_import` before anything else touches them, so
 the traversal checks, the expansion ceiling, the duplicate-name suffixing and
 the image cap all stay in `extract_archive` with one implementation rather than
-two. Each image is encoded by a DINOv3 service
-and searched against a catalogue of reference images held in Postgres with
-pgvector. Confident matches go straight to inventory; everything else waits in a
-review queue. Inventory becomes a CSV the seller uploads to a marketplace
-themselves.
+two. Each image is encoded by a DINOv3 service and searched against a
+catalogue of reference images held in Postgres with pgvector. Confident
+matches go straight to inventory; everything else waits in a review queue.
+Inventory becomes a CSV the seller uploads to a marketplace themselves.
 
 ```
 src/foilstack/
-  cli.py          ingest / embed / sets / rematch / plugins
-  config.py       every setting, read once from the environment
+  cli.py          ingest, embed, sets, rematch, sync-prices, migrate, plugins
+  config.py       nearly every setting, read once from the environment
   db.py           the schema. One row in `inventory` is one physical card
   search.py       nearest-neighbour over card_embeddings (cosine, HNSW)
   importing.py    archive → scans → candidates. Also `scan_path`
   inventory.py    pricing rules, stock lines, totals, export shaping
+  prices.py       price history, and the inline SVG that draws it
   images.py       display-sized copies of scans
-  web/app.py      every route
-  web/auth.py     accounts, sessions, the single-user escape hatch
-src/foilstack/migrations/  alembic. The schema lives here, not in
-                  create_all — and inside the package so a pip install can
-                  run `foilstack migrate` and build its own
-scripts/          preview.py (throwaway instance), shots.py, restore.sh
+  embedding.py    the client for the encoder. embedder/ is the service itself
+  plugins/        sources (tcgcsv) and exports (the CSV formats)
+  web/
+    app.py        the application object, the public pages, /healthz
+    routes/       accounts, scans, inventory, listings, media
+    chrome.py     the Jinja environment, the topbar figures, _asset_version
+    deps.py       the dependencies every route shares
+    auth.py       accounts, sessions, the single-user escape hatch
+    ratelimit.py  per-process counters on the routes strangers can reach
+    joblog.py     a short in-memory "did that button do anything", per account
+    proof.py      the two catalogue cards the landing page argues with
+  migrations/     alembic. The schema lives here, not in create_all — and
+                  inside the package so a pip install can run
+                  `foilstack migrate` and build its own
+scripts/
+  preview.py      a throwaway instance, to serve or to photograph
+  shots.py        screenshots of a running instance
+  demo.py         the README GIF
+  landing.py      the landing page stills
+  bump_version.py the version bump, as a pre-commit hook
+  check_categories.py   every TCGplayer category id against its real name
+  check-tests.sh  the suite, on push, failing on a skip
+  restore.sh      a backup back into a database
+docs/             accounts, backups, the encoder, plugins, prices
 ```
+
+`app.py` used to be every route and had reached fourteen hundred lines. The
+groups that stand alone are routers under `routes/` now, split by the thing
+they act on rather than by whether they answer with HTML or JSON — the route
+that confirms a scan and the screen offering the button are one decision. What
+made that possible was moving settings out of a module global and into
+`deps.settings_dep`: a global bound at import belongs to whichever module
+imported first, so every route reading it had to live beside that binding.
 
 ## Before you say it works
 
@@ -127,11 +153,18 @@ deliberately a hook and not a CI job, because this repository is public and a
 credential CI catches is one that has already been pushed and can only be
 rotated.
 
+The bump fires only when something under `src/` is staged — a README fix is not
+a new version of the software, and a number that moves for everything means
+nothing — and never during a merge, rebase, cherry-pick or revert, which replay
+commits that already carry their own version. `uv run python
+scripts/bump_version.py --dry-run` says what it would do without touching
+anything.
+
 On push: the test suite, which also fails if anything **skipped**. Not on
 commit, and that is the whole design — `tests/test_isolation.py` needs Postgres
 and skips cleanly without it, so a plain pytest hook on a machine with no
-database reports green while the forty tests proving one account cannot read
-another's cards did not run. Requiring a database before every commit is
+database reports green while the sixty-six tests proving one account cannot
+read another's cards did not run. Requiring a database before every commit is
 friction nobody keeps; before every push it is the right trade.
 
 `ruff` formats and lints; `mypy` type-checks `src/`. All three run in
@@ -147,7 +180,7 @@ Two settings that look like laziness and are not:
 * **B008 is exempted for FastAPI's `Depends`/`Query`/`Form`**, by name rather
   than by switching the rule off. Those are function calls in argument
   defaults on purpose; B006 still catches a real mutable default.
-* **mypy is not `--strict`.** Strict reports 126 errors, nearly all "annotate
+* **mypy is not `--strict`.** Strict reports 142 errors, nearly all "annotate
   this". A number that size gets ignored wholesale rather than fixed, and then
   the check means nothing. Tighten a module at a time as annotations arrive.
 
@@ -179,15 +212,49 @@ Two habits worth keeping:
   every thumbnail 404'd. Same rule for derived files: display copies are keyed
   by the scan's path, not its row id, because a row id is unique in one database
   and a data directory can be shared with another.
+* **A card id is a row number, not a name.** `37` is Base Set Charizard in one
+  database and something else entirely in the next, so nothing outside a single
+  install may hardcode one. `web/proof.py` finds the landing page's two cards by
+  name and set, and shows no thumbnails at all when the catalogue has not been
+  ingested — which is the honest state for an install that cannot yet identify
+  anything.
 * **Scope every read by `user_id`.** Ownership is `NOT NULL` and single-user
   mode is *one account*, not *no account*, so there is one query shape and no
   branch that could forget. `inventory.items()` takes `user_id` positionally on
   purpose — a scoping argument with a default is one a caller can omit.
+* **The job log is keyed by account too.** It is in-memory and deliberately
+  tiny, but its messages name filenames, SKUs, row counts and export sizes, and
+  every one of those is somebody's business data. A single process-wide log
+  reads fine on a self-hosted install and hands a hosted seller's activity to
+  whoever loads the listings page next.
+* **Route declaration order survives into the route table.** FastAPI matches
+  routes in the order they are declared and routers in the order they are
+  included, so a same-shape pair still depends on which came first. Declare
+  `/api/inventory/{item_id}` ahead of `/api/inventory/delete` and a POST to
+  `delete` is captured by the id route, `"delete"` fails to parse as an integer,
+  and bulk delete answers 422. The extraction out of `app.py` preserved the
+  original order for exactly that reason.
+* **Settings resolve per call, not at import.** `deps.settings_dep` reads
+  `get_settings()` on each request — a cached dict lookup, and the reason
+  `get_settings.cache_clear()` takes effect at all. Bound at import it does not:
+  a module imported before a fixture repoints the application at a throwaway
+  database keeps the first settings object it ever saw, and the suite then fails
+  against the developer's own database with an error that names a password
+  rather than an ordering. That cost hours, twice.
 * **A `NOT NULL` column needs a `server_default` in the migration**, dropped
   afterwards. Autogenerate will not add one, and the migration fails outright on
   a table that already has rows.
 * **`flex-wrap: wrap` wraps on `flex-basis`, not `min-width`.** Items only
   shrink after wrapping, within a line.
+* **A setting has to be named in three places.** `config.py` reads it, the
+  `web` service in `docker-compose.yml` passes it through, and `.env.example`
+  documents it — and compose forwards only what that block lists, so a setting
+  added to the first and the third but not the second is a knob that silently
+  does nothing on the one install path the README describes. The two settings
+  that live outside `config.py` are easier still to miss: `MAX_IMAGES` in
+  `importing.py` and `FOILSTACK_EMBED_CONCURRENCY` in `cli.py` are module
+  constants read at import, and the first of them is printed on the import
+  screen as a promise to the seller.
 * **Bump `_asset_version()` inputs when you add a static file.** It hashes the
   files it knows about; one it does not know about ships behind a stale query
   string, and the deploy then looks like it did nothing. `tests/test_assets.py`
@@ -209,6 +276,23 @@ Two habits worth keeping:
   between requests, and at most one full pull per daily rebuild — checked via
   `last-updated.txt`. Exceeding it earns a throttle, then a ban. It is a free
   service mirroring data we would otherwise have to buy.
+* **A wrong TCGplayer category id is invisible.** It is a real category
+  returning a real catalogue of real cards — from a different game. Three of the
+  eleven ids here were wrong for months: `gundam` fetched hololive,
+  `dragonball` fetched Neopets Battledome, `finalfantasy` fetched Godzilla, and
+  the comment above them saying they had been read from the categories endpoint
+  rather than guessed is how they went unexamined. `scripts/check_categories.py`
+  checks every id against the name upstream gives it. It is deliberately not in
+  the suite — it needs the network, and a test that fails because upstream is
+  down cries wolf. Run it when you add a game.
+* **The wheel has to contain more than Python.** Templates, static files and
+  migrations are none of them code, and any of them can quietly stop being
+  packaged; a release that imports fine and 500s on its first page is worse than
+  one that fails to build, so `release.yml` unzips the wheel and looks. The
+  static files are derived from the templates rather than listed, because a
+  hand-kept list only holds what somebody remembered — `app.js` was missing from
+  it for a whole release, and a missing script is the quiet kind of broken too:
+  every page renders and every button is dead.
 * **The encoder's vectors are numpy.** `search.as_literal` forces `float()`
   because NumPy 2 renders `np.float32(-0.02)` in list repr, which Postgres
   cannot parse as a `halfvec`.
@@ -242,6 +326,12 @@ Two habits worth keeping:
   inline in a screen's markup instead runs before the helpers exist. Redeclaring
   one of those names in a page script is a `SyntaxError`, not a shadow — two
   top-level `const`s of one name in classic scripts collide.
+* **A route module must not import `app.py`.** That is a cycle, and it is what
+  kept every route in one file. What the shell offers is in `web/chrome.py` —
+  the Jinja environment and its filters, the topbar figures, `_asset_version` —
+  and what a request needs is in `web/deps.py`. `foilstack.web` has no
+  `__init__.py`, so a constant two of those modules share is defined in the one
+  whose job it is rather than hoisted into the package.
 * Jinja parses its tags inside HTML comments, so an `<!-- -->` comment that
   names a block opens one, and the template dies at the next `endblock`. Use a
   `{# ... #}` comment when the text needs to mention a tag.
@@ -253,7 +343,7 @@ Deploy with the commit in hand, so the running build can say what it is:
 ```bash
 GIT_SHA="$(git rev-parse --short HEAD)$(git diff --quiet HEAD || echo -dirty)" \
   docker compose up -d --build
-curl -sS https://your-host/healthz     # ok / foilstack 0.1.9 (8c2cd47)
+curl -sS https://your-host/healthz     # ok / foilstack 0.2.14 (a439f79)
 ```
 
 Commit before you build. The `-dirty` suffix is there because a build from an

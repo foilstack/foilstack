@@ -57,14 +57,23 @@ services:
       FOILSTACK_DATA_DIR: /data
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-foilstack}:${POSTGRES_PASSWORD:-foilstack}@postgres:5432/${POSTGRES_DB:-foilstack}
       EMBEDDER_URL: http://embedder:8100
-      FOILSTACK_AUTO_ACCEPT: ${FOILSTACK_AUTO_ACCEPT:-0.92}
+      # Has to match what the `embedder` service loads and what built the
+      # vectors already in the catalogue. Vectors from two encoders are not
+      # comparable and nothing raises — the search simply returns the wrong
+      # card. Passed here as well as to the embedder because this is the side
+      # that writes and queries `card_embeddings.model`.
+      EMBED_MODEL: ${EMBED_MODEL:-facebook/dinov3-vitl16-pretrain-lvd1689m}
+      FOILSTACK_AUTO_ACCEPT: ${FOILSTACK_AUTO_ACCEPT:-0.94}
+      FOILSTACK_AUTO_ACCEPT_MARGIN: ${FOILSTACK_AUTO_ACCEPT_MARGIN:-0.04}
       FOILSTACK_MAX_ARCHIVE_MB: ${FOILSTACK_MAX_ARCHIVE_MB:-512}
+      FOILSTACK_MAX_IMAGES: ${FOILSTACK_MAX_IMAGES:-5000}
       # Off by default: one person running this for their own shop should not
       # have to invent a password to reach their own inventory. Turn it on for
       # a deployment other people can reach, and set a real secret key.
       FOILSTACK_MULTI_USER: ${FOILSTACK_MULTI_USER:-false}
       FOILSTACK_SECRET_KEY: ${FOILSTACK_SECRET_KEY:-dev-insecure-change-me}
       FOILSTACK_SUPPORT_URL: ${FOILSTACK_SUPPORT_URL:-https://buymeacoffee.com/foilstack}
+      FOILSTACK_SITE_URL: ${FOILSTACK_SITE_URL:-}
       # Everything the application reads has to be named here. Compose passes
       # only what this block lists, so a setting added to config.py and to
       # .env but not to this list is one that silently does nothing — and the
