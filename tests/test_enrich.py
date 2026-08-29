@@ -12,6 +12,7 @@ import datetime as dt
 import gzip
 import json
 import os
+import sys
 import uuid
 
 import pytest
@@ -138,6 +139,23 @@ def test_unmappable_printings_are_counted_not_dropped_silently(tmp_path):
     assert plugin.stats["unmapped"] == 1
     assert plugin.stats["ambiguous"] == 1
     assert plugin.stats["series"] == 0
+
+
+async def test_it_names_the_missing_parser_before_downloading_180_mb(tmp_path, monkeypatch):
+    """The parser is first *needed* after both files have arrived.
+
+    Checked at the start instead, because being told to install something at
+    the end of a 180 MB download is a miserable way to find out — and the
+    cache directory not existing afterwards is the proof nothing was fetched.
+    """
+    monkeypatch.setitem(sys.modules, "ijson", None)
+    cache = tmp_path / "cache"
+    plugin = MTGJSONEnricher(cache_dir=cache)
+
+    with pytest.raises(RuntimeError, match=r"foilstack\[mtgjson\]"):
+        await anext(plugin.price_history())
+
+    assert not cache.exists(), "it started downloading before checking"
 
 
 def test_it_refuses_a_game_it_has_no_data_for():

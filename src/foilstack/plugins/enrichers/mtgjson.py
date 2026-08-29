@@ -92,10 +92,14 @@ def _ijson() -> Any:
     that only does Pokémon — but the failure has to name the fix, because
     `ModuleNotFoundError: ijson` at the top of a plugin nobody chose to install
     is a puzzle rather than an error.
+
+    `ImportError` rather than `ModuleNotFoundError`, which is narrower than it
+    looks: an ijson whose C backend fails to load raises the parent, and the
+    advice — reinstall the thing this names — is right for that too.
     """
     try:
         import ijson
-    except ModuleNotFoundError as exc:  # pragma: no cover - depends on the install
+    except ImportError as exc:
         raise RuntimeError(
             "the mtgjson enricher needs `ijson` to stream a 1.1 GB file without "
             "loading it into memory. install it with: pip install 'foilstack[mtgjson]'"
@@ -147,6 +151,10 @@ class MTGJSONEnricher:
         the rule — a row only where the number moved — has to be applied across
         the seam with days already recorded, and only the database knows those.
         """
+        # Before the downloads, not when the parser is first needed. It is first
+        # needed after 180 MB has already arrived, and "install ijson" is a
+        # miserable thing to be told at the end of that rather than the start.
+        _ijson()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         async with httpx.AsyncClient(timeout=120.0, headers=HEADERS, follow_redirects=True) as c:
             skus_path = await self._fetch(c, SKUS_FILE)
