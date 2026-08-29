@@ -1756,6 +1756,78 @@ def test_every_upload_section_starts_expanded(app_and_data):
     assert all("open" in tag for tag in sections)
 
 
+def _section(html: str, job_id: int) -> str:
+    """The opening `<details>` tag for one upload's section."""
+    found = [t for t in re.findall(r"<details\b[^>]*>", html) if f'data-job="{job_id}"' in t]
+    assert len(found) == 1, f"expected one section for job {job_id}, got {len(found)}"
+    return found[0]
+
+
+def _job_of(scan_id: int) -> tuple[int, int]:
+    from foilstack import db
+
+    session = db.session()
+    scan = session.get(db.Scan, scan_id)
+    out = (scan.job_id, scan.user_id)
+    session.close()
+    return out
+
+
+def test_a_folded_section_is_rendered_folded(app_and_data):
+    """The fold is applied by the server, and that is the whole point of it.
+
+    Restoring it in the browser is the obvious way and cannot be made to look
+    right: localStorage is unreadable until the page has parsed, so the queue
+    painted expanded and snapped shut once the script caught up — 56ms here,
+    123ms with the CPU throttled. Sent as a cookie, the answer is known while
+    the markup is being written and there is nothing to correct.
+    """
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    with (
+        _waiting_scans_worth(ids, [1.0], filename="older.zip") as older,
+        _waiting_scans_worth(ids, [2.0], filename="newer.zip") as newer,
+    ):
+        old_job, user_id = _job_of(older[0])
+        new_job, _ = _job_of(newer[0])
+        client.cookies.set(f"foilstack_folded_{user_id}", str(old_job))
+        html = client.get("/app").text
+        client.cookies.clear()
+
+    assert "open" not in _section(html, old_job)
+    # Only the one named. A fold is per upload, not a mode the screen is in.
+    assert "open" in _section(html, new_job)
+
+
+def test_a_mangled_fold_cookie_costs_a_fold_not_the_page(app_and_data):
+    """It is edited by a browser and survives in one for a year.
+
+    Anything at all can be in there by the time it comes back — a truncated
+    write, a hand-edit, a leftover from a different version of this screen. It
+    has to degrade to "nothing folded", because a 500 on the queue would mean
+    a seller could not reach their cards until they thought to clear cookies.
+    """
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    with _waiting_scans_worth(ids, [1.0], filename="older.zip") as older:
+        job_id, user_id = _job_of(older[0])
+        # None of these name this job. A value that does — including one with
+        # an empty element beside it, like "4,,7" — is not junk but a fold,
+        # and is covered above. Nor is `f"{job_id};DROP"`: a semicolon ends a
+        # cookie value in the header, so the server is handed a bare id and is
+        # right to fold on it. The digits have to be glued to something to
+        # stay junk.
+        junk = ("", "not-a-number", ",,,", "-3", "9" * 400, f"{job_id}x", "<script>")
+        for junk_value in junk:
+            client.cookies.set(f"foilstack_folded_{user_id}", junk_value)
+            got = client.get("/app")
+            assert got.status_code == 200, f"{junk_value!r} took the page down"
+            assert "open" in _section(got.text, job_id), f"{junk_value!r} folded it"
+        client.cookies.clear()
+
+
 def test_cards_worth_the_same_keep_their_newest_first_order(app_and_data):
     """The sort is stable, and that is the whole reason it can be.
 
