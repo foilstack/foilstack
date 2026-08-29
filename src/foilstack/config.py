@@ -67,6 +67,17 @@ class Settings:
         this is a cache rather than data — safe to delete at any time."""
         return self.data_dir / "display"
 
+    @property
+    def cache_dir(self) -> Path:
+        """Large downloads a command may want to not repeat.
+
+        Under `data_dir` rather than `/tmp` because the files here are hundreds
+        of megabytes and a re-run after a failure should not have to fetch them
+        again — which a tmpfs reboot or a container restart would force. Safe to
+        delete: everything in it is re-downloadable and verified by checksum on
+        the way back in."""
+        return self.data_dir / "cache"
+
 
 def _database_url() -> str:
     """`DATABASE_URL` whole if it is set, else built from the `POSTGRES_*` parts.

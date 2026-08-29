@@ -53,7 +53,21 @@ Issues = "https://github.com/foilstack/foilstack/issues"
 
 [project.optional-dependencies]
 embedder = ["torch>=2.2", "transformers>=4.44"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "playwright>=1.48", "ruff>=0.14", "mypy>=1.13"]
+# `foilstack enrich` streams a 1.1 GB JSON file. An extra rather than a
+# dependency: it is needed by one Magic-only command that most installs will
+# run once or never, and the enricher says so by name when it is missing.
+mtgjson = ["ijson>=3.2"]
+# `ijson` is in here as well as in `mtgjson` because the suite covers the
+# enricher, and a test that skips when an extra is absent is a test that
+# reports green for code nobody ran.
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "playwright>=1.48",
+    "ruff>=0.14",
+    "mypy>=1.13",
+    "ijson>=3.2",
+]
 
 # Installs a `foilstack` command. Without it the CLI is only reachable as
 # `python -m foilstack.cli`, which is not what the README says and not what

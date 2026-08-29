@@ -20,10 +20,10 @@ from pathlib import Path
 import httpx
 from sqlalchemy import func, select, text
 
-from foilstack import __version__, db
+from foilstack import __version__, db, enrich
 from foilstack.config import get_settings
 from foilstack.embedding import embed_image
-from foilstack.plugins import export_plugins, source_plugins
+from foilstack.plugins import enrichment_plugins, export_plugins, source_plugins
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 # Distinguishes "upstream has no image for this card", which is ordinary and
@@ -491,6 +491,98 @@ async def _sync_one_game(session, plugin, game: str, stamp: str | None, args) ->
     return 0
 
 
+async def cmd_enrich(args) -> int:
+    """Fill in price history from a source that publishes the past.
+
+    Separate from `sync-prices` because it is the opposite job. That one runs
+    every day forever and records what changed since yesterday; this one runs
+    about once and recovers what was already lost — the months before this
+    install existed, or the week a broken sync went unnoticed. Folding it into
+    `sync-prices` would put a 180 MB download in the daily path to do nothing
+    on all but the first run.
+    """
+    settings = get_settings()
+    db.init(settings.database_url)
+    session = db.session()
+
+    plugins = enrichment_plugins()
+    plugin = plugins.get(args.source)
+    if plugin is None:
+        log.error("unknown enricher %r; available: %s", args.source, sorted(plugins))
+        return 2
+    if args.game not in plugin.games:
+        log.error(
+            "%s has data for %s only, not %r", plugin.name, ", ".join(plugin.games), args.game
+        )
+        return 2
+
+    plugin = type(plugin)(game=args.game, cache_dir=settings.cache_dir / plugin.name)
+    source = plugin.matches_source
+
+    # The catalogue has to exist first, and so do its printings. Backfilling
+    # against an empty `card_prices` would silently write nothing at all: every
+    # row would fail the "name a printing the catalogue already named" filter,
+    # and the run would report a clean zero. Say so instead.
+    priced = session.execute(
+        text("""
+        SELECT count(*) FROM card_prices p
+          JOIN cards c ON c.id = p.card_id
+         WHERE c.source = :source AND c.game = :game
+    """),
+        {"source": source, "game": args.game},
+    ).scalar_one()
+    if not priced:
+        log.error(
+            "no %s %s prices yet — run `foilstack ingest` then `foilstack sync-prices` first. "
+            "A backfill names printings the catalogue has already named; with none there is "
+            "nothing it may write.",
+            source,
+            args.game,
+        )
+        return 2
+
+    kind = f"backfill:{args.game}"
+    state = session.get(db.SyncState, (plugin.name, kind))
+    stamp = None
+    if hasattr(plugin, "last_updated"):
+        try:
+            stamp = await plugin.last_updated()
+        except Exception as exc:  # noqa: BLE001 - a missing stamp is not fatal
+            log.warning("could not read upstream build version (%s)", type(exc).__name__)
+    if stamp and state is not None and state.upstream_stamp == stamp and not args.force:
+        log.info("%s: already backfilled from build %s, nothing to do", plugin.name, stamp)
+        return 0
+
+    log.info("backfilling %s prices from %s (build %s)", args.game, plugin.name, stamp or "unknown")
+    try:
+        staged = await enrich.stage(session, plugin.price_history())
+        applied = enrich.apply(session, source, args.game, dry_run=args.dry_run)
+        for line in enrich.summarise(getattr(plugin, "stats", {}), staged, applied):
+            log.info("  %s", line)
+    finally:
+        enrich.cleanup(session)
+
+    if args.dry_run:
+        log.info("dry run: nothing written")
+        return 0
+
+    # Only now, and only on a real run. Recording the build after a dry run
+    # would convince the next run there was nothing left to do.
+    session.merge(
+        db.SyncState(
+            source=plugin.name,
+            kind=kind,
+            upstream_stamp=stamp,
+            last_run_at=_now(),
+            rows_changed=applied["inserted"],
+            message=f"{staged} daily prices read, {applied['inserted']} recorded",
+        )
+    )
+    session.commit()
+    log.info("%s: %s days of history recovered", args.game, f"{applied['inserted']:,}")
+    return 0
+
+
 def _now() -> dt.datetime:
     return dt.datetime.now(dt.UTC)
 
@@ -532,6 +624,10 @@ def cmd_plugins(_args) -> int:
     print("sources:")
     for name, plugin in sources.items():
         print(f"  {name:12s} games: {', '.join(plugin.games)}")
+    print("enrichers:")
+    for name, enricher in enrichment_plugins().items():
+        games = ", ".join(enricher.games)
+        print(f"  {name:12s} games: {games} (adds to {enricher.matches_source})")
     print("exports:")
     for name, spec in exports.items():
         print(f"  {name:12s} {len(spec.columns)} columns -> {spec.filename}")
@@ -609,6 +705,24 @@ def main(argv: list[str] | None = None) -> int:
         help="sync even if upstream reports no new build",
     )
     p_sync.set_defaults(fn=cmd_sync_prices, is_async=True)
+
+    p_enrich = sub.add_parser(
+        "enrich",
+        help="backfill price history from a source that publishes past days",
+    )
+    p_enrich.add_argument("--source", default="mtgjson")
+    p_enrich.add_argument("--game", default="magic")
+    p_enrich.add_argument(
+        "--force",
+        action="store_true",
+        help="run even if this upstream build has already been backfilled",
+    )
+    p_enrich.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report what would be recorded without writing it",
+    )
+    p_enrich.set_defaults(fn=cmd_enrich, is_async=True)
 
     p_migrate = sub.add_parser("migrate", help="create or update the database schema")
     p_migrate.add_argument(

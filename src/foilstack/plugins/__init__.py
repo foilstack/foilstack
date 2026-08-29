@@ -1,10 +1,11 @@
 """Plugin discovery.
 
-Sources are Python modules under `plugins/sources/`. Exports are TOML files
-under `plugins/exports/`. Neither is fetched from a registry and nothing is
-installed automatically: a source plugin runs code with network access against
-your inventory, and auto-installing that from the internet is how a card
-scanner becomes someone else's botnet.
+Sources are Python modules under `plugins/sources/`, enrichers under
+`plugins/enrichers/`. Exports are TOML files under `plugins/exports/`. None of
+them is fetched from a registry and nothing is installed automatically: a
+source plugin runs code with network access against your inventory, and
+auto-installing that from the internet is how a card scanner becomes someone
+else's botnet.
 """
 
 from __future__ import annotations
@@ -12,24 +13,40 @@ from __future__ import annotations
 import importlib
 import pkgutil
 from pathlib import Path
+from typing import Any
 
-from foilstack.plugins.base import CardRecord, SourcePlugin
+from foilstack.plugins.base import CardRecord, EnrichmentPlugin, SourcePlugin
 from foilstack.plugins.exports import ExportSpec, load_export_specs
 
 _EXPORTS_DIR = Path(__file__).parent / "exports"
 
 
-def source_plugins() -> dict[str, SourcePlugin]:
-    found: dict[str, SourcePlugin] = {}
-    package = importlib.import_module("foilstack.plugins.sources")
+def _discover(package_name: str) -> dict[str, Any]:
+    found: dict[str, Any] = {}
+    package = importlib.import_module(package_name)
     for mod in pkgutil.iter_modules(package.__path__):
         if mod.name.startswith("_"):
             continue
-        module = importlib.import_module(f"foilstack.plugins.sources.{mod.name}")
+        module = importlib.import_module(f"{package_name}.{mod.name}")
         plugin = getattr(module, "PLUGIN", None)
         if plugin is not None:
             found[plugin.name] = plugin
     return found
+
+
+def source_plugins() -> dict[str, SourcePlugin]:
+    return _discover("foilstack.plugins.sources")
+
+
+def enrichment_plugins() -> dict[str, EnrichmentPlugin]:
+    """Plugins that add to a catalogue rather than supply one.
+
+    A separate registry, not a flag on the source list. An enricher cannot be
+    passed to `ingest` — it has no images and would write cards nothing can
+    match — and one list holding both kinds is one `hasattr` away from that
+    happening.
+    """
+    return _discover("foilstack.plugins.enrichers")
 
 
 def export_plugins() -> dict[str, ExportSpec]:
@@ -59,8 +76,10 @@ def supported_games() -> list[str]:
 
 __all__ = [
     "CardRecord",
+    "EnrichmentPlugin",
     "ExportSpec",
     "SourcePlugin",
+    "enrichment_plugins",
     "export_plugins",
     "source_plugins",
     "supported_games",
