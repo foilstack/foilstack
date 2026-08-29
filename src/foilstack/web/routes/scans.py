@@ -162,6 +162,17 @@ def _queue_rows(session, user_id: int) -> list[dict]:
             {
                 "scan_id": scan.id,
                 "filename": scan.filename,
+                # The upload this scan arrived in, which is what the queue
+                # groups by. Keyed by the job rather than by its name: the same
+                # archive sent twice is two uploads, and folding them together
+                # would drop cards from an older batch in among the ones that
+                # just landed.
+                "job_id": scan.job_id,
+                "job_filename": scan.job.filename,
+                # Two uploads can carry the same name — "3 images" is what any
+                # loose batch is called — so the section heading needs the
+                # time to tell them apart.
+                "job_at": scan.job.created_at,
                 "needs_review": needs_review,
                 "chosen": chosen is not None,
                 "card_id": card.id if card else None,
@@ -229,8 +240,42 @@ def _queue_rows(session, user_id: int) -> list[dict]:
     # Note this reorders the 400 rows the query returned, which are the newest
     # 400. A queue longer than that was already only partly visible; this does
     # not change what is on the page, only the order of it.
+    #
+    # `_group_rows` splits this list without re-sorting it, so this is also the
+    # order inside each upload's section.
     rows.sort(key=lambda r: _row_price(r["prices"], r["finish"], r["market"]), reverse=True)
     return rows
+
+
+def _group_rows(rows: list[dict]) -> list[dict]:
+    """The queue split into one section per upload, newest upload first.
+
+    Grouping is a partition of the list it is given, not a second sort: the
+    rows arrive dearest-first from `_queue_rows` and keep that order inside
+    each section. Sorting here instead would mean the queue's ordering rule
+    lived in two places, and the two would drift.
+
+    Sections run newest upload first, matching "Recent imports" in the pane
+    beside them — a seller who has just dropped an archive expects its cards
+    at the top, and value is what orders the cards, not the batches.
+    """
+    groups: dict[int, dict] = {}
+    for row in rows:
+        group = groups.get(row["job_id"])
+        if group is None:
+            group = groups[row["job_id"]] = {
+                "job_id": row["job_id"],
+                "filename": row["job_filename"],
+                "at": row["job_at"],
+                "rows": [],
+                "value": 0.0,
+            }
+        group["rows"].append(row)
+        # The same figure the bar totals for the whole queue, per upload. Left
+        # as market rather than the finish-aware price the rows show, so the
+        # two numbers on the screen are the same measure.
+        group["value"] += row["market"]
+    return sorted(groups.values(), key=lambda g: g["job_id"], reverse=True)
 
 
 @router.get("/app", response_class=HTMLResponse)
@@ -269,7 +314,7 @@ def page_import(
             "nav": "import",
             "jobs": jobs,
             "active": active,
-            "rows": rows,
+            "groups": _group_rows(rows),
             "counts": counts,
             "filter": filter,
             "queue_value": sum(r["market"] for r in rows),

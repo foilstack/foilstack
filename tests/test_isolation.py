@@ -1605,12 +1605,15 @@ def test_one_batch_of_defaults_does_not_leak_onto_another(app_and_data):
 
 
 @contextmanager
-def _waiting_scans_worth(ids, markets):
+def _waiting_scans_worth(ids, markets, filename="worth.zip"):
     """A batch waiting in the queue, one scan per value in `markets`.
 
     Its own cards, because the thing under test is an ordering by price and the
     fixture's single card would give every row the same key. A `None` market
     means a scan that matched nothing at all: no card, no candidate.
+
+    `filename` names the upload, so two of these nested are two batches the
+    queue has to keep apart.
     """
     from foilstack import db
 
@@ -1618,7 +1621,7 @@ def _waiting_scans_worth(ids, markets):
     owner_id = session.get(db.Scan, ids["scan"]).user_id
     job = db.ImportJob(
         user_id=owner_id,
-        filename="worth.zip",
+        filename=filename,
         status="done",
         total=len(markets),
         processed=len(markets),
@@ -1693,6 +1696,39 @@ def test_the_queue_puts_the_dearest_card_first(app_and_data):
     assert len(ours) == len(worth), "the batch is not all on the page"
     assert ours == sorted(ours, key=lambda s: -by_scan[s])
     assert by_scan[ours[0]] == 40.0
+
+
+def test_the_queue_keeps_each_upload_together(app_and_data):
+    """Grouping outranks price, and only the order can show it.
+
+    The two batches here are chosen to interleave under a flat sort — the
+    older one holds the second-dearest card on the page — so a queue that
+    still ranked every row by value alone would put it between the newer
+    batch's two cards and fail here.
+    """
+    app, ids = app_and_data
+    client = _signed_in(app)
+
+    with (
+        _waiting_scans_worth(ids, [1.0, 30.0], filename="older.zip") as older,
+        _waiting_scans_worth(ids, [2.0, 50.0], filename="newer.zip") as newer,
+    ):
+        order = _queue_order(client.get("/app").text)
+
+    mine = set(older) | set(newer)
+    ours = [s for s in order if s in mine]
+    assert len(ours) == 4, "the batches are not all on the page"
+
+    # The upload that landed last is decided first: it is the one the seller
+    # just dropped and came to this screen for.
+    assert set(ours[:2]) == set(newer)
+    assert set(ours[2:]) == set(older)
+
+    # And inside each, dearest first — the ordering the whole queue used to
+    # have, now scoped to a batch.
+    worth = dict(zip(older + newer, [1.0, 30.0, 2.0, 50.0], strict=True))
+    assert worth[ours[0]] == 50.0
+    assert worth[ours[2]] == 30.0
 
 
 def test_cards_worth_the_same_keep_their_newest_first_order(app_and_data):

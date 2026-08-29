@@ -33,6 +33,11 @@ PASSWORD = "preview-only-password"
 # screen shows what reviewing a batch is actually like.
 PENDING = 7
 
+# How many of those came in on the second, newer upload. Split so the queue
+# shows more than one section — with a remainder in the older one, because a
+# batch part-way through being reviewed is the ordinary state.
+FRESH = 4
+
 
 def _admin_url() -> str:
     from foilstack.config import get_settings
@@ -312,21 +317,36 @@ def _seed(source_url: str, preview_url: str) -> None:
         )
     session.commit()
 
-    job = db.ImportJob(
+    # Two uploads, not one. The queue groups by the archive a scan arrived in,
+    # and a preview seeded from a single job renders one section heading and
+    # proves nothing about the screen — the same way seeding one candidate per
+    # scan used to hide the runner-up row.
+    older = db.ImportJob(
         user_id=user.id,
-        filename="preview-batch.zip",
+        filename="binder-a.zip",
         status="done",
-        total=len(cards),
-        processed=len(cards),
+        total=len(cards) - FRESH,
+        processed=len(cards) - FRESH,
+        created_at=dt.datetime.now(dt.UTC) - dt.timedelta(days=2),
     )
-    session.add(job)
+    newer = db.ImportJob(
+        user_id=user.id,
+        filename="singles-box.zip",
+        status="done",
+        total=FRESH,
+        processed=FRESH,
+        created_at=dt.datetime.now(dt.UTC) - dt.timedelta(minutes=20),
+    )
+    session.add_all([older, newer])
     session.commit()
 
     # Two scans left in the queue so the import screen has something to show,
     # the rest committed so inventory does — including a duplicate and a sale.
     for i, card in enumerate(cards):
         scan = db.Scan(
-            job_id=job.id,
+            # The freshest cards belong to the newer upload, so the queue opens
+            # on the batch that just landed.
+            job_id=newer.id if i < FRESH else older.id,
             user_id=user.id,
             filename=card["filename"],
             stored_path=card["stored_path"],
