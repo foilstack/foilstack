@@ -95,6 +95,10 @@ def _extended(product: dict, field: str) -> str | None:
 # out fine on their own, and listing them anyway would mean two places to
 # update the day a name changes.
 LABELS: dict[str, str] = {
+    # The accent is part of the name. Title-casing the slug got it nearly
+    # right, which is how "Pokemon" survived on the landing page and in the
+    # plugins table for as long as it did.
+    "pokemon": "Pokémon",
     "magic": "Magic: The Gathering",
     "yugioh": "Yu-Gi-Oh!",
     "onepiece": "One Piece",

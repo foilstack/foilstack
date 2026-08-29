@@ -5,20 +5,114 @@
 {% block screen %}
 <div class="bar">
   <h1>Plugins</h1>
-  <span class="bar-note">sources supply the catalogue · exporters write the file a marketplace accepts</span>
+  <span class="bar-note">sources supply the catalogue · enrichers recover its past · exporters write the file a marketplace accepts</span>
 </div>
 
 <div class="plug-pad">
+  {#
+    State first, manifest after. Everything below this panel is equally true of
+    an install that has never ingested a card, which is what made this screen a
+    slower way of reading `foilstack plugins`. This panel is the part that can
+    only be answered by looking at the database.
+  #}
   <div class="panel">
-    <div class="panel-title"><span>Sources</span></div>
+    <div class="panel-title">
+      <span>Catalogue</span>
+      <span class="panel-sub">what the installed plugins have actually fetched</span>
+    </div>
+    <div class="tile-grid">
+      <div class="tile">
+        <div class="k">encoder</div>
+        <div class="v {{ 'ok' if encoder else 'bad' }}">{{ 'ready' if encoder else 'unreachable' }}</div>
+        <div class="s">{{ encoder_url }}</div>
+      </div>
+      <div class="tile">
+        <div class="k">model</div>
+        <div class="v small">{{ encoder.get('model', embed_model) if encoder else embed_model }}</div>
+        <div class="s">{{ 'reported by the encoder' if encoder else 'configured, unverified' }}</div>
+      </div>
+      <div class="tile">
+        <div class="k">catalogue</div>
+        <div class="v">{{ "{:,}".format(catalog_cards) }}</div>
+        <div class="s">cards ingested</div>
+      </div>
+      <div class="tile">
+        <div class="k">encoded</div>
+        <div class="v {{ 'bad' if catalog_cards and not vector_count }}">{{ "{:,}".format(vector_count) }}</div>
+        <div class="s">{% if unencoded %}{{ "{:,}".format(unencoded) }} still to encode{% else %}every card searchable{% endif %}</div>
+      </div>
+    </div>
+
+    {% if catalogue %}
     <table class="dtable">
-      <thead><tr><th>PLUGIN</th><th>GAMES</th><th>INGEST</th></tr></thead>
+      <thead>
+        <tr>
+          <th>GAME</th><th>SOURCE</th>
+          <th class="r">CARDS</th><th class="r">ENCODED</th>
+          <th>PRICES</th><th>HISTORY</th><th class="ell"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in catalogue %}
+        <tr>
+          <td class="name"><b>{{ row.label }}</b></td>
+          <td class="muted">{{ row.source }}</td>
+          <td class="r">{{ "{:,}".format(row.cards) }}</td>
+          {# A game with cards and no vectors cannot be matched at all, and the
+             failure is silent at scan time — every photograph simply misses. #}
+          <td class="r {{ 'bad' if not row.encoded else ('neg' if row.encoded < row.cards) }}"
+              title="{{ row.game }}: {{ '{:,}'.format(row.cards - row.encoded) }} of {{ '{:,}'.format(row.cards) }} cards not encoded for {{ embed_model }}">
+            {{ "{:,}".format(row.encoded) }}
+          </td>
+          {# "never" is not a stale cache. TCGCSV mirrors the current day only,
+             so every day this has not run is a day of history that cannot be
+             bought back for any game but Magic. #}
+          {% if row.prices %}
+          <td class="muted" title="{{ row.prices.message }}">{{ row.prices.ago }}</td>
+          {% else %}
+          <td class="bad" title="no price sync has ever run for {{ row.game }}; these cards hold the prices they were ingested with">never</td>
+          {% endif %}
+          {% if row.backfill %}
+          <td class="muted" title="{{ row.backfill.source }}: {{ row.backfill.message }}{% if row.backfill.stamp %} (build {{ row.backfill.stamp }}){% endif %}">
+            {{ row.backfill.ago }}
+          </td>
+          {% elif row.enricher %}
+          <td class="muted" title="foilstack enrich --source {{ row.enricher }} --game {{ row.game }}">not run</td>
+          {% else %}
+          {# Not a job somebody forgot: no installed enricher publishes this
+             game's past, so there is nothing here to run. #}
+          <td class="faint" title="no installed enricher covers {{ row.game }}">—</td>
+          {% endif %}
+          <td class="ell"></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="note">
+      <b>Prices</b> is when the sync last ran, not when a price last moved — a run that
+      correctly changed nothing still counts. <b>History</b> is the backfill, which
+      only ever adds days a sync never recorded.
+    </p>
+    {% else %}
+    <div class="empty">
+      nothing ingested yet — run <code>{{ sources[0].command if sources else 'foilstack ingest' }}</code>, then <code>foilstack embed</code>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">
+      <span>Sources</span>
+      <span class="panel-sub">supply the catalogue: which cards exist and what they look like</span>
+    </div>
+    <table class="dtable">
+      <thead><tr><th>PLUGIN</th><th class="ell">GAMES</th><th>INGEST</th></tr></thead>
       <tbody>
         {% for p in sources %}
         <tr>
           <td class="name"><b>{{ p.name }}</b></td>
-          <td class="muted">{{ p.games | join(', ') }}</td>
-          <td><code>foilstack ingest --source {{ p.name }} --game pokemon</code></td>
+          <td class="muted ell" title="{{ p.games | join(', ') }}">{{ p.games | join(', ') }}</td>
+          <td><code>{{ p.command }}</code></td>
         </tr>
         {% endfor %}
       </tbody>
@@ -31,13 +125,52 @@
   </div>
 
   <div class="panel">
-    <div class="panel-title"><span>Exporters</span></div>
+    <div class="panel-title">
+      <span>Enrichers</span>
+      <span class="panel-sub">add to a catalogue somebody else ingested</span>
+    </div>
+    {% if enrichers %}
     <table class="dtable">
-      <thead><tr><th>PLUGIN</th><th class="r">COLUMNS</th><th>FILE</th><th></th></tr></thead>
+      <thead><tr><th>PLUGIN</th><th class="ell">GAMES</th><th>ADDS TO</th><th>BACKFILL</th></tr></thead>
+      <tbody>
+        {% for p in enrichers %}
+        <tr>
+          <td class="name"><b>{{ p.name }}</b></td>
+          <td class="muted ell" title="{{ p.games | join(', ') }}">{{ p.games | join(', ') }}</td>
+          <td class="muted">{{ p.matches_source }}</td>
+          <td><code>{{ p.command }}</code></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="note">
+      An enricher owns no rows. It joins onto cards a source already ingested, by
+      the upstream id that source recorded — so it names the one source it can
+      speak to, and the writer refuses any other. That is what lets MTGJSON in:
+      it publishes no card images and could never satisfy a source's contract,
+      but it holds three months of daily Magic prices this install would
+      otherwise have no way to learn. It is a repair, not a backup, and it may
+      only ever add a day a sync never recorded.
+    </p>
+    {% else %}
+    <div class="empty">no enrichment plugins installed</div>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">
+      <span>Exporters</span>
+      <span class="panel-sub">turn inventory into a file a marketplace accepts</span>
+    </div>
+    <table class="dtable">
+      <thead><tr><th class="ell">PLUGIN</th><th class="r">COLUMNS</th><th>FILE</th><th></th></tr></thead>
       <tbody>
         {% for spec in exporters %}
         <tr>
-          <td class="name"><b>{{ spec.label }}</b><div class="s" style="font-family: var(--mono); font-size: 10px; color: var(--muted)">{{ spec.description }}</div></td>
+          <td class="name ell">
+            <b>{{ spec.label }}</b>
+            <div class="sub" title="{{ spec.description }}">{{ spec.description }}</div>
+          </td>
           <td class="r">{{ spec.columns | length }}</td>
           <td class="muted">{{ spec.filename }}</td>
           <td><a class="btn" href="/export/{{ spec.name }}">Export</a></td>
@@ -48,42 +181,6 @@
     <p class="note">
       Exporters are TOML column mappings, not code. Adding a marketplace means
       writing a file anyone can read in ten seconds and be sure it does nothing else.
-    </p>
-  </div>
-
-  <div class="panel">
-    <div class="panel-title"><span>Image encoder</span></div>
-    {% if encoder %}
-    <div class="tile-grid">
-      <div class="tile">
-        <div class="k">status</div>
-        <div class="v" style="font-size: 20px; color: var(--green)">ready</div>
-        <div class="s">{{ encoder_url }}</div>
-      </div>
-      <div class="tile">
-        <div class="k">model</div>
-        <div class="v" style="font-size: 13px; font-weight: 500; margin-top: 10px">{{ encoder.get('model', 'unknown') }}</div>
-      </div>
-      <div class="tile">
-        <div class="k">catalogue</div>
-        <div class="v">{{ "{:,}".format(catalog_cards) }}</div>
-        <div class="s">cards ingested</div>
-      </div>
-      <div class="tile">
-        <div class="k">vectors</div>
-        <div class="v">{{ "{:,}".format(vector_count) }}</div>
-        <div class="s">reference images encoded</div>
-      </div>
-    </div>
-    {% else %}
-    <div class="empty">
-      no encoder reachable at <code>{{ encoder_url }}</code>. Matching will fail until it is running
-    </div>
-    {% endif %}
-    <p class="note">
-      Vectors from two different encoders are not comparable, and the failure is
-      silent, producing plausible matches that are simply wrong. If you change the model,
-      re-encode the catalogue.
     </p>
   </div>
 </div>

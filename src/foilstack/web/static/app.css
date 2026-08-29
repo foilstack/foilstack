@@ -996,6 +996,30 @@ tr.is-sold .rowname { color: var(--faint); }
 .plug-pad { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
 .panel .note { color: var(--muted); font-size: 12px; margin-top: 10px; line-height: 1.5; }
 .panel .dtable { margin-top: 2px; }
+.panel .tile-grid + .dtable { margin-top: 12px; }
+
+/* The plugins tables carry a cell that has no natural width limit — thirteen
+   game names, or an exporter's whole description — and `.dtable td` is
+   `nowrap`, so before these the table simply grew past its panel. At 1440,
+   which is the width the screenshots are taken at, the last column of two of
+   them sat off the side of the viewport: the Export buttons ended at x=1442
+   and the ingest command at x=1653. Nothing clipped and nothing wrapped,
+   because a table with no constrained cell has no slack to give. `.ell` is
+   the fix (see its note above); the sub-line needs its own ellipsis because
+   `text-overflow` applies to a box's own text, not to a child block's. */
+.dtable .sub {
+  font-family: var(--mono); font-size: 10px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* A figure that is a problem rather than a quantity. Cards with no vectors
+   cannot be matched at all and every scan of them silently misses; a price
+   sync that has never run is losing history permanently rather than serving
+   something stale. Both read as ordinary numbers in the column's muted grey. */
+.dtable .bad { color: var(--warn); }
+
+.tile .v.ok { font-size: 20px; color: var(--green); }
+.tile .v.bad { font-size: 20px; color: var(--warn); }
+.tile .v.small { font-size: 13px; font-weight: 500; margin-top: 10px; }
 code {
   font-family: var(--mono); font-size: 11px; background: var(--surface-3);
   border: 1px solid var(--rule-soft); border-radius: 3px; padding: 1px 5px;
