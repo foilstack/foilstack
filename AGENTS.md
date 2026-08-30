@@ -290,6 +290,36 @@ Two habits worth keeping:
   reason to say nothing about it. Three states, and they have to stay
   distinguishable — filled dark is the default, white is a deviation that is
   priced, warning colour is a finish with no printing behind it at all.
+* **A scan has three answers, and they are three columns.** `candidates` is
+  what the encoder saw in one image. `cohort_card_id` is what the rest of the
+  batch implies about it, when the seller ticked "batch is all one game/set" on
+  the import screen. `chosen_card_id` is a person saying they are holding the
+  card and it is this one. The queue prefers them in that order, backwards.
+  Folding the middle one into either neighbour was the first attempt and is
+  wrong both ways: reordering the candidates erases the ranking that is the
+  evidence for the move, and writing `chosen_card_id` tells the queue a human
+  decided something no human has looked at — which shows the "you picked this"
+  badge over nobody.
+
+  Two rules hold that pass together. **Nothing auto-accepts until the batch has
+  seen all of itself**, because accepting mid-batch and re-pointing afterwards
+  means writing inventory and taking it back, and a card that reached inventory
+  has been priced and exported against. And **a row the batch moved never
+  auto-accepts at all**, however well it scored: a guess about the neighbours
+  is a good reason to put a card in front of a person and a bad reason to skip
+  them. `rematch_scan` clears `cohort_card_id` for the same reason it keeps
+  `chosen_card_id` — the pick was made from a search result it is about to
+  replace.
+
+  The cohort is chosen by **presence, not first places**. Each scan gives each
+  game or set its own best score under it, once. Counting top matches is the
+  obvious rule and fails on the exact batch this is for: a Magic card reprinted
+  eight times scatters its first place across eight sets, so the set the seller
+  actually opened can win a fifth of them while appearing in nearly every
+  scan's candidate list. Counting every candidate instead fails the other way —
+  one scan of a common creature can put seven near-identical printings in one
+  core set and hand it the batch.
+
 * **Price history cannot be backfilled**, except for Magic and only ninety
   days of it. TCGCSV mirrors the current day only, so anything that stops
   `sync-prices` running costs history permanently — treat a broken sync as data

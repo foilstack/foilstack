@@ -13,6 +13,11 @@ The matcher itself is embeddings only. Reprints share artwork, so the vector
 gives a name you can trust and a printing you cannot — which is why the top
 match is presented next to its rivals rather than as an answer.
 
+There is a second pass over the batch when the seller has said the batch is
+one game or one set. Each scan is matched alone, but a stack of cards is not a
+set of unrelated images, and what the other four hundred scans agree on is
+evidence about this one. See `apply_cohort`.
+
 Everything written here carries the owner of the job that produced it. The
 catalogue is shared; scans and inventory are not.
 """
@@ -40,6 +45,13 @@ MAX_ENTRY_BYTES = 40 * 1024 * 1024
 MAX_IMAGES = int(os.getenv("FOILSTACK_MAX_IMAGES", "5000"))
 MAX_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
 CANDIDATE_COUNT = 5
+# How deep the search goes when the batch has been declared one game or one
+# set. Five is the right number to *show* — past that the runners-up are noise
+# a person has to read — but it is the wrong number to choose from: a Pokemon
+# scan that matched five Magic cards has no conforming runner-up in its top
+# five, and that is precisely the scan the setting exists to rescue. The extra
+# twenty cost nothing in the index and are never stored unless one is used.
+COHORT_CANDIDATE_COUNT = 25
 
 # How far two printings' prices may diverge before a match between them has to
 # be reviewed. 20% of the dearer one, and never mind a gap under a dollar —
@@ -195,6 +207,17 @@ async def run_import(job_id: int, archive_path: Path, settings: Settings) -> Non
             session.commit()
             return
 
+        # A batch declared one game or one set cannot decide anything until it
+        # has seen all of itself, so the auto-accept decision waits for the
+        # second pass and the hits every scan is holding are kept in memory
+        # until then. Held rather than stored: they are the working out, not
+        # the answer, and only the one that gets used is worth a row. Five
+        # thousand scans of twenty-five `(int, float)` pairs is a few megabytes
+        # for the life of one job.
+        pool: dict[int, list[tuple[int, float]]] | None = (
+            {} if (job.same_game or job.same_set) else None
+        )
+
         for path in files:
             try:
                 size = path.stat().st_size
@@ -210,7 +233,7 @@ async def run_import(job_id: int, archive_path: Path, settings: Settings) -> Non
             session.add(scan)
             session.commit()
             try:
-                await _match_one(session, scan, settings, job)
+                await _match_one(session, scan, settings, job, pool)
             except EmbedderError as exc:
                 scan.status = "error"
                 scan.error = str(exc)
@@ -221,6 +244,15 @@ async def run_import(job_id: int, archive_path: Path, settings: Settings) -> Non
             job.processed += 1
             session.commit()
             await asyncio.sleep(0)
+
+        if pool is not None:
+            # Its own status, because it is its own wait. On a large batch this
+            # is a pass over every scan after the progress bar has already
+            # reached the end, and a bar sitting full under the word "matching"
+            # reads as a job that has hung.
+            job.status = "grouping"
+            session.commit()
+            apply_cohort(session, job, pool, settings)
 
         job.status = "done"
         session.commit()
@@ -234,7 +266,13 @@ async def run_import(job_id: int, archive_path: Path, settings: Settings) -> Non
         archive_path.unlink(missing_ok=True)
 
 
-async def _match_one(session, scan, settings: Settings, job: db.ImportJob) -> None:
+async def _match_one(
+    session,
+    scan,
+    settings: Settings,
+    job: db.ImportJob,
+    pool: dict[int, list[tuple[int, float]]] | None = None,
+) -> None:
     path = scan_path(scan.stored_path, settings.scans_dir)
     if path is None:
         raise ImportError_(f"stored scan is missing: {scan.filename}")
@@ -242,7 +280,12 @@ async def _match_one(session, scan, settings: Settings, job: db.ImportJob) -> No
     # After encoding, never before: the model gets the full-resolution original,
     # and the browser gets something it can actually load.
     images.make_display_copy(path, settings.display_dir, scan.stored_path)
-    hits = search.search(session, vector, settings.embed_model, k=CANDIDATE_COUNT)
+    hits = search.search(
+        session,
+        vector,
+        settings.embed_model,
+        k=COHORT_CANDIDATE_COUNT if pool is not None else CANDIDATE_COUNT,
+    )
     if not hits:
         scan.status = "unmatched"
         return
@@ -254,31 +297,207 @@ async def _match_one(session, scan, settings: Settings, job: db.ImportJob) -> No
     # and the reference image are all on screen, so a wrong match reads as a
     # wrong match rather than as an answer.
     scan.best_score = hits[0][1]
-    for rank, (card_id, score) in enumerate(hits):
+    for rank, (card_id, score) in enumerate(hits[:CANDIDATE_COUNT]):
         session.add(db.Candidate(scan_id=scan.id, card_id=card_id, score=score, rank=rank))
 
+    if pool is not None:
+        # Nothing is accepted mid-batch when the batch gets a say. Auto-accepting
+        # here and re-pointing afterwards would mean writing inventory and then
+        # taking it back, and a card that reached inventory has already been
+        # priced, exported and possibly sold against.
+        pool[scan.id] = hits
+        scan.status = "pending"
+        return
+
     if _may_auto_accept(session, hits, settings, job.auto_accept):
-        scan.status = "confirmed"
-        scan.auto_accepted = 1
-        session.flush()
-        # The batch default, unless this card is only priced on the other side
-        # of the foil line — see `inventory.resolve_finish`. Nobody sees this
-        # row before it becomes inventory, so committing a finish the
-        # catalogue has no printing for would be a warning on the card page
-        # about a decision that was never made.
-        priced = inventory._prices_for(session, {hits[0][0]})
-        _add_to_inventory(
-            session,
-            scan,
-            hits[0][0],
-            job.default_condition or "NM",
-            job.user_id,
-            inventory.resolve_finish(
-                job.default_finish or "nonfoil", list(priced.get(hits[0][0], {}))
-            ),
-        )
+        _accept(session, scan, hits[0][0], job)
     else:
         scan.status = "pending"
+
+
+def _accept(session, scan, card_id: int, job: db.ImportJob) -> None:
+    """Confirm a scan nobody looked at, and put the card in inventory."""
+    scan.status = "confirmed"
+    scan.auto_accepted = 1
+    session.flush()
+    # The batch default, unless this card is only priced on the other side
+    # of the foil line — see `inventory.resolve_finish`. Nobody sees this
+    # row before it becomes inventory, so committing a finish the
+    # catalogue has no printing for would be a warning on the card page
+    # about a decision that was never made.
+    priced = inventory._prices_for(session, {card_id})
+    _add_to_inventory(
+        session,
+        scan,
+        card_id,
+        job.default_condition or "NM",
+        job.user_id,
+        inventory.resolve_finish(job.default_finish or "nonfoil", list(priced.get(card_id, {}))),
+    )
+
+
+def _cohort_key(card: db.Card, same_set: bool) -> tuple[str, ...]:
+    """What this card counts as, for a batch that claims to be one thing.
+
+    Always the game, and the set only when the seller asked for it — with the
+    game still in the tuple, because set names are not unique across games.
+    Half the catalogues here have something called "Promo", and a Magic promo
+    and a Pokemon promo are not the same cohort.
+    """
+    return (card.game, card.set_name or "") if same_set else (card.game,)
+
+
+def _cohort_votes(
+    pool: dict[int, list[tuple[int, float]]],
+    cards: dict[int, db.Card],
+    same_set: bool,
+) -> dict[tuple[str, ...], float]:
+    """Score every cohort the batch's matches touched.
+
+    Each scan gives each cohort **its best score under that cohort**, once —
+    not one vote per candidate. Counting candidates instead would let one large
+    set win on volume, because a scan of a common creature has eight near-
+    identical printings and seven of them can sit in one core set.
+
+    Deliberately not "the most common top match" either, which is the obvious
+    rule and fails on exactly the batch this is for. A Magic card reprinted
+    eight times has its top match scattered more or less at random across eight
+    sets, so the set the seller actually opened might win only a fifth of the
+    first places — while appearing somewhere in nearly every scan's candidate
+    list, which is the signal this counts.
+    """
+    votes: dict[tuple[str, ...], float] = {}
+    for hits in pool.values():
+        best: dict[tuple[str, ...], float] = {}
+        for card_id, score in hits:
+            card = cards.get(card_id)
+            if card is None:
+                continue
+            key = _cohort_key(card, same_set)
+            if score > best.get(key, -1.0):
+                best[key] = score
+        for key, score in best.items():
+            votes[key] = votes.get(key, 0.0) + score
+    return votes
+
+
+def apply_cohort(
+    session,
+    job: db.ImportJob,
+    pool: dict[int, list[tuple[int, float]]],
+    settings: Settings,
+) -> None:
+    """Second pass: hold the batch to the one game, or the one set, it mostly is.
+
+    A scan is matched alone, but it did not arrive alone. The seller ticking
+    "same game" or "same set" is asserting something about the physical stack
+    that no single photograph contains, and it is the assertion that turns the
+    other scans into evidence: if three hundred and eighty cards matched Base
+    Set and this one matched a Magic reprint of the same artwork, the odds are
+    not evenly split.
+
+    So: work out what the batch agrees on, then walk back through it. A scan
+    whose best match already belongs to that cohort is left exactly as it was
+    and decided on its own merits. A scan whose best match does not is moved to
+    its highest-scoring candidate that does — recorded in `cohort_card_id`,
+    which is a claim about the batch and not about the scan, and never
+    auto-accepted. A heuristic about the neighbours is a good reason to put a
+    card in front of a person and a bad reason to skip them.
+
+    A scan with nothing conforming anywhere in its candidates keeps the
+    encoder's answer and goes to review too, because the one thing that is
+    certain about it is that it contradicts the rest of the batch.
+    """
+    ids = {card_id for hits in pool.values() for card_id, _ in hits}
+    cards = _load_cards(session, ids)
+
+    votes = _cohort_votes(pool, cards, job.same_set)
+    if not votes:
+        return
+    # Ties broken by the cohort's own name so that two runs over the same batch
+    # settle the same way. A coin flip here is a batch that re-points one way
+    # today and the other way on a re-import, with no way to tell which.
+    cohort = max(votes, key=lambda k: (votes[k], k))
+
+    job.cohort_game = cohort[0]
+    job.cohort_set = cohort[1] if job.same_set else None
+
+    scans = {scan.id: scan for scan in job.scans}
+    moved = stranded = 0
+    for scan_id, hits in pool.items():
+        scan = scans.get(scan_id)
+        if scan is None or not hits:
+            continue
+
+        top = cards.get(hits[0][0])
+        if top is not None and _cohort_key(top, job.same_set) == cohort:
+            if _may_auto_accept(session, hits[:CANDIDATE_COUNT], settings, job.auto_accept):
+                _accept(session, scan, hits[0][0], job)
+            continue
+
+        pick = next(
+            (
+                (rank, card_id, score)
+                for rank, (card_id, score) in enumerate(hits)
+                if card_id in cards and _cohort_key(cards[card_id], job.same_set) == cohort
+            ),
+            None,
+        )
+        if pick is None:
+            stranded += 1
+            continue
+
+        rank, card_id, score = pick
+        scan.cohort_card_id = card_id
+        if rank >= CANDIDATE_COUNT:
+            # Only the top five are stored, so a pick from deeper in the search
+            # has no row yet and the queue would show a match with no score
+            # beside it and no way back to it. Written at its real rank rather
+            # than appended at five: the rank is what the encoder said, and
+            # "the batch had to reach past nineteen better-scoring cards for
+            # this" is the whole story of the row.
+            session.add(db.Candidate(scan_id=scan.id, card_id=card_id, score=score, rank=rank))
+        moved += 1
+
+    # Set before the commit, not after it. `run_import` happens to commit again
+    # on its way to "done", so writing this afterwards worked by luck — and the
+    # luck runs out the moment anything is added between the two.
+    job.message = _cohort_message(job, cohort, moved, stranded)
+    session.commit()
+
+
+def _load_cards(session, ids: set[int]) -> dict[int, db.Card]:
+    """Every candidate card in one batch's search results, by id.
+
+    Chunked because the set is unbounded in principle — five thousand scans of
+    twenty-five hits each — and a single `IN` with six figures of parameters is
+    how a query that works on a test archive falls over on a real one.
+    """
+    from sqlalchemy import select
+
+    cards: dict[int, db.Card] = {}
+    ordered = sorted(ids)
+    for start in range(0, len(ordered), 2000):
+        chunk = ordered[start : start + 2000]
+        for card in session.scalars(select(db.Card).where(db.Card.id.in_(chunk))):
+            cards[card.id] = card
+    return cards
+
+
+def _cohort_message(job: db.ImportJob, cohort: tuple[str, ...], moved: int, stranded: int) -> str:
+    """What the second pass did, in the words the import screen shows.
+
+    Said out loud rather than left to be noticed, because this is the one
+    setting that changes matches the encoder was confident about. A seller who
+    ticked the box on a genuinely mixed batch has to be able to see that from
+    the outside — the count of moved rows is the number that tells them.
+    """
+    what = "same set" if job.same_set else "same game"
+    label = " · ".join(part for part in cohort if part)
+    bits = [f"{what}: {label}", f"{moved} moved to it"]
+    if stranded:
+        bits.append(f"{stranded} with nothing in it to move to")
+    return " · ".join(bits)
 
 
 def _may_auto_accept(session, hits, settings: Settings, threshold: float | None = None) -> bool:
@@ -373,6 +592,13 @@ async def rematch_scan(session, scan, settings: Settings) -> bool:
     it is replaced, so a re-match against a bigger catalogue still improves the
     runners-up on offer; what it must not do is overwrite the answer a person
     already gave with a fresh guess.
+
+    `cohort_card_id` does *not* survive, and the difference is who made the
+    claim. A person's choice is about the card. The batch's is about a search
+    result, and this replaces that search result — so the pick is left pointing
+    into a ranking that no longer exists, chosen over runners-up that are gone.
+    The batch cannot be re-run for one scan, so the honest thing is to drop
+    back to what the new search says and let the queue ask.
     """
     if scan.status == "confirmed":
         return False
@@ -388,6 +614,7 @@ async def rematch_scan(session, scan, settings: Settings) -> bool:
 
     for candidate in list(scan.candidates):
         session.delete(candidate)
+    scan.cohort_card_id = None
     session.flush()
 
     if not hits:
