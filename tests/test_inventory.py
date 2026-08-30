@@ -158,6 +158,32 @@ def test_a_single_printing_serves_both_finishes():
     assert matching_printings("nonfoil", ["Foil"]) == ["Foil"]
 
 
+def test_priced_finishes_reports_what_the_catalogue_actually_has():
+    """More than a third of the catalogue has no foil printing at all, so
+    "which finishes are real for this card" is a question the screens have to
+    be able to ask before they offer both."""
+    from foilstack.inventory import priced_finishes
+
+    assert priced_finishes(["Normal"]) == {"nonfoil"}
+    assert priced_finishes(["Holofoil", "Reverse Holofoil"]) == {"foil"}
+    assert priced_finishes(["Normal", "Foil"]) == {"nonfoil", "foil"}
+    # Nothing known is not the same as nothing available.
+    assert priced_finishes([]) == set()
+
+
+def test_the_fallback_is_reported_not_just_taken():
+    """`matching_printings` crossing the foil line is the one path that prices
+    a card off the wrong side of the seller's own answer. The two functions
+    have to agree about when that happened, or the warning appears on the
+    wrong rows."""
+    from foilstack.inventory import matching_printings, priced_finishes
+
+    for finish, names in [("foil", ["Normal"]), ("nonfoil", ["Holofoil"])]:
+        picked = matching_printings(finish, names)
+        crossed = finish not in priced_finishes(names)
+        assert crossed and picked == names
+
+
 def test_ambiguous_foil_printings_price_high():
     """Base Set Blastoise is "1st Edition Holofoil" at $1300 and "Unlimited
     Holofoil" at $820. A seller who ticked "foil" has not said which.

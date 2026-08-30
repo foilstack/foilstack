@@ -88,10 +88,22 @@
     </div>
     {% endfor %}
 
+    {% if line.finish_unpriced %}
+    <p class="panel-note warn">
+      {{ line.finish_unpriced }} of {{ line.quantity }}
+      cop{{ 'y' if line.quantity == 1 else 'ies' }}
+      {{ 'is' if line.finish_unpriced == 1 else 'are' }} marked with a finish
+      the catalogue has no printing for, so
+      {{ 'it is' if line.finish_unpriced == 1 else 'they are' }} priced off the other
+      finish. The printing each fell back to is in the FINISH column.
+    </p>
+    {% endif %}
+
     {% if line.guessed %}
     <p class="panel-note warn">
       {{ line.guessed }} of {{ line.quantity }}
-      cop{{ 'y has' if line.guessed == 1 else 'ies have' }} no printing chosen,
+      cop{{ 'y' if line.quantity == 1 else 'ies' }}
+      {{ 'has' if line.guessed == 1 else 'have' }} no printing chosen,
       so {{ 'it is' if line.guessed == 1 else 'they are' }} priced as the dearest
       printing matching the finish. Open a copy and pick the one you hold.
     </p>
@@ -152,7 +164,8 @@
               <td>{{ c.condition }}</td>
               <td class="{{ 'foil-yes' if c.is_foil else 'muted' }}">
                 {{ c.sub_type or c.finish_label }}
-                {% if c.printing_guessed %}<span class="pill warn" title="No printing chosen, so it is priced as the dearest match">guessed</span>{% endif %}
+                {% if c.finish_unpriced %}<span class="pill warn" title="No {{ c.finish_label|lower }} printing is catalogued for this card, so it is priced as “{{ c.sub_type }}”">no {{ c.finish_label|lower }} price</span>
+                {% elif c.printing_guessed %}<span class="pill warn" title="No printing chosen, so it is priced as the dearest match">guessed</span>{% endif %}
               </td>
               <td class="r muted">{{ c.cost|money if c.cost is not none else '—' }}</td>
               <td>

@@ -96,6 +96,26 @@ def list_price(
 # Reverse Holofoil; everything else is the plain printing. Matching on the word
 # rather than an exhaustive list means a game we have not seen yet still lands
 # on the right side of the only distinction a seller can make in bulk.
+def finish_of(sub_type: str) -> str:
+    """Which side of the foil line a catalogue printing sits on.
+
+    The one place the word is tested, so "does this printing match" and "does
+    this card have this finish at all" cannot drift apart.
+    """
+    return "foil" if "foil" in sub_type.lower() else "nonfoil"
+
+
+def priced_finishes(names: list[str]) -> set[str]:
+    """The finishes the catalogue actually prices this card in.
+
+    Frequently one of the two. Better than a third of the cards here have no
+    foil printing and a fifth have nothing but foil printings, so a finish
+    control offering both without saying which is real is offering a choice
+    the catalogue cannot answer.
+    """
+    return {finish_of(n) for n in names}
+
+
 def matching_printings(finish: str, names: list[str]) -> list[str]:
     """The printings that count as this finish, in the order given.
 
@@ -103,9 +123,14 @@ def matching_printings(finish: str, names: list[str]) -> list[str]:
     single printing serves both answers, and pricing it at zero because the
     seller said "foil" would be worse than pricing it at the only price there
     is.
+
+    That fallback has to be *visible* where it happens. It is the one path
+    that prices a card off the wrong side of the only distinction the seller
+    was asked to make, and silently it reads as a confirmed price. Callers get
+    `finish_unpriced` on the row for exactly that.
     """
-    foils = [n for n in names if "foil" in n.lower()]
-    plain = [n for n in names if "foil" not in n.lower()]
+    foils = [n for n in names if finish_of(n) == "foil"]
+    plain = [n for n in names if finish_of(n) == "nonfoil"]
     if finish == "foil":
         return foils or plain
     return plain or foils
@@ -203,6 +228,7 @@ def items(
         # by a multiple, and always wrong in the direction that loses money.
         by_sub = prices.get(card.id, {})
         sub, declared = resolve_printing(item.sub_type, item.finish, by_sub)
+        available = priced_finishes(list(by_sub))
         row = by_sub.get(sub) if sub else None
         market = row.market if row and row.market is not None else card.market
         low = row.low if row else None
@@ -247,6 +273,17 @@ def items(
                 # not an ambiguity, and flagging it would cry wolf on almost
                 # every card in the catalogue.
                 "printing_guessed": bool(sub) and not declared and len(by_sub) > 1,
+                # Which finishes the catalogue prices this card in, so the
+                # screens can mark the one it does not rather than offering
+                # both as if they were equally real.
+                "finishes_priced": sorted(available),
+                # The seller's finish has no printing behind it, so the price
+                # beside it came off the other side of the foil line. Not
+                # conditional on `printing_guessed`: that one stays quiet on a
+                # single-printing card, which is precisely the shape this is —
+                # one "Normal" row under a chip reading "Foil", with nothing
+                # on screen to say the number is the non-foil one.
+                "finish_unpriced": bool(by_sub) and item.finish not in available,
                 # Every printing we hold a price for, so the card page can offer
                 # them and say what it did not pick.
                 "printings": [
@@ -358,6 +395,7 @@ def groups(
         )
         line["printings"] = copies[0]["printings"]
         line["guessed"] = sum(1 for c in copies if c["printing_guessed"])
+        line["finish_unpriced"] = sum(1 for c in copies if c["finish_unpriced"])
         line["printing_label"] = _summarise([c["sub_type"] or c["finish_label"] for c in copies])
         channels = sorted({c["listed_channels"] for c in copies if c["listed_channels"]})
         line["listed_label"] = ", ".join(channels) if channels else "—"
