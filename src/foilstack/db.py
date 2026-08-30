@@ -262,6 +262,18 @@ class ImportJob(Base):
     auto_accept: Mapped[float | None] = mapped_column(Float)
     default_condition: Mapped[str] = mapped_column(String(16), default="NM")
     default_finish: Mapped[str] = mapped_column(String(16), default="nonfoil")
+    # "Every card in this batch is from one game" / "…from one set". An
+    # assertion the seller makes about the physical stack, which the matcher
+    # cannot make for itself: nothing in a photograph says whether the pile it
+    # came from was a booster box or a shoebox. See `importing.apply_cohort`.
+    same_game: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    same_set: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # What that assertion resolved to, once the batch had been matched. Kept
+    # for the same reason `auto_accept` is: "why is this scan pointing at a
+    # card the encoder ranked fourth" is unanswerable without it, and the
+    # answer stops existing the moment the next import overwrites it.
+    cohort_game: Mapped[str | None] = mapped_column(Text)
+    cohort_set: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -322,13 +334,29 @@ class Scan(Base):
     # choice pointing at a card that no longer exists should fall back to the
     # encoder's guesses, not break the queue.
     chosen_card_id: Mapped[int | None] = mapped_column(ForeignKey("cards.id", ondelete="SET NULL"))
+    # The card the batch put here, when the encoder's first answer came from
+    # outside the game or set the rest of the batch agreed on.
+    #
+    # A third column rather than a reuse of either of the other two, because it
+    # is a third kind of claim. `candidates` is what the encoder saw in this
+    # one image; `chosen_card_id` is what a person holding the card says it is;
+    # this is neither — it is what the other four hundred scans imply about
+    # this one. Folding it into `chosen_card_id` would tell the queue a human
+    # had decided something no human has looked at, and reordering the
+    # candidates would erase the ranking that is the evidence for the move.
+    #
+    # `SET NULL` on delete for the same reason as above: a re-ingested
+    # catalogue can drop the row, and that has to fall back to the encoder's
+    # guesses rather than break the queue.
+    cohort_card_id: Mapped[int | None] = mapped_column(ForeignKey("cards.id", ondelete="SET NULL"))
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
     job: Mapped[ImportJob] = relationship(back_populates="scans")
-    chosen_card: Mapped[Card | None] = relationship()
+    chosen_card: Mapped[Card | None] = relationship(foreign_keys=[chosen_card_id])
+    cohort_card: Mapped[Card | None] = relationship(foreign_keys=[cohort_card_id])
     candidates: Mapped[list[Candidate]] = relationship(
         back_populates="scan",
         cascade="all, delete-orphan",

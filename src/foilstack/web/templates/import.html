@@ -92,6 +92,22 @@
             {% endfor %}
           </div>
         </div>
+        <div>
+          {# Off by default, and it has to stay that way: this is the only
+             setting on the screen that overrules a match the encoder was sure
+             about, and a batch that is not really one set is worse off with it
+             on. The seller is asserting something about the pile in their
+             hand, so it is theirs to tick.
+
+             The label is not "Batch is all one…" — an ellipsis set in the same
+             uppercase mono as every other label on the panel reads as a
+             truncated string, and sends the reader looking for the rest. #}
+          <div class="field-label">Batch is all one</div>
+          <div class="chip-set" id="cohort-set">
+            <button class="chip" type="button" data-cohort="game" aria-pressed="false">Game</button>
+            <button class="chip" type="button" data-cohort="set" aria-pressed="false">Set</button>
+          </div>
+        </div>
       </div>
       <details class="why">
         <summary>Why finish and auto-accept work this way</summary>
@@ -114,6 +130,19 @@
           Reprints share artwork, so a high score on its own proves nothing. The
           threshold is saved with each import, so you can always see later why a
           scan was accepted.
+        </p>
+        <p class="setting-note">
+          <b>All one game or set</b> is worth ticking when the batch really is —
+          a booster box, or one binder page. Every card is matched on its own
+          first; then the game or set that most of them agree on is worked out,
+          and any card that landed outside it is moved to its best match inside
+          it. A card moved that way always goes to the queue for you to look at,
+          however well it scored.
+        </p>
+        <p class="setting-note">
+          Leave it off for a mixed pile. It decides the game or set by majority,
+          so on a batch that is genuinely three games it will pull two of them
+          towards the third.
         </p>
       </details>
       <div class="matcher">
@@ -186,6 +215,7 @@
             <time data-local datetime="{{ g.at.isoformat() }}">{{ g.at.strftime('%b %d %H:%M') }}</time>
             · {{ g.rows|length }} {{ 'card' if g.rows|length == 1 else 'cards' }}
             {%- if g.value %} · {{ g.value|money }}{% endif %}
+            {%- if g.cohort %} · {{ g.cohort }}{% endif %}
           </span>
         </summary>
       {% for r in g.rows %}
@@ -214,11 +244,15 @@
                control beside a deliberate choice is a trap. The panel behind
                "wrong card?" still lists every candidate, and picking there
                does not commit. #}
-            {% if r.needs_review and r.alternates and not r.chosen %}
+            {% if r.needs_review and r.alternates and not r.chosen and not r.cohort %}
             <button class="qalt-swap" type="button" data-alt="{{ r.alternates[0].card_id }}">
               also matched: {{ r.alternates[0].name }}{% if r.alternates[0].variant %} ({{ r.alternates[0].variant }}){% endif %} {{ r.alternates[0].pct }}
             </button>
-            {% else %}<span class="qalt-note">{{ r.alt }}</span>{% endif %}
+            {# Titled because the line is ellipsised at the pane's width, and
+               what falls off the end is the tail — which on a row the batch
+               moved is the match it was moved off, the only part a reader
+               cannot get from anywhere else on the screen. #}
+            {% else %}<span class="qalt-note" {% if r.alt %}title="{{ r.alt }}"{% endif %}>{{ r.alt }}</span>{% endif %}
             {% if r.needs_review %}
             <button class="qalt-fix" type="button" data-fix>wrong card?</button>
             {% endif %}
@@ -280,7 +314,9 @@
 
 /* ---------- import pane ---------- */
 const drop = $('#drop'), fileInput = $('#file'), chip = $('#filechip');
-let chosen = null, settings = { cond: 'NM', thr: {{ auto_accept }}, finish: 'nonfoil' };
+let chosen = null, settings = {
+  cond: 'NM', thr: {{ auto_accept }}, finish: 'nonfoil', sameGame: false, sameSet: false
+};
 
 const ZIP_RE = /\.zip$/i, IMAGE_RE = /\.(jpe?g|png|tiff?|webp)$/i;
 const MB = 1048576;
@@ -343,6 +379,34 @@ function chipSet(root, key, cast) {
 chipSet($('#cond-set'), 'cond', String);
 chipSet($('#thr-set'), 'thr', parseFloat);
 chipSet($('#finish-set'), 'finish', String);
+
+/* Not `chipSet`. Those are radio groups, where exactly one chip is on and
+   clicking a second moves the answer; these are two toggles that can both be
+   off — which is the default, and the state that leaves matching alone.
+
+   They are not independent either. A set belongs to one game, so ticking Set
+   ticks Game, and unticking Game unticks Set. The server widens the same pair
+   the same way, because a client that skipped this still has to mean
+   something. */
+function paintCohort() {
+  $$('button', $('#cohort-set')).forEach(b => {
+    const on = b.dataset.cohort === 'set' ? settings.sameSet : settings.sameGame;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+$$('button', $('#cohort-set')).forEach(b => b.addEventListener('click', () => {
+  const key = b.dataset.cohort === 'set' ? 'sameSet' : 'sameGame';
+  settings[key] = !settings[key];
+  // Conditioned on which chip was clicked, not on the resulting pair. Written
+  // as two unconditional repairs — "if Set, then Game" and "if not Game, then
+  // not Set" — unticking Game while Set was on put Game straight back, and the
+  // click did nothing at all. Both directions have to follow the click: Set on
+  // turns Game on, Game off turns Set off.
+  if (key === 'sameSet' && settings.sameSet) settings.sameGame = true;
+  if (key === 'sameGame' && !settings.sameGame) settings.sameSet = false;
+  paintCohort();
+}));
 
 /* The bar runs three times over one import: it fills as the archive goes up,
    sweeps while the archive is opened and nobody yet knows how many scans are
@@ -408,6 +472,8 @@ $('#go').addEventListener('click', async () => {
   body.append('auto_accept', settings.thr);
   body.append('default_condition', settings.cond);
   body.append('default_finish', settings.finish);
+  body.append('same_game', settings.sameGame);
+  body.append('same_set', settings.sameSet);
 
   $('#stage').textContent = 'uploading';
   setBar(0);
@@ -428,7 +494,7 @@ $('#go').addEventListener('click', async () => {
   poll(JSON.parse(xhr.responseText).job_id);
 });
 
-const STAGES = { pending: 'unpacking scans', matching: 'matching against catalogue', done: 'done', failed: 'failed' };
+const STAGES = { pending: 'unpacking scans', matching: 'matching against catalogue', grouping: 'holding the batch together', done: 'done', failed: 'failed' };
 async function poll(id) {
   const job = await (await fetch('/api/jobs/' + id)).json();
   // A `total` of zero is not zero scans, it is an archive nobody has opened
@@ -437,7 +503,10 @@ async function poll(id) {
   $('#t-scans').textContent = job.total || '—';
   $('#t-processed').textContent = job.processed;
   if (job.status === 'failed') { fail('failed — ' + (job.message || '')); return; }
-  setBar(job.total ? Math.round(100 * job.processed / job.total) : null);
+  // Indeterminate again for the second pass. Every scan has been processed by
+  // then, so the fraction is stuck at 100% while the job is still working —
+  // a full bar under a moving label is the shape of something that has hung.
+  setBar(job.status === 'grouping' ? null : job.total ? Math.round(100 * job.processed / job.total) : null);
   $('#stage').textContent = STAGES[job.status] || job.status;
   if (job.status === 'done') { location.href = '/app?filter=review'; return; }
   setTimeout(() => poll(id), 700);

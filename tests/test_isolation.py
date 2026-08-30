@@ -377,6 +377,162 @@ def test_a_chosen_card_survives_a_reload(app_and_data):
     session.close()
 
 
+def test_the_panel_offers_the_encoders_guess_back_after_a_correction(app_and_data):
+    """Correcting a row must not be a one-way door.
+
+    "Wrong card?" used to drop rank zero from its list unconditionally, which
+    is right only while rank zero is what the row is showing. Once a person has
+    picked something else — or the batch has moved the row — the encoder's
+    guess is a runner-up like any other, and leaving it out meant a mis-click
+    could only be undone by discarding the scan.
+
+    On its own account and its own scan: the shared fixture's row is read by a
+    dozen tests several hundred lines away.
+    """
+    from fastapi.testclient import TestClient
+
+    from foilstack import db
+    from foilstack.web import auth
+
+    app, _ = app_and_data
+    session = db.session()
+    user = db.User(
+        email="panel@example.com",
+        password_hash=auth.hash_password("panel-long-password"),
+    )
+    guess = db.Card(source="t", source_id="t:guess", name="Encoder Guess", game="mtg", market=2.0)
+    picked = db.Card(
+        source="t", source_id="t:picked", name="Picked Instead", game="mtg", market=3.0
+    )
+    session.add_all([user, guess, picked])
+    session.commit()
+    job = db.ImportJob(user_id=user.id, filename="p.zip", status="done", total=1, processed=1)
+    session.add(job)
+    session.commit()
+    scan = db.Scan(
+        job_id=job.id,
+        user_id=user.id,
+        filename="p.jpg",
+        stored_path=f"{job.id}/p.jpg",
+        status="pending",
+    )
+    session.add(scan)
+    session.commit()
+    session.add_all(
+        [
+            db.Candidate(scan_id=scan.id, card_id=guess.id, score=0.97, rank=0),
+            db.Candidate(scan_id=scan.id, card_id=picked.id, score=0.91, rank=1),
+        ]
+    )
+    session.commit()
+    scan_id = scan.id
+    session.close()
+
+    client = TestClient(app)
+    client.post("/login", data={"email": "panel@example.com", "password": "panel-long-password"})
+
+    # On what is offered to click, not on the names: both names are on this
+    # panel either way, because the shown card's name is also what seeds the
+    # search box.
+    guess_id, picked_id = guess.id, picked.id
+
+    # Before the correction the panel offers the runner-up and not the guess,
+    # because the guess is what the row is showing.
+    panel = client.get(f"/api/scans/{scan_id}/match-panel").text
+    assert f'data-pick="{picked_id}"' in panel
+    assert f'data-pick="{guess_id}"' not in panel
+
+    client.post(f"/api/scans/{scan_id}/choose", data={"card_id": picked_id})
+
+    # After it, the two swap places for exactly the same reason.
+    panel = client.get(f"/api/scans/{scan_id}/match-panel").text
+    assert f'data-pick="{guess_id}"' in panel
+    assert f'data-pick="{picked_id}"' not in panel
+
+
+def test_a_batch_moved_row_shows_the_match_it_was_moved_off(app_and_data):
+    """The queue's account of why a row is not pointing where the encoder said.
+
+    Read through the page rather than the column: the row is the whole point of
+    recording `cohort_card_id` separately, and a value stored but not rendered
+    would pass a column assertion and show the seller nothing.
+    """
+    from fastapi.testclient import TestClient
+
+    from foilstack import db
+    from foilstack.web import auth
+
+    app, _ = app_and_data
+    session = db.session()
+    user = db.User(
+        email="batch@example.com",
+        password_hash=auth.hash_password("batch-long-password"),
+    )
+    stray = db.Card(
+        source="t",
+        source_id="t:stray",
+        name="Stray Match",
+        game="pokemon",
+        set_name="Jungle",
+        market=2.0,
+    )
+    inset = db.Card(
+        source="t",
+        source_id="t:inset",
+        name="In Set",
+        game="pokemon",
+        set_name="Base Set",
+        market=3.0,
+    )
+    session.add_all([user, stray, inset])
+    session.commit()
+    job = db.ImportJob(
+        user_id=user.id,
+        filename="b.zip",
+        status="done",
+        total=1,
+        processed=1,
+        same_game=True,
+        same_set=True,
+        cohort_game="pokemon",
+        cohort_set="Base Set",
+    )
+    session.add(job)
+    session.commit()
+    scan = db.Scan(
+        job_id=job.id,
+        user_id=user.id,
+        filename="b.jpg",
+        stored_path=f"{job.id}/b.jpg",
+        status="pending",
+        cohort_card_id=inset.id,
+    )
+    session.add(scan)
+    session.commit()
+    session.add_all(
+        [
+            db.Candidate(scan_id=scan.id, card_id=stray.id, score=0.97, rank=0),
+            db.Candidate(scan_id=scan.id, card_id=inset.id, score=0.88, rank=1),
+        ]
+    )
+    session.commit()
+    scan_id, inset_id = scan.id, inset.id
+    session.close()
+
+    client = TestClient(app)
+    client.post("/login", data={"email": "batch@example.com", "password": "batch-long-password"})
+    queue = client.get("/app").text
+
+    assert f'data-scan="{scan_id}" data-card="{inset_id}"' in queue
+    assert "moved to the batch" in queue
+    assert "encoder said: Stray Match 97%" in queue
+    # The cohort the batch settled on, said once on the section rather than on
+    # every row inside it.
+    assert "batch is pokemon · Base Set" in queue
+    # And the score under the bar is the moved-to card's, not rank zero's.
+    assert "88% match" in queue
+
+
 def test_stranger_cannot_choose_a_card_for_someone_elses_scan(stranger, app_and_data):
     _, ids = app_and_data
     r = stranger.post(f"/api/scans/{ids['scan']}/choose", data={"card_id": ids["card"]})

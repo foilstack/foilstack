@@ -67,6 +67,18 @@ def _card_meta(card) -> str:
     )
 
 
+def _cohort_label(job: db.ImportJob) -> str:
+    """What a job's batch settled on, for a row that had to be moved to it.
+
+    Reads off the job rather than being recomputed, so the queue and the import
+    screen's status tooltip cannot disagree — and so the label survives the
+    next import, which will settle on something else.
+    """
+    parts = [job.cohort_game or "", (job.cohort_set or "") if job.same_set else ""]
+    label = " · ".join(part for part in parts if part)
+    return f"batch is {label}" if label else "moved to match the batch"
+
+
 def _queue_rows(session, user_id: int) -> list[dict]:
     """The match queue: scans still waiting on a decision.
 
@@ -97,7 +109,8 @@ def _queue_rows(session, user_id: int) -> list[dict]:
     priced = inventory._prices_for(
         session,
         {c.card_id for s in scans for c in s.candidates}
-        | {s.chosen_card_id for s in scans if s.chosen_card_id},
+        | {s.chosen_card_id for s in scans if s.chosen_card_id}
+        | {s.cohort_card_id for s in scans if s.cohort_card_id},
     )
     rows = []
     for scan in scans:
@@ -122,12 +135,14 @@ def _queue_rows(session, user_id: int) -> list[dict]:
             # means something.
             alt = "low confidence. check the printing before committing"
 
-        # A person's choice outranks the encoder's ranking, and survives a
-        # reload because it is a column rather than a state the browser is
-        # holding. `chosen_card` may be None despite an id if the catalogue
-        # was re-ingested underneath it, which falls back to the guesses.
+        # Three claims about one scan, in order of who made them: a person, then
+        # the batch, then the encoder. Each survives a reload because each is a
+        # column rather than a state the browser is holding, and either card may
+        # be None despite an id if the catalogue was re-ingested underneath it —
+        # which falls back to the next claim down.
         chosen = scan.chosen_card if scan.chosen_card_id else None
-        card = chosen or (top.card if top else None)
+        cohort = scan.cohort_card if (chosen is None and scan.cohort_card_id) else None
+        card = chosen or cohort or (top.card if top else None)
         if chosen is not None:
             # What was overruled, kept in view. Useful when a seller returns to
             # a row later and wants to know whether they changed it on purpose.
@@ -136,6 +151,16 @@ def _queue_rows(session, user_id: int) -> list[dict]:
                 if top is not None and top.card_id != chosen.id
                 else ""
             )
+        elif cohort is not None:
+            # Which batch, not what the batch is: the section heading above
+            # this row already names the cohort, and repeating it here spent
+            # the first thirty characters of a line that gets ellipsised
+            # saying what the reader had just read — pushing the one thing
+            # only this row knows, the match it was moved off, off the end.
+            alt = "moved to the batch"
+            if top is not None and top.card_id != cohort.id:
+                alt += f" · encoder said: {top.card.name} {top.score * 100:.0f}%"
+        shown = next((c for c in scan.candidates if card and c.card_id == card.id), None)
         prices = _price_map(priced.get(card.id, {})) if card else {}
         default_finish = scan.job.default_finish or "nonfoil"
         rows.append(
@@ -153,8 +178,15 @@ def _queue_rows(session, user_id: int) -> list[dict]:
                 # loose batch is called — so the section heading needs the
                 # time to tell them apart.
                 "job_at": scan.job.created_at,
+                "job_cohort": _cohort_label(scan.job) if scan.job.cohort_game else "",
                 "needs_review": needs_review,
                 "chosen": chosen is not None,
+                # Not folded into `chosen`. The two look alike on the row — both
+                # overrule the encoder's ranking and both suppress the one-click
+                # swap — but only one of them is a person, and the badge that
+                # says "you picked this card" must not appear over a decision
+                # nobody made.
+                "cohort": cohort is not None,
                 "card_id": card.id if card else None,
                 "name": card.name if card else "Unidentified",
                 "image_url": card.image_url if card else None,
@@ -165,8 +197,15 @@ def _queue_rows(session, user_id: int) -> list[dict]:
                 "prices": prices,
                 "meta": _card_meta(card) if card else scan.filename,
                 "alt": alt,
-                "score": top.score if top else 0.0,
-                "pct": f"{(top.score if top else 0) * 100:.0f}%",
+                # The score of the card this row is *showing*, which is not
+                # always the encoder's best: a row the batch moved is pointing
+                # at a candidate further down the list, and captioning it with
+                # rank zero's score would claim a confidence for a card that
+                # never earned it. Falls back to the top score when the shown
+                # card has no candidate at all, which is a card somebody found
+                # by search rather than one the encoder proposed.
+                "score": shown.score if shown else (top.score if top else 0.0),
+                "pct": f"{(shown.score if shown else (top.score if top else 0)) * 100:.0f}%",
                 "ambiguous": card is not None
                 and len([n for n in priced.get(card.id, {}) if "foil" in n.lower()]) > 1,
                 # Every runner-up, not just the first. The encoder stores five
@@ -182,10 +221,15 @@ def _queue_rows(session, user_id: int) -> list[dict]:
                         "game": c.card.game,
                         "pct": f"{c.score * 100:.0f}%",
                     }
-                    # Once a person has chosen, the encoder's top guess is a
-                    # runner-up like any other — it has to stay reachable, or
-                    # correcting a good match by mistake is a one-way door.
-                    for c in (scan.candidates if chosen else scan.candidates[1:])
+                    # What comes out of the list is whatever the row is
+                    # already showing — usually rank zero, but the chosen card
+                    # or the one the batch reached down for when there is one.
+                    # Everything else stays, including the encoder's top guess
+                    # once something has overruled it: it has to remain
+                    # reachable, or correcting a good match by mistake is a
+                    # one-way door.
+                    for c in scan.candidates
+                    if c is not shown
                 ],
                 # What the top match calls itself, as the opening query for the
                 # search box. A wrong match is usually wrong about the printing
@@ -270,6 +314,11 @@ def _group_rows(rows: list[dict]) -> list[dict]:
                 "job_id": row["job_id"],
                 "filename": row["job_filename"],
                 "at": row["job_at"],
+                # What the batch was held to, on the heading of the batch it
+                # was held to. A rule applied to every row in a section is a
+                # property of the section, and repeating it on four hundred
+                # rows would say it four hundred times and explain it none.
+                "cohort": row["job_cohort"],
                 "rows": [],
                 "value": 0.0,
             }
@@ -382,6 +431,8 @@ async def api_import(
     auto_accept: float = Form(None),
     default_condition: str = Form("NM"),
     default_finish: str = Form("nonfoil"),
+    same_game: bool = Form(False),
+    same_set: bool = Form(False),
     session=Depends(db_session),
     user: db.User = Depends(api_owner),
     settings: Settings = Depends(settings_dep),
@@ -393,6 +444,11 @@ async def api_import(
         raise HTTPException(400, "unknown condition")
     if default_finish not in inventory.FINISHES:
         raise HTTPException(400, "unknown finish")
+    # A set belongs to exactly one game, so "same set" already says "same
+    # game" and the pair `(false, true)` describes nothing. Widened rather
+    # than rejected: the browser ties the two checkboxes together, and a
+    # client that did not is asking for the stricter of the two.
+    same_game = same_game or same_set
 
     # Either one archive, or loose images that get packed into one below.
     # Anything else — two archives, or an archive alongside images — is a
@@ -475,6 +531,8 @@ async def api_import(
         auto_accept=auto_accept,
         default_condition=default_condition,
         default_finish=default_finish,
+        same_game=same_game,
+        same_set=same_set,
     )
     session.add(job)
     session.commit()
@@ -520,7 +578,21 @@ def api_match_panel(
     scan = session.get(db.Scan, scan_id)
     if scan is None or scan.user_id != user.id:
         raise HTTPException(404, "no such scan")
-    top = scan.candidates[0].card if scan.candidates else None
+
+    # What comes out of the list is whatever the row is *showing*, which is not
+    # always rank zero: a row a person corrected, or one the batch moved, is
+    # pointing somewhere else, and dropping rank zero regardless both offers
+    # the current answer back as an alternative to itself and takes away the
+    # only route back to the encoder's. The queue's inline runners-up already
+    # work this way; these two lists have to agree, or "wrong card?" opens on a
+    # different set of options than the row it opened from.
+    shown_id = scan.chosen_card_id or scan.cohort_card_id
+    if shown_id is None:
+        shown_id = scan.candidates[0].card_id if scan.candidates else None
+    shown = next(
+        (c.card for c in scan.candidates if c.card_id == shown_id),
+        scan.chosen_card if scan.chosen_card_id else None,
+    )
     return templates.TemplateResponse(
         request,
         "_match_panel.html",
@@ -535,15 +607,16 @@ def api_match_panel(
                     "number": c.card.number or "",
                     "note": f"{c.score * 100:.0f}%",
                 }
-                for c in scan.candidates[1:]
+                for c in scan.candidates
+                if c.card_id != shown_id
             ],
             "empty": "",
             "games": search.games(session),
-            # The search starts on the top match's name and game rather than
+            # The search starts on the shown card's name and game rather than
             # empty. A wrong match is usually wrong about the printing, not the
             # name, so this opens one click from the answer.
-            "query": top.name if top else "",
-            "game": top.game if top else "",
+            "query": shown.name if shown else "",
+            "game": shown.game if shown else "",
         },
     )
 
