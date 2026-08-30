@@ -268,6 +268,28 @@ Two habits worth keeping:
   coarse one drives bulk entry and the fallback guess; the precise one, once a
   person sets it, is what pricing uses. Anything that drops `sub_type` on an
   edit silently restores a guess the seller had already corrected.
+* **A batch default may not answer for a card that has only one answer.**
+  More than a third of the catalogue has no foil printing and a fifth has
+  nothing else, so a batch imported as non-foil always contains cards that
+  exist only as foil. `inventory.resolve_finish` drops the default on those and
+  takes the match's side of the line; the queue and the auto-accept path both
+  go through it, and `import.html` repeats the rule in JavaScript for rows
+  re-pointed after load — the two have to agree or a correction moves a row
+  somewhere a reload puts back. It used to be flagged instead, chip and price
+  in a warning colour, which asked the seller to click away the one thing the
+  catalogue was certain about. The warning still fires, and now only where it
+  means something: a finish somebody set by hand that has no printing behind
+  it. Resolving is only for where there is exactly one honest answer — priced
+  both ways, or not priced at all, and the default stands.
+
+  The queue's finish chip is filled when the row is showing **what the import
+  asked for**, not when it is showing what it was seeded with. So a resolved
+  row reads as a plain white chip: it still stands out, because departing from
+  the seller's own answer is exactly what is worth a second look, and hiding
+  that because the departure was automatic would make the reason for it the
+  reason to say nothing about it. Three states, and they have to stay
+  distinguishable — filled dark is the default, white is a deviation that is
+  priced, warning colour is a finish with no printing behind it at all.
 * **Price history cannot be backfilled**, except for Magic and only ninety
   days of it. TCGCSV mirrors the current day only, so anything that stops
   `sync-prices` running costs history permanently — treat a broken sync as data

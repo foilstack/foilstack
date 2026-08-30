@@ -136,6 +136,8 @@ def _queue_rows(session, user_id: int) -> list[dict]:
                 if top is not None and top.card_id != chosen.id
                 else ""
             )
+        prices = _price_map(priced.get(card.id, {})) if card else {}
+        default_finish = scan.job.default_finish or "nonfoil"
         rows.append(
             {
                 "scan_id": scan.id,
@@ -160,7 +162,7 @@ def _queue_rows(session, user_id: int) -> list[dict]:
                 # What this card costs in each printing, so the queue can show the
                 # price for the finish that is actually selected. Before this the
                 # row showed the plain printing's price whatever the toggle said.
-                "prices": _price_map(priced.get(card.id, {})) if card else {},
+                "prices": prices,
                 "meta": _card_meta(card) if card else scan.filename,
                 "alt": alt,
                 "score": top.score if top else 0.0,
@@ -201,7 +203,18 @@ def _queue_rows(session, user_id: int) -> list[dict]:
                 # what gets committed, so a default that is right for most of
                 # a batch costs nothing on the cards it is wrong for.
                 "condition": scan.job.default_condition or "NM",
-                "finish": scan.job.default_finish or "nonfoil",
+                # The batch's answer, and this row's. They differ when the
+                # card the scan matched is priced on one side of the foil
+                # line only: the default is abandoned rather than flagged,
+                # because there is no other honest finish for that card. See
+                # `inventory.resolve_finish`.
+                #
+                # Both are on the row because the queue needs them both — the
+                # default is what a re-pointed row re-resolves against, and a
+                # card corrected from a foil-only match to an ordinary one
+                # should go back to what the batch asked for.
+                "default_finish": default_finish,
+                "finish": inventory.resolve_finish(default_finish, list(prices)),
             }
         )
 

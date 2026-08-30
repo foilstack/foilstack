@@ -798,6 +798,95 @@ def test_committing_reports_how_many_need_a_printing(app_and_data):
     assert "Ambiguous" in page
 
 
+def test_the_queue_seeds_a_foil_only_card_as_foil(app_and_data):
+    """A batch imported as non-foil still contains cards the catalogue only
+    prices as foil. The row starts on foil rather than on the batch's answer
+    wearing a warning, because the default was never a decision about that
+    card — and the batch default stays on the row so a corrected match can be
+    resolved again."""
+    from sqlalchemy import select as sa_select
+
+    from foilstack import db
+    from foilstack.web.routes.scans import _queue_rows
+
+    session = db.session()
+    owner = session.scalars(sa_select(db.User).where(db.User.email == "owner@example.com")).one()
+    card = db.Card(source="t", source_id="t:foilonly", name="Foil Only", game="mtg", market=9.0)
+    session.add(card)
+    session.commit()
+    session.add(db.CardPrice(card_id=card.id, sub_type="Holofoil", market=9.0))
+    job = db.ImportJob(
+        user_id=owner.id,
+        filename="f.zip",
+        status="done",
+        total=1,
+        processed=1,
+        default_finish="nonfoil",
+    )
+    session.add(job)
+    session.commit()
+    scan = db.Scan(
+        job_id=job.id,
+        user_id=owner.id,
+        filename="f.jpg",
+        stored_path="1/f.jpg",
+        status="pending",
+    )
+    session.add(scan)
+    session.commit()
+    session.add(db.Candidate(scan_id=scan.id, card_id=card.id, score=0.97, rank=0))
+    session.commit()
+    scan_id = scan.id
+
+    row = next(r for r in _queue_rows(session, owner.id) if r["scan_id"] == scan_id)
+    assert row["finish"] == "foil"
+    assert row["default_finish"] == "nonfoil"
+    session.close()
+
+
+def test_the_queue_keeps_the_default_when_both_finishes_are_priced(app_and_data):
+    """The counterpart. Where the catalogue prices both sides, the seller's
+    default is the only answer there is and nothing may overrule it."""
+    from sqlalchemy import select as sa_select
+
+    from foilstack import db
+    from foilstack.web.routes.scans import _queue_rows
+
+    session = db.session()
+    owner = session.scalars(sa_select(db.User).where(db.User.email == "owner@example.com")).one()
+    card = db.Card(source="t", source_id="t:both", name="Both Ways", game="mtg", market=4.0)
+    session.add(card)
+    session.commit()
+    for sub, market in (("Normal", 4.0), ("Holofoil", 40.0)):
+        session.add(db.CardPrice(card_id=card.id, sub_type=sub, market=market))
+    job = db.ImportJob(
+        user_id=owner.id,
+        filename="g.zip",
+        status="done",
+        total=1,
+        processed=1,
+        default_finish="nonfoil",
+    )
+    session.add(job)
+    session.commit()
+    scan = db.Scan(
+        job_id=job.id,
+        user_id=owner.id,
+        filename="g.jpg",
+        stored_path="1/g.jpg",
+        status="pending",
+    )
+    session.add(scan)
+    session.commit()
+    session.add(db.Candidate(scan_id=scan.id, card_id=card.id, score=0.97, rank=0))
+    session.commit()
+    scan_id = scan.id
+
+    row = next(r for r in _queue_rows(session, owner.id) if r["scan_id"] == scan_id)
+    assert row["finish"] == "nonfoil"
+    session.close()
+
+
 def test_the_topbar_total_agrees_with_the_inventory_table(app_and_data):
     """These were computed two different ways — a sum of `cards.market` in the
     chrome and per-printing prices in the table — so a foil made the header and

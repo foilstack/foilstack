@@ -580,20 +580,30 @@ def _seed(source_url: str, preview_url: str) -> None:
     # the number a seller uses to decide whether a row is worth a second look.
     #
     # The dearest of them is left with a Normal printing only, so toggling
-    # that row to Foil shows what the fallback does. The rest get both, which
-    # is what a foil toggle is supposed to look like when it works.
+    # that row to Foil shows what the fallback does — which is now only
+    # reachable by hand, and that is the point of keeping it here.
+    #
+    # The second is the mirror: Foil only, under an import that asked for
+    # non-foil. That row has to render *as foil*, priced and unmarked, because
+    # a default cannot answer for a card the catalogue prices on one side of
+    # the line only. Better than a fifth of the cards upstream are like this,
+    # so a preview without one hides the ordinary case.
+    #
+    # The rest get both, which is what a foil toggle looks like when the
+    # catalogue can actually answer the question.
     for n, card in enumerate(cards[:PENDING]):
         base = float(card["market"] or 1.0)
-        session.merge(
-            db.CardPrice(
-                card_id=card["id"],
-                sub_type="Normal",
-                market=round(base, 2),
-                low=round(base * 0.88, 2),
-                mid=round(base * 1.05, 2),
-                high=round(base * 1.4, 2),
+        if n != 1:
+            session.merge(
+                db.CardPrice(
+                    card_id=card["id"],
+                    sub_type="Normal",
+                    market=round(base, 2),
+                    low=round(base * 0.88, 2),
+                    mid=round(base * 1.05, 2),
+                    high=round(base * 1.4, 2),
+                )
             )
-        )
         if n:
             session.merge(
                 db.CardPrice(
