@@ -14,8 +14,13 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      # Pinned exactly, unlike the actions above. astral-sh/setup-uv stopped
+      # moving its floating major tags after v7, which has sat unchanged since
+      # March 2026 — so `@v7` reads like "the maintained v7" and is really a
+      # frozen commit three majors behind. An exact pin at least says what it
+      # is. Bump it by hand; there is no tag that will do it for you.
+      - uses: astral-sh/setup-uv@v10.0.1
       - run: uv sync --extra dev
       - run: uv run ruff check src tests scripts
       - run: uv run ruff format --check src tests scripts
@@ -50,8 +55,8 @@ jobs:
       FOILSTACK_TEST_DATABASE_URL: postgresql+psycopg://foilstack:ci-placeholder@localhost:5434/foilstack
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1  # exact, see above
       - run: uv sync --extra dev
 
       # One run, then two questions of it: did anything fail, and did anything
