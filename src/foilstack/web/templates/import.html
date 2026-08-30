@@ -192,6 +192,7 @@
       <div class="qrow {{ 'review' if r.needs_review }}" id="scan-{{ r.scan_id }}"
            data-scan="{{ r.scan_id }}" data-card="{{ r.card_id or '' }}"
            data-cond="{{ r.condition }}" data-finish="{{ r.finish }}"
+           data-finish-default="{{ r.default_finish }}"
            data-review="{{ 1 if r.needs_review else 0 }}"
            data-prices='{{ r.prices|tojson }}'>
         <div class="thumb">
@@ -488,9 +489,33 @@ $$('.qrow').forEach(row => {
   }));
   const foil = $('.foil-toggle', row);
 
-  // What this batch was imported as. Read before the first setFoil() below,
+  // What this batch was imported as, which is not always what the row starts
+  // on: a non-foil batch containing a card the catalogue only prices as foil
+  // is rendered foil, because that is the only finish that card has. Kept
+  // beside the resolved one so a corrected match can be re-resolved against
+  // the batch's actual answer rather than against a previous card's.
+  const batchDefault = row.dataset.finishDefault === 'foil' ? 'foil' : 'nonfoil';
+
+  // The finish this row starts on. Read before the first setFoil() below,
   // which is the last moment the row is guaranteed to still be showing it.
-  const imported = row.dataset.finish === 'foil' ? 'foil' : 'nonfoil';
+  let seeded = row.dataset.finish === 'foil' ? 'foil' : 'nonfoil';
+
+  // A toggle the seller clicked outranks anything re-derived below. They are
+  // holding the card; the catalogue is only describing it.
+  let touched = false;
+
+  function pricesOf() {
+    try { return JSON.parse(row.dataset.prices || '{}'); } catch (e) { return {}; }
+  }
+
+  // The server's `inventory.resolve_finish`, for the rows this screen
+  // re-points after load. Both have to agree, or correcting a match would
+  // move a row somewhere a reload puts back.
+  function resolveFinish(want, names) {
+    if (!names.length) return want;
+    return names.some(n => /foil/i.test(n) === (want === 'foil'))
+      ? want : (want === 'foil' ? 'nonfoil' : 'foil');
+  }
 
   function setFoil(v) {
     // Normalised, not stored as given. This is what the row commits, and an
@@ -500,12 +525,14 @@ $$('.qrow').forEach(row => {
     v = v === 'foil' ? 'foil' : 'nonfoil';
     row.dataset.finish = v;
     foil.textContent = v === 'foil' ? 'Foil' : 'Non-foil';
-    // Filled means "as this batch was imported", so the rows that stand out
-    // are the ones somebody has changed by hand. Keyed to the import default
+    // Filled means "as this row was seeded", so the rows that stand out are
+    // the ones somebody has changed by hand. Keyed to the seeded finish
     // rather than to foil: a batch declared foil at the door is not the
     // exception on its own screen, and marking every row of it was noise.
-    foil.classList.toggle('on', v === imported);
-    foil.title = v === imported
+    // Keyed to the *seeded* one rather than the batch default for the same
+    // reason — a card that only comes in foil is not an exception either.
+    foil.classList.toggle('on', v === seeded);
+    foil.title = v === seeded
       ? 'Foil or non-foil' : 'changed from this import\'s default';
     // The price for the printing this finish resolves to — dearest match, the
     // same rule pricing and the queue's ordering use — so the number on screen
@@ -517,18 +544,17 @@ $$('.qrow').forEach(row => {
     // means the span held from wiring time is a detached node nothing on the
     // page can see. Held that way, the toggle went on quietly writing prices
     // into an element that had been thrown away.
-    let prices = {};
-    try { prices = JSON.parse(row.dataset.prices || '{}'); } catch (e) { prices = {}; }
+    const prices = pricesOf();
     const priceEl = $('.qprice', row);
     const names = Object.keys(prices);
     const matching = names.filter(n => /foil/i.test(n) === (v === 'foil'));
     const use = (matching.length ? matching : names)
       .sort((a, b) => prices[b] - prices[a])[0];
     // The catalogue prices this card on one side of the foil line only, so
-    // the number is the other side's. Said on the row rather than left to the
-    // card page: this screen is where the toggle gets set for a whole batch,
-    // and a price that does not move when you toggle reads as confirmation
-    // that the finish made no difference rather than that it found nothing.
+    // the number is the other side's. Only reachable by clicking the toggle
+    // now — a row is seeded onto a finish the card is actually priced in —
+    // which is what makes the warning worth showing: it marks a deviation
+    // somebody chose, not one the batch default walked into.
     const fellBack = names.length > 0 && matching.length === 0;
     if (priceEl) {
       priceEl.textContent = use === undefined ? '' :
@@ -544,14 +570,24 @@ $$('.qrow').forEach(row => {
   }
   // Redraw after something other than the toggle changes the row's prices,
   // which is how `applyPick` gets the corrected card's number on screen
-  // without reaching into this closure.
-  row.addEventListener('prices-changed', () => setFoil(row.dataset.finish));
+  // without reaching into this closure. The new card gets the seed decided
+  // again from scratch: a row that went foil only because the old match had
+  // no non-foil printing has no reason to stay there once it is pointed at a
+  // card that does. A finish the seller set by hand survives it — they are
+  // describing the object in their hand, which the correction did not change.
+  row.addEventListener('prices-changed', () => {
+    seeded = resolveFinish(batchDefault, Object.keys(pricesOf()));
+    setFoil(touched ? row.dataset.finish : seeded);
+  });
   // Seeded from the default the scan was imported under, which the server has
   // already rendered — read back rather than re-decided, so the markup and the
   // price below it cannot disagree. Setting it once at import covers the batch
   // and the per-row control is only for the exceptions.
   setFoil(row.dataset.finish);
-  foil.addEventListener('click', () => setFoil(row.dataset.finish === 'foil' ? 'nonfoil' : 'foil'));
+  foil.addEventListener('click', () => {
+    touched = true;
+    setFoil(row.dataset.finish === 'foil' ? 'nonfoil' : 'foil');
+  });
 
   // The one-click runner-up stays a fast path: a glance, a click, committed.
   const alt = $('.qalt-swap', row);

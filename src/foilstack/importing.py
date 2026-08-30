@@ -25,7 +25,7 @@ import os
 import zipfile
 from pathlib import Path, PurePosixPath
 
-from foilstack import db, images, search
+from foilstack import db, images, inventory, search
 from foilstack.config import Settings
 from foilstack.embedding import EmbedderError, embed_image
 
@@ -261,13 +261,21 @@ async def _match_one(session, scan, settings: Settings, job: db.ImportJob) -> No
         scan.status = "confirmed"
         scan.auto_accepted = 1
         session.flush()
+        # The batch default, unless this card is only priced on the other side
+        # of the foil line — see `inventory.resolve_finish`. Nobody sees this
+        # row before it becomes inventory, so committing a finish the
+        # catalogue has no printing for would be a warning on the card page
+        # about a decision that was never made.
+        priced = inventory._prices_for(session, {hits[0][0]})
         _add_to_inventory(
             session,
             scan,
             hits[0][0],
             job.default_condition or "NM",
             job.user_id,
-            job.default_finish or "nonfoil",
+            inventory.resolve_finish(
+                job.default_finish or "nonfoil", list(priced.get(hits[0][0], {}))
+            ),
         )
     else:
         scan.status = "pending"

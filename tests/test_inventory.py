@@ -171,6 +171,43 @@ def test_priced_finishes_reports_what_the_catalogue_actually_has():
     assert priced_finishes([]) == set()
 
 
+def test_a_default_finish_gives_way_to_the_card_that_matched():
+    """The seller answers "foil or not" once for a whole batch, and the batch
+    is not all one card. Where the catalogue prices a card on one side of the
+    foil line only, that side wins: the default was never a decision about
+    that card, and marking it as a deviation asked the seller to click away
+    something they had no other answer to."""
+    from foilstack.inventory import resolve_finish
+
+    assert resolve_finish("nonfoil", ["Holofoil"]) == "foil"
+    assert resolve_finish("foil", ["Normal"]) == "nonfoil"
+
+
+def test_a_default_finish_stands_wherever_the_catalogue_is_ambiguous():
+    """The rule only fires where there is exactly one honest answer. A card
+    priced in both finishes, or in none, is the seller's call — overriding
+    there would be guessing rather than deferring."""
+    from foilstack.inventory import resolve_finish
+
+    assert resolve_finish("nonfoil", ["Normal", "Holofoil"]) == "nonfoil"
+    assert resolve_finish("foil", ["Normal", "Holofoil"]) == "foil"
+    # No prices at all is not evidence of anything.
+    assert resolve_finish("foil", []) == "foil"
+    assert resolve_finish("nonfoil", []) == "nonfoil"
+
+
+def test_a_resolved_finish_is_never_the_one_that_falls_back():
+    """The point of resolving is that the warning stops firing on rows nobody
+    chose. If these two disagreed, the queue would seed a row onto a finish
+    and then mark it as priced off the other one."""
+    from foilstack.inventory import priced_finishes, resolve_finish
+
+    for names in [["Normal"], ["Holofoil"], ["Normal", "Foil"], []]:
+        for default in ("foil", "nonfoil"):
+            picked = resolve_finish(default, names)
+            assert not names or picked in priced_finishes(names)
+
+
 def test_the_fallback_is_reported_not_just_taken():
     """`matching_printings` crossing the foil line is the one path that prices
     a card off the wrong side of the seller's own answer. The two functions

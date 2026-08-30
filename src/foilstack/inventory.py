@@ -116,6 +116,31 @@ def priced_finishes(names: list[str]) -> set[str]:
     return {finish_of(n) for n in names}
 
 
+def resolve_finish(default: str, names: list[str]) -> str:
+    """The finish to start a card at, given the printings it is priced in.
+
+    The seller answers "foil or not" once for a whole batch, and a batch is
+    not all one card: better than a third of the cards here have no foil
+    printing and a fifth have nothing else. A default of "non-foil" on a card
+    that exists only as foil is not a decision anyone made about that card, so
+    the match wins and the default is dropped.
+
+    This used to be flagged rather than resolved — the finish chip in a warning
+    colour, the price in red — which put a warning on the one thing the
+    catalogue is unambiguous about and left the seller to click away something
+    they had no other answer to. Deviating silently is right *because* there is
+    no choice being made: a card with printings on one side of the foil line
+    only has exactly one honest finish.
+
+    So only where the catalogue is unambiguous. With no printings at all, or
+    with both finishes priced, the default stands and the seller decides.
+    """
+    available = priced_finishes(names)
+    if not available or default in available:
+        return default
+    return available.pop()
+
+
 def matching_printings(finish: str, names: list[str]) -> list[str]:
     """The printings that count as this finish, in the order given.
 
