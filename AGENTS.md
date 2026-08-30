@@ -281,6 +281,15 @@ Two habits worth keeping:
   means something: a finish somebody set by hand that has no printing behind
   it. Resolving is only for where there is exactly one honest answer — priced
   both ways, or not priced at all, and the default stands.
+
+  The queue's finish chip is filled when the row is showing **what the import
+  asked for**, not when it is showing what it was seeded with. So a resolved
+  row reads as a plain white chip: it still stands out, because departing from
+  the seller's own answer is exactly what is worth a second look, and hiding
+  that because the departure was automatic would make the reason for it the
+  reason to say nothing about it. Three states, and they have to stay
+  distinguishable — filled dark is the default, white is a deviation that is
+  priced, warning colour is a finish with no printing behind it at all.
 * **Price history cannot be backfilled**, except for Magic and only ninety
   days of it. TCGCSV mirrors the current day only, so anything that stops
   `sync-prices` running costs history permanently — treat a broken sync as data

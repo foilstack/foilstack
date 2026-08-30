@@ -237,11 +237,14 @@
         </div>
         <div class="qfoil">
           {# Rendered in its final state rather than left to the script to
-             correct, so a foil batch does not flash "Non-foil" first. Filled
-             because a freshly rendered row is always showing what its import
-             asked for; the script clears it if someone toggles away. #}
-          <button class="chip chip-sm foil-toggle on"
-                  type="button" title="Foil or non-foil">{{ 'Foil' if r.finish == 'foil' else 'Non-foil' }}</button>
+             correct, so a foil batch does not flash "Non-foil" first — and
+             that now includes the fill, because a freshly rendered row is no
+             longer always showing what its import asked for. A card the
+             catalogue prices one way only overrules the default, and the
+             unfilled chip is what says so. #}
+          <button class="chip chip-sm foil-toggle {{ 'on' if r.finish == r.default_finish }}"
+                  type="button"
+                  title="{% if r.finish == r.default_finish %}Foil or non-foil{% else %}the catalogue only prices this card as {{ 'foil' if r.finish == 'foil' else 'non-foil' }}, so it differs from this import's default{% endif %}">{{ 'Foil' if r.finish == 'foil' else 'Non-foil' }}</button>
           {% if r.ambiguous %}
           <span class="pill warn qambig" title="This card has several foil printings at different prices. Commit, then name the printing on the card page.">?</span>
           {% endif %}
@@ -525,15 +528,29 @@ $$('.qrow').forEach(row => {
     v = v === 'foil' ? 'foil' : 'nonfoil';
     row.dataset.finish = v;
     foil.textContent = v === 'foil' ? 'Foil' : 'Non-foil';
-    // Filled means "as this row was seeded", so the rows that stand out are
-    // the ones somebody has changed by hand. Keyed to the seeded finish
-    // rather than to foil: a batch declared foil at the door is not the
-    // exception on its own screen, and marking every row of it was noise.
-    // Keyed to the *seeded* one rather than the batch default for the same
-    // reason — a card that only comes in foil is not an exception either.
-    foil.classList.toggle('on', v === seeded);
-    foil.title = v === seeded
-      ? 'Foil or non-foil' : 'changed from this import\'s default';
+    // Filled means "what this import asked for", so the rows that stand out
+    // are the ones not showing it — whether a person toggled them or the
+    // catalogue did. Keyed to the import default rather than to foil: a batch
+    // declared foil at the door is not the exception on its own screen, and
+    // marking every row of it was noise.
+    //
+    // Deliberately not keyed to the seeded finish, which is the other
+    // plausible reading. A row that deviated from the default is exactly the
+    // row worth a second look, and it is the seller's own answer it is
+    // departing from — hiding that because the departure was automatic would
+    // make the reason for it the reason to say nothing about it.
+    //
+    // Unfilled is a plain white chip, not the warning colour. Standing out is
+    // not the same as being wrong: the catalogue prices this card one way
+    // only, so the row is right, and `unpriced` below is reserved for the
+    // finish that has no printing behind it at all.
+    foil.classList.toggle('on', v === batchDefault);
+    foil.title = v === batchDefault
+      ? 'Foil or non-foil'
+      : v === seeded
+        ? 'the catalogue only prices this card as ' +
+          (v === 'foil' ? 'foil' : 'non-foil') + ', so it differs from this import\'s default'
+        : 'changed from this import\'s default';
     // The price for the printing this finish resolves to — dearest match, the
     // same rule pricing and the queue's ordering use — so the number on screen
     // is the number the card will be worth if committed as it stands.
