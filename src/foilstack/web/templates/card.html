@@ -250,10 +250,19 @@ function wireCard(id) {
   const form = $('#card-form');
   const pick = {};
 
+  const finishOf = name => /foil/i.test(name) ? 'foil' : 'nonfoil';
+
   drawerBody.querySelectorAll('.chip-set[data-field], .printings[data-field]').forEach(set => {
     const field = set.dataset.field;
     const opts = set.querySelectorAll('.chip, .printing');
-    pick[field] = set.querySelector('.chip.on, .printing.on')?.dataset.value;
+    const marked = set.querySelector('.chip.on, .printing.on')?.dataset.value;
+    // A printing is marked `on` to show where the price came from, which is not
+    // the same as the seller having named it. Posting a guess back as a
+    // declaration froze it into one every time the drawer was opened to fix a
+    // cost — and, because the server takes the printing over the finish, it
+    // also ate the finish chip: clicking Foil on a card whose only printing is
+    // "Normal" saved as non-foil, with nothing on screen to say why.
+    pick[field] = field === 'sub_type' && !set.dataset.declared ? '' : marked;
     opts.forEach(b => b.addEventListener('click', () => {
       opts.forEach(x => x.classList.remove('on'));
       b.classList.add('on');
@@ -261,10 +270,20 @@ function wireCard(id) {
       // Naming the printing settles the finish, so the coarse control follows
       // rather than sitting there contradicting it.
       if (field === 'sub_type') {
-        const foil = /foil/i.test(b.dataset.value) ? 'foil' : 'nonfoil';
+        const foil = finishOf(b.dataset.value);
         pick.finish = foil;
         drawerBody.querySelectorAll('.chip-set[data-field=finish] .chip').forEach(c =>
           c.classList.toggle('on', c.dataset.value === foil));
+      }
+      // The mirror of it. A printing names the finish exactly, so one the
+      // seller has just contradicted cannot survive the click — kept, it wins
+      // at the server and reverts the chip. Dropped, the finish stands and the
+      // price falls back to the dearest printing matching it, which is all
+      // "foil" on its own has ever meant here.
+      if (field === 'finish' && pick.sub_type && finishOf(pick.sub_type) !== b.dataset.value) {
+        pick.sub_type = '';
+        drawerBody.querySelectorAll('.printings[data-field=sub_type] .printing')
+          .forEach(x => x.classList.remove('on'));
       }
     }));
   });
