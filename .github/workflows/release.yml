@@ -12,8 +12,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      # Pinned exactly, unlike the actions above. astral-sh/setup-uv stopped
+      # moving its floating major tags after v7, which has sat unchanged since
+      # March 2026 — so `@v7` reads like "the maintained v7" and is really a
+      # frozen commit three majors behind. An exact pin at least says what it
+      # is. Bump it by hand; there is no tag that will do it for you.
+      - uses: astral-sh/setup-uv@v10.0.1
       - run: uv build
 
       # The wheel carries the templates, the static files and the migrations,
@@ -87,7 +92,7 @@ jobs:
           print(f"tag and wheel agree on {built}")
           PY
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -101,7 +106,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
