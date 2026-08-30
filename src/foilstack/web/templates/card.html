@@ -233,9 +233,14 @@ function wireWrongCard(id) {
     wireCardSearch(box, {
       confirmPick: pick => 'Re-point this row to “' + pick.dataset.name + '”?',
       onPick: async pick => {
+        const to = +pick.dataset.pick;
         const saved = await postJSON('/api/inventory/' + id,
-          { card_id: +pick.dataset.pick }, { error: 'could not change the card' });
-        if (saved) location.reload();
+          { card_id: to }, { error: 'could not change the card' });
+        // Follow the row to its new card rather than reloading. This page is
+        // /inventory/<the card being corrected>, and re-pointing the last copy
+        // of that card empties it — the save lands and the reload 404s on the
+        // URL you were standing on, which reads as the save having failed.
+        if (saved) location.href = '/inventory/' + to;
       },
     });
   });
