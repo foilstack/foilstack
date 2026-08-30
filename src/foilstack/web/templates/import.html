@@ -524,8 +524,23 @@ $$('.qrow').forEach(row => {
     const matching = names.filter(n => /foil/i.test(n) === (v === 'foil'));
     const use = (matching.length ? matching : names)
       .sort((a, b) => prices[b] - prices[a])[0];
-    if (priceEl) priceEl.textContent = use === undefined ? '' :
-      '$' + Number(prices[use]).toFixed(2) + ' · ';
+    // The catalogue prices this card on one side of the foil line only, so
+    // the number is the other side's. Said on the row rather than left to the
+    // card page: this screen is where the toggle gets set for a whole batch,
+    // and a price that does not move when you toggle reads as confirmation
+    // that the finish made no difference rather than that it found nothing.
+    const fellBack = names.length > 0 && matching.length === 0;
+    if (priceEl) {
+      priceEl.textContent = use === undefined ? '' :
+        '$' + Number(prices[use]).toFixed(2) +
+        (fellBack ? ' as ' + use : '') + ' · ';
+      priceEl.classList.toggle('warn', fellBack);
+      priceEl.title = fellBack
+        ? 'No ' + (v === 'foil' ? 'foil' : 'non-foil') +
+          ' printing is catalogued for this card, so this is the ' + use + ' price'
+        : '';
+    }
+    foil.classList.toggle('unpriced', fellBack);
   }
   // Redraw after something other than the toggle changes the row's prices,
   // which is how `applyPick` gets the corrected card's number on screen

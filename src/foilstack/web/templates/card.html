@@ -88,10 +88,22 @@
     </div>
     {% endfor %}
 
+    {% if line.finish_unpriced %}
+    <p class="panel-note warn">
+      {{ line.finish_unpriced }} of {{ line.quantity }}
+      cop{{ 'y' if line.quantity == 1 else 'ies' }}
+      {{ 'is' if line.finish_unpriced == 1 else 'are' }} marked with a finish
+      the catalogue has no printing for, so
+      {{ 'it is' if line.finish_unpriced == 1 else 'they are' }} priced off the other
+      finish. The printing each fell back to is in the FINISH column.
+    </p>
+    {% endif %}
+
     {% if line.guessed %}
     <p class="panel-note warn">
       {{ line.guessed }} of {{ line.quantity }}
-      cop{{ 'y has' if line.guessed == 1 else 'ies have' }} no printing chosen,
+      cop{{ 'y' if line.quantity == 1 else 'ies' }}
+      {{ 'has' if line.guessed == 1 else 'have' }} no printing chosen,
       so {{ 'it is' if line.guessed == 1 else 'they are' }} priced as the dearest
       printing matching the finish. Open a copy and pick the one you hold.
     </p>
@@ -152,7 +164,8 @@
               <td>{{ c.condition }}</td>
               <td class="{{ 'foil-yes' if c.is_foil else 'muted' }}">
                 {{ c.sub_type or c.finish_label }}
-                {% if c.printing_guessed %}<span class="pill warn" title="No printing chosen, so it is priced as the dearest match">guessed</span>{% endif %}
+                {% if c.finish_unpriced %}<span class="pill warn" title="No {{ c.finish_label|lower }} printing is catalogued for this card, so it is priced as “{{ c.sub_type }}”">no {{ c.finish_label|lower }} price</span>
+                {% elif c.printing_guessed %}<span class="pill warn" title="No printing chosen, so it is priced as the dearest match">guessed</span>{% endif %}
               </td>
               <td class="r muted">{{ c.cost|money if c.cost is not none else '—' }}</td>
               <td>
@@ -220,9 +233,14 @@ function wireWrongCard(id) {
     wireCardSearch(box, {
       confirmPick: pick => 'Re-point this row to “' + pick.dataset.name + '”?',
       onPick: async pick => {
+        const to = +pick.dataset.pick;
         const saved = await postJSON('/api/inventory/' + id,
-          { card_id: +pick.dataset.pick }, { error: 'could not change the card' });
-        if (saved) location.reload();
+          { card_id: to }, { error: 'could not change the card' });
+        // Follow the row to its new card rather than reloading. This page is
+        // /inventory/<the card being corrected>, and re-pointing the last copy
+        // of that card empties it — the save lands and the reload 404s on the
+        // URL you were standing on, which reads as the save having failed.
+        if (saved) location.href = '/inventory/' + to;
       },
     });
   });
@@ -232,10 +250,19 @@ function wireCard(id) {
   const form = $('#card-form');
   const pick = {};
 
+  const finishOf = name => /foil/i.test(name) ? 'foil' : 'nonfoil';
+
   drawerBody.querySelectorAll('.chip-set[data-field], .printings[data-field]').forEach(set => {
     const field = set.dataset.field;
     const opts = set.querySelectorAll('.chip, .printing');
-    pick[field] = set.querySelector('.chip.on, .printing.on')?.dataset.value;
+    const marked = set.querySelector('.chip.on, .printing.on')?.dataset.value;
+    // A printing is marked `on` to show where the price came from, which is not
+    // the same as the seller having named it. Posting a guess back as a
+    // declaration froze it into one every time the drawer was opened to fix a
+    // cost — and, because the server takes the printing over the finish, it
+    // also ate the finish chip: clicking Foil on a card whose only printing is
+    // "Normal" saved as non-foil, with nothing on screen to say why.
+    pick[field] = field === 'sub_type' && !set.dataset.declared ? '' : marked;
     opts.forEach(b => b.addEventListener('click', () => {
       opts.forEach(x => x.classList.remove('on'));
       b.classList.add('on');
@@ -243,10 +270,20 @@ function wireCard(id) {
       // Naming the printing settles the finish, so the coarse control follows
       // rather than sitting there contradicting it.
       if (field === 'sub_type') {
-        const foil = /foil/i.test(b.dataset.value) ? 'foil' : 'nonfoil';
+        const foil = finishOf(b.dataset.value);
         pick.finish = foil;
         drawerBody.querySelectorAll('.chip-set[data-field=finish] .chip').forEach(c =>
           c.classList.toggle('on', c.dataset.value === foil));
+      }
+      // The mirror of it. A printing names the finish exactly, so one the
+      // seller has just contradicted cannot survive the click — kept, it wins
+      // at the server and reverts the chip. Dropped, the finish stands and the
+      // price falls back to the dearest printing matching it, which is all
+      // "foil" on its own has ever meant here.
+      if (field === 'finish' && pick.sub_type && finishOf(pick.sub_type) !== b.dataset.value) {
+        pick.sub_type = '';
+        drawerBody.querySelectorAll('.printings[data-field=sub_type] .printing')
+          .forEach(x => x.classList.remove('on'));
       }
     }));
   });

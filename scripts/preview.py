@@ -552,6 +552,60 @@ def _seed(source_url: str, preview_url: str) -> None:
         )
     )
     session.commit()
+
+    # A copy declared foil on a card the catalogue only prices as Normal.
+    # Better than a third of the cards upstream have no foil printing at all,
+    # so this is the ordinary case and not an edge — and it is invisible
+    # without a seed, because it renders as a perfectly ordinary price with a
+    # warning beside it rather than as a missing one.
+    plain = next(
+        c
+        for c in unique[:7]
+        if c["id"] != amb["id"] and "foil" not in (c.get("variant") or "Normal").lower()
+    )
+    session.add(
+        db.InventoryItem(
+            user_id=user.id,
+            card_id=plain["id"],
+            condition="NM",
+            finish="foil",
+            cost=round(float(plain["market"] or 1.0) * 0.4, 2),
+        )
+    )
+    session.commit()
+
+    # Prices on the cards still in the queue too. Every review row in the
+    # preview rendered without one, because prices were only ever seeded on
+    # cards that had already been confirmed — and the price beside a match is
+    # the number a seller uses to decide whether a row is worth a second look.
+    #
+    # The dearest of them is left with a Normal printing only, so toggling
+    # that row to Foil shows what the fallback does. The rest get both, which
+    # is what a foil toggle is supposed to look like when it works.
+    for n, card in enumerate(cards[:PENDING]):
+        base = float(card["market"] or 1.0)
+        session.merge(
+            db.CardPrice(
+                card_id=card["id"],
+                sub_type="Normal",
+                market=round(base, 2),
+                low=round(base * 0.88, 2),
+                mid=round(base * 1.05, 2),
+                high=round(base * 1.4, 2),
+            )
+        )
+        if n:
+            session.merge(
+                db.CardPrice(
+                    card_id=card["id"],
+                    sub_type="Foil",
+                    market=round(base * 3.2, 2),
+                    low=round(base * 3.2 * 0.88, 2),
+                    mid=round(base * 3.2 * 1.05, 2),
+                    high=round(base * 3.2 * 1.4, 2),
+                )
+            )
+    session.commit()
     session.close()
 
 

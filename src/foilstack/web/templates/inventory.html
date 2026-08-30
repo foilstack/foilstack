@@ -73,7 +73,11 @@
           <td class="{{ 'muted' if not r.mixed }}">{{ r.conditions }}</td>
           <td class="{{ 'foil-yes' if r.any_foil else 'muted' }}">
             {{ r.printing_label }}
-            {% if r.guessed %}<span class="pill warn" title="printing not chosen, so it is priced as the dearest match">?</span>{% endif %}
+            {# Ahead of the "guessed" mark: a finish with no printing behind it
+               is the worse of the two and stays quiet on a single-printing
+               card, which is most of the cards it happens to. #}
+            {% if r.finish_unpriced %}<span class="pill warn" title="{{ r.finish_unpriced }} of {{ r.quantity }} copies are marked with a finish the catalogue has no printing for, so they are priced off the other finish">!</span>
+            {% elif r.guessed %}<span class="pill warn" title="printing not chosen, so it is priced as the dearest match">?</span>{% endif %}
           </td>
           <td class="r muted">{{ r.cost|money if r.cost is not none else '—' }}</td>
           <td class="r">{{ r.market|money if r.market is not none else '—' }}</td>

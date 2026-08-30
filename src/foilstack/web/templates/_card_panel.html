@@ -45,8 +45,15 @@
     <div>
       <div class="field-label">Finish</div>
       <div class="chip-set" data-field="finish">
+        {# Marked, not disabled. The catalogue not pricing a finish is not the
+           same as the card not existing in it — promos and misprints are real
+           and the seller is holding one — so the chip stays clickable and
+           says what picking it will cost you. #}
         {% for f in finishes %}
-        <button class="chip {{ 'on' if f == r.finish }}" type="button" data-value="{{ f }}">{{ finish_label[f] }}</button>
+        {% set unpriced = r.printings and f not in r.finishes_priced %}
+        <button class="chip {{ 'on' if f == r.finish }} {{ 'unpriced' if unpriced }}"
+                type="button" data-value="{{ f }}"
+                {% if unpriced %}title="No {{ finish_label[f]|lower }} printing is catalogued for this card, so it would be priced as the other finish"{% endif %}>{{ finish_label[f] }}</button>
         {% endfor %}
       </div>
     </div>
@@ -55,7 +62,11 @@
   <div class="field">
     <span class="field-label">Printing</span>
     {% if r.printings %}
-    <div class="printings" data-field="sub_type">
+    {# `on` below marks where the price came from, which is not the same as the
+       seller having chosen it. Only a declared printing may be posted back as
+       one — see wireCard() in card.html. #}
+    <div class="printings" data-field="sub_type"
+         {% if r.printing_declared %}data-declared="1"{% endif %}>
       {% for pr in r.printings %}
       <button class="printing {{ 'on' if pr.on }}" type="button" data-value="{{ pr.sub_type }}">
         <span class="printing-name">{{ pr.sub_type }}</span>
@@ -63,7 +74,15 @@
       </button>
       {% endfor %}
     </div>
-    {% if r.printing_guessed %}
+    {# The unmatched finish comes first because the "dearest match" wording
+       below is false in that case: nothing matched, and the price shown is the
+       other finish's. #}
+    {% if r.finish_unpriced %}
+    <span class="field-hint warn">
+      No {{ r.finish_label|lower }} printing is catalogued for this card, so it is
+      priced as “{{ r.sub_type }}”.{% if not r.printing_declared %} Pick the printing you hold if that is wrong.{% endif %}
+    </span>
+    {% elif r.printing_guessed %}
     <span class="field-hint warn">
       Not chosen, so it is priced as the dearest printing that matches “{{ r.finish_label }}”.
       Pick the one you hold.
