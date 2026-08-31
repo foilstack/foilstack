@@ -983,6 +983,30 @@ tr.is-sold .rowname { color: var(--faint); }
   margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--rule-soft);
   font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.6;
 }
+
+/* The TCGplayer download, which is a round trip rather than a download: their
+   own pricing export goes up so that the SKU ids in it can come back down. The
+   file input is full width because a 250px sidebar truncates a filename
+   otherwise, and a seller who cannot see which file they picked has no way to
+   tell the pricing export from the order export. */
+.match { margin-bottom: 4px; }
+.match input[type="file"] {
+  width: 100%; margin-bottom: 4px;
+  font-family: var(--mono); font-size: 10px; color: var(--muted);
+}
+.match input[type="file"]::file-selector-button {
+  height: 22px; padding: 0 8px; margin-right: 8px;
+  border: 1px solid var(--rule); border-radius: 3px;
+  background: var(--surface); color: var(--ink);
+  font: inherit; font-size: 11px; cursor: pointer;
+}
+.match input[type="file"]::file-selector-button:hover { border-color: var(--ink); }
+.match .btn { width: 100%; }
+.match .s {
+  font-family: var(--mono); font-size: 10px; color: var(--faint);
+  line-height: 1.6; margin-top: 6px;
+}
+
 .run-summary b { color: var(--ink); font-weight: 400; }
 .joblog {
   flex: 0 0 132px; border-top: 1px solid var(--rule);

@@ -206,7 +206,8 @@ def _seed(source_url: str, preview_url: str) -> None:
             conn.execute(
                 text(
                     "SELECT s.id AS scan_id, s.stored_path, s.filename, s.auto_accepted,"
-                    "       c.score, cd.id, cd.source, cd.source_id, cd.name, cd.game,"
+                    "       c.score, cd.id, cd.source, cd.source_id, cd.name, cd.source_name,"
+                    "       cd.game,"
                     "       cd.set_name, cd.number, cd.variant, cd.image_url, cd.market,"
                     "       cd.currency"
                     "  FROM scans s"
@@ -235,7 +236,7 @@ def _seed(source_url: str, preview_url: str) -> None:
             conn.execute(
                 text(
                     "SELECT c.scan_id, c.score, c.rank,"
-                    "       cd.id, cd.source, cd.source_id, cd.name, cd.game,"
+                    "       cd.id, cd.source, cd.source_id, cd.name, cd.source_name, cd.game,"
                     "       cd.set_name, cd.number, cd.variant, cd.image_url, cd.market,"
                     "       cd.currency"
                     "  FROM candidates c"
@@ -319,6 +320,7 @@ def _seed(source_url: str, preview_url: str) -> None:
                         "source",
                         "source_id",
                         "name",
+                        "source_name",
                         "game",
                         "set_name",
                         "number",

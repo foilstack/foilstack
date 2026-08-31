@@ -22,7 +22,7 @@ import httpx
 
 sys.path.insert(0, "src")
 
-from foilstack.plugins.sources.tcgcsv import CATEGORIES, HEADERS
+from foilstack.plugins.sources.tcgcsv import CATEGORIES, HEADERS, PRODUCT_LINES
 
 # The word that must appear in the upstream name for the mapping to be
 # credible. Only needed where our short name is not a substring of theirs.
@@ -61,7 +61,21 @@ def main() -> int:
         else:
             print(f"  {name:<18} {category_id:>4}  {upstream}")
 
-    print(f"\n{len(CATEGORIES) - bad}/{len(CATEGORIES)} correct")
+    # The same id, read a second way. `PRODUCT_LINES` is what goes in the
+    # `Product Line` column of a TCGplayer upload, and it has to be upstream's
+    # category name *exactly* — the substring test above would pass on
+    # "Magic: The Gathering" while the uploader rejected it.
+    for name, category_id in sorted(CATEGORIES.items()):
+        upstream = by_id.get(category_id)
+        line = PRODUCT_LINES.get(name)
+        if line is None:
+            print(f"  {name:<18} no Product Line")
+            bad += 1
+        elif upstream is not None and line != upstream:
+            print(f"  {name:<18} Product Line {line!r} != {upstream!r}")
+            bad += 1
+
+    print(f"\n{2 * len(CATEGORIES) - bad}/{2 * len(CATEGORIES)} correct")
     return 1 if bad else 0
 
 

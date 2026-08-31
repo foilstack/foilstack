@@ -137,6 +137,10 @@ extend-immutable-calls = [
 # Migrations are generated, then annotated by hand. Import order and line
 # length in them are alembic's business, not ours.
 "src/foilstack/migrations/versions/*" = ["E501", "I001"]
+# Sixteen quoted columns is 120 characters. Those fixtures are rows copied
+# verbatim out of a real TCGplayer export, and a row reflowed to fit is no
+# longer the thing the test claims to be testing against.
+"tests/test_tcgplayer_match.py" = ["E501"]
 
 [tool.ruff.format]
 docstring-code-format = true

@@ -72,6 +72,30 @@ CATEGORIES: dict[str, int] = {
 }
 
 
+# What TCGplayer calls each of these in the `Product Line` column of the CSVs
+# its own site exports and imports. Not `LABELS` and not the category's
+# `displayName`: the upload wants the categories endpoint's `name`, which
+# differs from both — "Magic" rather than "Magic: The Gathering", "Dragon Ball
+# Super Fusion World" rather than "Dragon Ball Super: Fusion World". A wrong
+# one here is the same invisible failure a wrong category id is, so
+# `scripts/check_categories.py` compares every entry against upstream.
+PRODUCT_LINES: dict[str, str] = {
+    "pokemon": "Pokemon",
+    "magic": "Magic",
+    "yugioh": "YuGiOh",
+    "lorcana": "Lorcana TCG",
+    "onepiece": "One Piece Card Game",
+    "digimon": "Digimon Card Game",
+    "starwars": "Star Wars Unlimited",
+    "fleshandblood": "Flesh & Blood TCG",
+    "gundam": "Gundam Card Game",
+    "finalfantasy": "Final Fantasy TCG",
+    "dragonballz": "Dragon Ball Z TCG",
+    "dragonballsuper": "Dragon Ball Super CCG",
+    "dragonballfusion": "Dragon Ball Super Fusion World",
+}
+
+
 def _is_card(product: dict) -> bool:
     """Cards have a Number or a Rarity; sealed product has neither.
 
@@ -214,6 +238,11 @@ class TCGCSVSource:
                     yield CardRecord(
                         source_id=str(product.get("productId")),
                         name=product.get("cleanName") or product.get("name") or "",
+                        # Both spellings, because they are used for different
+                        # things: `cleanName` reads and searches better,
+                        # `name` is what TCGplayer's own CSV exports carry and
+                        # therefore the only one a listing file can join on.
+                        source_name=product.get("name") or None,
                         game=self.game,
                         set_name=group.get("name"),
                         number=number,
