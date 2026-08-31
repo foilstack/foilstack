@@ -2464,3 +2464,72 @@ def test_the_footer_reports_the_oldest_run_once_one_has_happened(app_and_data):
 
     assert "synced 9 hr ago" in body, "the oldest synced game is the honest figure"
     assert "synced 2 hr ago" not in body
+
+
+def _pricing_export(*rows: str) -> bytes:
+    from foilstack import tcgplayer
+
+    return (",".join(tcgplayer.HEADER) + "\r\n" + "".join(r + "\r\n" for r in rows)).encode()
+
+
+def test_the_tcgplayer_round_trip_returns_the_sellers_own_sku_ids(app_and_data):
+    """A pricing export up, the matching rows back with our numbers on.
+
+    The end-to-end version of `tests/test_tcgplayer_match.py`: this one proves
+    the route reaches the matcher with rows scoped to the signed-in account and
+    a `source_name` that actually joins.
+    """
+    from sqlalchemy import select as sa_select
+
+    from foilstack import db
+
+    _fresh_line("t:roundtrip", "Ancestors Chosen", ["NM"])
+    session = db.session()
+    card = session.scalars(sa_select(db.Card).where(db.Card.source_id == "t:roundtrip")).one()
+    card.game = "magic"
+    card.set_name = "10th Edition"
+    card.number = "1"
+    # The cleaned spelling is in `name`; only this column can match their file.
+    card.source_name = "Ancestor's Chosen"
+    session.commit()
+    session.close()
+
+    upload = _pricing_export(
+        '"4591","Magic","10th Edition","Ancestor\'s Chosen","","1","U","Near Mint",'
+        '"0.16","","1.6000","0.1100","","0","",""'
+    )
+    response = _signed_in(app_and_data[0]).post(
+        "/export/tcgplayer/match", files={"file": ("pricing.csv", upload, "text/csv")}
+    )
+    assert response.status_code == 200
+    body = response.text
+    assert '"4591"' in body, f"the SKU id is the point of the round trip: {body!r}"
+    assert body.count("\r\n") == 2, "one header and one matched row"
+
+
+def test_a_stranger_gets_no_rows_from_the_tcgplayer_round_trip(stranger, app_and_data):
+    """The upload is theirs; the inventory it is matched against must not be.
+
+    A route that took the file and matched it against everyone's stock would
+    hand a stranger the whole install's positions, priced.
+    """
+    _fresh_line("t:notyours", "Abundance", ["NM"])
+    upload = _pricing_export(
+        '"4519","Magic","10th Edition","Abundance","","249","R","Near Mint",'
+        '"1.68","","2.9000","1.4100","","0","",""'
+    )
+    response = stranger.post(
+        "/export/tcgplayer/match", files={"file": ("pricing.csv", upload, "text/csv")}
+    )
+    assert response.status_code == 400, "an account with no stock has nothing to list"
+    assert "Abundance" not in response.text
+
+
+def test_the_wrong_tcgplayer_file_is_refused_with_a_reason(app_and_data):
+    _fresh_line("t:wrongfile", "Abundance", ["NM"])
+    response = _signed_in(app_and_data[0]).post(
+        "/export/tcgplayer/match",
+        files={"file": ("orders.csv", b"Order Number,Quantity\n1,2\n", "text/csv")},
+    )
+    assert response.status_code == 400
+    assert "Export Filtered CSV" in response.text

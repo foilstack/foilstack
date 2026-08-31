@@ -1,15 +1,32 @@
 name = "tcgplayer"
 label = "TCGplayer"
-description = "Columns accepted by the TCGplayer bulk listing uploader."
+description = "The sixteen columns of a TCGplayer pricing export, in the order its uploader checks for. TCGplayer Id is a SKU id no catalogue publishes, so it is blank here — the listings screen fills it in from your own export."
 filename = "tcgplayer-listings.csv"
 
+# The header row is checked as a whole. TCGplayer's uploader answers "Headers
+# are not valid!" to a file with the right columns in the wrong order, or with
+# the informative ones left out, so this is its own export's header row copied
+# exactly — sixteen columns, including four we have nothing to put in.
+
+# A SKU id: one per product *and* condition *and* printing, so Abundance in
+# 10th Edition is product 15023 but SKU 4519 near mint, 4521 near mint foil.
+# Our catalogue is from TCGCSV, which states outright that it does not publish
+# SKUs, so there is no id to write here and this column is deliberately blank.
+# The product id is not a substitute: the two id spaces overlap numerically, so
+# writing one in this column does not fail — it repoints the row at whichever
+# unrelated SKU happens to hold that number.
+#
+# A file from this exporter is therefore the right shape and not yet uploadable.
+# `foilstack.tcgplayer` is what makes it uploadable, by finding these same rows
+# in the seller's own export and taking the ids from there. This spec survives
+# as the format written down in one place, and as what the plugins screen shows.
 [[columns]]
 header = "TCGplayer Id"
-field = "source_ref"
+const = ""
 
 [[columns]]
 header = "Product Line"
-field = "game"
+field = "tcg_product_line"
 
 [[columns]]
 header = "Set Name"
@@ -20,13 +37,24 @@ header = "Product Name"
 field = "name"
 
 [[columns]]
+header = "Title"
+const = ""
+
+[[columns]]
 header = "Number"
 field = "number"
 
+# Not stored. The catalogue keeps rarity only long enough to decide a product
+# is a card at all, and this column is informative — the uploader reads price
+# and quantity and ignores the rest.
+[[columns]]
+header = "Rarity"
+const = ""
+
+# Condition and printing together: "Near Mint", "Near Mint Foil".
 [[columns]]
 header = "Condition"
-field = "condition"
-transform = "upper"
+field = "tcg_condition"
 
 [[columns]]
 header = "TCG Market Price"
@@ -34,7 +62,33 @@ field = "market"
 transform = "money2"
 
 [[columns]]
+header = "TCG Direct Low"
+const = ""
+
+[[columns]]
+header = "TCG Low Price With Shipping"
+const = ""
+
+[[columns]]
+header = "TCG Low Price"
+field = "low"
+transform = "money2"
+
+# Blank on purpose, so that the row below it is what takes effect. `Total
+# Quantity` *sets* the count and `Add to Quantity` increases it; foilstack
+# knows what came out of one import, not what the seller already has listed,
+# and a total written from a partial picture deletes the rest of their stock.
+#
+# Blank is also not importable — the uploader wants a number here on any row it
+# is taking. Only the round trip can supply one honestly, because only it can
+# see what the seller already holds, so this stays empty and the file stays a
+# description of the format rather than something to upload.
+[[columns]]
 header = "Total Quantity"
+const = ""
+
+[[columns]]
+header = "Add to Quantity"
 field = "quantity"
 transform = "int"
 
@@ -42,3 +96,7 @@ transform = "int"
 header = "TCG Marketplace Price"
 field = "list_price"
 transform = "money2"
+
+[[columns]]
+header = "Photo URL"
+const = ""

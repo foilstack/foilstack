@@ -13,12 +13,14 @@ says plainly rather than implying a connection that does not exist.
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Iterator
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 
-from foilstack import db, inventory
+from foilstack import db, inventory, tcgplayer
 from foilstack.config import Settings
 from foilstack.plugins import export_plugins
 from foilstack.web import joblog
@@ -67,6 +69,14 @@ def page_listings(
                     "on": c["key"] in picked,
                     "exporter": exporters.get(c["key"]),
                     "csv_href": f"/export/{c['key']}?rule={rule}{ids}",
+                    # Only TCGplayer needs a file to start from, and only
+                    # because its ids are SKU ids nobody outside their own
+                    # export can know. eBay's sheet is composed from nothing.
+                    "match_href": (
+                        f"/export/tcgplayer/match?rule={rule}{ids}"
+                        if c["key"] == "tcgplayer"
+                        else None
+                    ),
                     "href": "/listings?rule="
                     + rule
                     + "".join(
@@ -191,6 +201,69 @@ async def api_mark_listed(
     session.commit()
     joblog.add(user.id, f"marked {len(items)} rows listed on {label}")
     return {"ok": True, "marked": len(items)}
+
+
+# Declared ahead of `/export/{name}`. FastAPI matches in declaration order and
+# these do not overlap — one is a POST two segments deep — but the pair is the
+# same shape as the one that has already broken here once, and keeping the
+# specific route first costs nothing.
+@router.post("/export/tcgplayer/match")
+async def export_tcgplayer_match(
+    file: UploadFile = File(...),
+    rule: str = inventory.DEFAULT_RULE,
+    id: list[int] | None = Query(None),
+    session=Depends(db_session),
+    user: db.User = Depends(owner),
+):
+    """A TCGplayer pricing export in, the seller's own rows back out.
+
+    The upload is theirs and stays theirs: it is read once, never written to
+    disk by us, and nothing from it is stored. The quantities it contains are
+    their positions on another marketplace and are not read at all. See
+    `foilstack.tcgplayer` for why the round trip is necessary — TCGplayer
+    identifies a listing by a SKU id this catalogue has no way to know.
+    """
+    rule = rule if rule in inventory.RULE_IDS else inventory.DEFAULT_RULE
+    chosen = set(id or [])
+    rows = inventory.export_rows(session, user.id, rule, ids=chosen or None)
+    if not rows:
+        raise HTTPException(400, "nothing in stock to list")
+
+    try:
+        body, report = await run_in_threadpool(tcgplayer.fill, _chunks(file), rows)
+    except tcgplayer.NotAPricingExport as exc:
+        joblog.add(user.id, f"tcgplayer match rejected · {exc}")
+        raise HTTPException(400, str(exc)) from exc
+
+    joblog.add(user.id, f"tcgplayer match · {report.summary()} · {rule}")
+    # Named individually rather than counted, because "12 not in the export"
+    # is a number a seller can do nothing with and a list of twelve cards is
+    # twelve things they can go and check.
+    for label in (report.unmatched + report.ambiguous + report.unpriced)[:6]:
+        joblog.add(user.id, f"  skipped {label}")
+
+    return Response(
+        content=body,
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="tcgplayer-listings.csv"'},
+    )
+
+
+def _chunks(file: UploadFile) -> Iterator[bytes]:
+    """The upload in blocks, with a ceiling.
+
+    A whole product line is around 100 MB, so the ceiling has to be generous —
+    but it has to exist, because this route accepts a file and the size of that
+    file is decided by whoever is signed in.
+    """
+    total = 0
+    while chunk := file.file.read(1 << 20):
+        total += len(chunk)
+        if total > tcgplayer.MAX_UPLOAD_BYTES:
+            raise tcgplayer.NotAPricingExport(
+                f"that file is larger than {tcgplayer.MAX_UPLOAD_BYTES // (1 << 20)} MB"
+            )
+        yield chunk
 
 
 @router.get("/export/{name}")

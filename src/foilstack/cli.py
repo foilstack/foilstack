@@ -86,6 +86,7 @@ async def cmd_ingest(args) -> int:
                     source=plugin.name,
                     source_id=namespaced,
                     name=record.name,
+                    source_name=record.source_name,
                     game=record.game,
                     set_name=record.set_name,
                     number=record.number,
@@ -98,6 +99,11 @@ async def cmd_ingest(args) -> int:
         else:
             existing.market = record.market
             existing.image_url = record.image_url
+            # Refreshed rather than left alone, which is what makes a re-ingest
+            # the way to backfill this column onto a catalogue that predates
+            # it. A field only written on insert is a field an existing
+            # catalogue never gets.
+            existing.source_name = record.source_name
         seen += 1
         if seen % 250 == 0:
             session.commit()

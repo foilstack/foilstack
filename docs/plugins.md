@@ -59,3 +59,70 @@ transform = "money2"
 
 Adding a marketplace means writing a file a reviewer can read in ten seconds and
 be certain does nothing else. See `src/foilstack/plugins/`.
+
+A marketplace's own vocabulary is not a transform. `Condition` on a TCGplayer
+upload is "Near Mint Foil", one string carrying both the condition and the
+printing; the transform list in `exports.py` is deliberately too small to build
+that, and growing it would end in an expression language nobody designed. The
+translation belongs in `inventory.export_rows`, which is why the row carries
+`tcg_condition` and `tcg_product_line` alongside the plain `condition` and
+`game` every other exporter reads.
+
+### The TCGplayer file
+
+Two things about it are worth knowing before you edit `tcgplayer.toml`.
+
+**The header row is validated as a whole.** The uploader compares it against
+the one its own export writes and answers `Headers are not valid!` — not to a
+bad value in a row, and with no hint at which column is at fault. All sixteen
+columns have to be present, in order, including the four this catalogue has
+nothing to put in. `tests/test_exports.py` pins the row character for
+character against a real export.
+
+**`TCGplayer Id` is a SKU id, and we do not have one.** It identifies a
+product *and* a condition *and* a printing: 10th Edition Abundance is product
+15023, but SKU 4519 near mint and 4521 near mint foil. TCGCSV says outright
+that it does not publish SKUs, so this exporter writes the column blank.
+Writing the product id there instead is the tempting fix and the dangerous one
+— the two id spaces overlap numerically, so it does not fail, it edits an
+unrelated listing.
+
+A file with a blank id column is the right shape and not yet uploadable, which
+is why the listings screen offers a round trip instead.
+
+### The round trip
+
+`foilstack.tcgplayer` takes the seller's own **Export Filtered CSV** from the
+TCGplayer pricing screen, finds their stock among its rows, writes `Add to
+Quantity` and `TCG Marketplace Price`, and returns those rows and nothing else.
+
+`Total Quantity` is theirs and is carried through, with one exception: a blank
+one becomes `0`. Their export leaves it blank on every card they hold none of,
+and the uploader will not take a blank on a row it is importing. Only a blank
+one — a row where they already hold five has to keep saying five, or the add is
+applied to a total we invented.
+The ids come back because they were theirs to begin with, and so does every
+informative column — Rarity, Photo URL, the three price columns — which the
+exporter above can only leave empty. The header row is theirs by construction.
+
+There is no shared id to join on, so the join is on five descriptive columns:
+Product Line, Set Name, Product Name, Number and Condition. Measured on a real
+800,344-row export, those are unique for all but 24 keys; the ambiguous ones
+are dropped rather than guessed.
+
+`Product Name` is the reason `cards.source_name` exists. TCGplayer's file
+carries the raw spelling and TCGCSV's `cleanName` — what `cards.name` holds —
+strips punctuation, so joining on `name` loses `Ancestor's Chosen`,
+`Circle of Protection: Blue` and every other card with punctuation in it:
+about one in ten, silently. On the same set the match rate is 89.7% joined on
+`name` and 100% joined on `source_name`.
+
+That column is nullable and only `foilstack ingest` fills it. **A catalogue
+ingested before it existed needs a re-ingest**, or the round trip quietly falls
+back to the cleaned spelling and reports every punctuated card as missing.
+Re-ingest is a catalogue pull, not a re-encode — embeddings are untouched.
+
+Nothing reads the quantities in the uploaded file. They are the seller's
+positions on another marketplace, and the upload is never written to disk or
+stored; it is streamed once, which is what keeps a 100 MB file to about 30 MB
+of memory and a second and a half.

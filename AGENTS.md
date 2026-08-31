@@ -331,6 +331,34 @@ Two habits worth keeping:
   and then says `ON CONFLICT DO NOTHING` anyway. Being safe to run twice
   matters more than being efficient — the operator reaching for it is usually
   the one unsure whether the last attempt finished.
+* **A TCGplayer upload is checked header-first, and its ids are SKU ids.** The
+  uploader compares the whole header row against the one its own export writes
+  and answers `Headers are not valid!` — no column named, no row examined. So
+  `tcgplayer.toml` carries all sixteen columns in order, four of them
+  deliberately empty, and a test pins the row against a real export. The
+  second half is worse: `TCGplayer Id` identifies a product *and* a condition
+  *and* a printing. 10th Edition Abundance is product 15023 and SKU 4519 near
+  mint, 4521 near mint foil. TCGCSV states it does not publish SKUs, so the
+  exporter writes that column blank — and the obvious shortcut of putting
+  `source_ref` there is the bad kind of wrong, because the id spaces overlap
+  and a row that resolves to some other card's SKU edits that listing instead
+  of failing. What makes a file uploadable is `foilstack.tcgplayer`, which
+  starts from the seller's own export and takes the ids from there.
+* **`cards.name` is the cleaned spelling and cannot be joined on.** TCGCSV
+  gives both: `cleanName`, which is what `name` holds and what reads and
+  searches properly, and `name`, which is what every TCGplayer CSV carries.
+  They differ exactly where it matters — `Ancestor's Chosen` is stored as
+  `Ancestors Chosen` — so a listing file matched on `name` loses about one card
+  in ten, and loses them silently. `source_name` holds the raw one. It is
+  nullable and only `ingest` writes it, on insert **and on update**, because a
+  field written only on insert is a field an existing catalogue never gets;
+  backfilling an install means re-running `ingest`, which is a catalogue pull
+  and not a re-encode.
+
+  Reverse-engineering `cleanName` instead was tried and abandoned at 98.5%
+  across four games. Every further rule — periods vanish, `&` becomes "and" —
+  is a guess, and a wrong guess is not an error but a card that quietly fails
+  to be listed.
 * **`sync_state` is keyed per source *and* game.** It was keyed per source
   once, and a successful Magic sync made every other catalogue believe its own
   first run was already up to date.

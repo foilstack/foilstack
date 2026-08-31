@@ -56,7 +56,19 @@
     <div class="sec-label" style="margin-top: 16px">Download</div>
     {% for c in channels %}
     {% if c.on and c.exporter %}
+    {% if c.match_href %}
+    <form class="match" method="post" action="{{ c.match_href }}" enctype="multipart/form-data">
+      <input type="file" name="file" accept=".csv,text/csv" required>
+      <button class="btn" type="submit">{{ c.exporter.label }} CSV</button>
+      <div class="s">
+        Needs your own <b>Export Filtered CSV</b> from TCGplayer&rsquo;s pricing
+        screen: their ids name a card <i>and</i> a condition, so only their file
+        has them. Your quantities in it are not read.
+      </div>
+    </form>
+    {% else %}
     <a class="btn" style="width: 100%; margin-bottom: 4px" href="{{ c.csv_href }}">{{ c.exporter.label }} CSV</a>
+    {% endif %}
     {% endif %}
     {% endfor %}
   </div>

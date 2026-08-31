@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import select
 
 from foilstack import db
+from foilstack.plugins.sources.tcgcsv import PRODUCT_LINES
 
 # Multipliers applied to market price when suggesting a list price. Condition
 # is the seller's own call: we never infer it from an image, because a
@@ -196,6 +197,38 @@ def resolve_printing(
     return pick_printing(finish, by_sub), False
 
 
+# TCGplayer spells conditions out. Our codes are for a person typing at a pile
+# of cards; the upload wants the words its own export writes, and a file that
+# says "NM" is a file it rejects.
+TCG_CONDITION = {
+    "NM": "Near Mint",
+    "LP": "Lightly Played",
+    "MP": "Moderately Played",
+    "HP": "Heavily Played",
+    "DMG": "Damaged",
+}
+
+
+def tcg_condition(condition: str, sub_type: str | None) -> str:
+    """The `Condition` column of a TCGplayer upload, which is not just condition.
+
+    It is condition *and printing*: "Near Mint" and "Near Mint Foil" are two
+    values of one column, because on TCGplayer they are two different things to
+    sell. "Normal" is the absent case rather than a word that appears — a
+    non-foil card is "Near Mint", never "Near Mint Normal".
+
+    Whatever the catalogue calls the printing is what goes on the end, which is
+    right for every game because both strings come from the same upstream:
+    "Foil" for Magic, "Holofoil" for Dragon Ball, "1st Edition Holofoil" for
+    Pokemon. Inventing a shorter list here would flatten exactly the
+    distinction `sub_type` exists to keep.
+    """
+    name = TCG_CONDITION.get(condition, condition)
+    if not sub_type or sub_type == "Normal":
+        return name
+    return f"{name} {sub_type}"
+
+
 def sku(item_id: int) -> str:
     """A stable internal SKU.
 
@@ -276,6 +309,19 @@ def items(
                 "number": card.number,
                 "variant": card.variant,
                 "condition": item.condition,
+                # The same two facts as `condition` and `sub_type`, spelled the
+                # way a TCGplayer upload spells them. Here rather than in the
+                # exporter TOML because exporters are data: a marketplace whose
+                # vocabulary differs from ours needs a translation, and this is
+                # the only place one can live.
+                "tcg_condition": tcg_condition(item.condition, sub),
+                "tcg_product_line": PRODUCT_LINES.get(card.game, card.game),
+                # The raw spelling, and `name` where the catalogue predates the
+                # column. Falling back is a real answer for most cards and a
+                # wrong one for any card with punctuation in it, which is why
+                # the matcher reports what it could not find rather than
+                # quietly returning a shorter file.
+                "tcg_name": card.source_name or card.name,
                 "finish": item.finish,
                 "finish_label": FINISH_LABEL.get(item.finish, item.finish),
                 "is_foil": item.finish == "foil",

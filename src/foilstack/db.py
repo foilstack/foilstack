@@ -94,6 +94,17 @@ class Card(Base):
     source: Mapped[str] = mapped_column(String(64), nullable=False)
     source_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
+    # The same card, spelled the way the source spells it.
+    #
+    # `name` is upstream's cleaned form — punctuation stripped, so
+    # "Ancestor's Chosen" is stored as "Ancestors Chosen". That is the right
+    # thing to search and display against, and the wrong thing to *join* on:
+    # TCGplayer's own CSVs carry the raw spelling, and matching a listing file
+    # on the cleaned one silently loses roughly one card in ten — every
+    # apostrophe, colon and bracket in the catalogue. Nullable because a
+    # catalogue ingested before this column existed has no answer, and a
+    # guessed one is the bug this column exists to avoid.
+    source_name: Mapped[str | None] = mapped_column(Text)
     game: Mapped[str] = mapped_column(String(64), nullable=False)
     set_name: Mapped[str | None] = mapped_column(Text)
     number: Mapped[str | None] = mapped_column(String(32))

@@ -66,6 +66,10 @@ class CardRecord:
     name: str
     game: str
     image_url: str  # required: no image, no matching
+    # The raw spelling, where the source cleans one and keeps both. Optional
+    # because most sources have only one name to give; supply it when yours
+    # does, because a marketplace file joins on the raw form. See `Card`.
+    source_name: str | None = None
     set_name: str | None = None
     number: str | None = None
     variant: str | None = None
