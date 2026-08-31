@@ -1,17 +1,27 @@
 {% extends "base.html" %}
 {% block title %}Listing run · foilstack{% endblock %}
-{% block status %}{{ rows|length }} cards · {{ rule_obj.name }} · {{ run_value|money }} at list{% endblock %}
+{% block status %}{{ card_count }} cards · {{ rows|length }} listings · {{ rule_obj.name }} · {{ run_value|money }} at list{% endblock %}
 
 {% block screen %}
 <div class="bar">
   <h1>Listing run</h1>
   <span class="bar-note">
-    {{ rows|length }} card{{ '' if rows|length == 1 else 's' }}
-    {% if selected_ids %}selected{% else %}· whole inventory{% endif %}
+    {{ card_count }} card{{ '' if card_count == 1 else 's' }}
+    {% if rows|length != card_count %}· {{ rows|length }} listings{% endif %}
+    {% if selected_ids %}· selected{% else %}· whole inventory{% endif %}
   </span>
   <div class="spacer"></div>
   <a class="btn" href="/inventory">Back to inventory</a>
-  <button class="btn btn-primary" type="button" id="mark">Mark {{ rows|length }} as listed</button>
+  {# The button counts what it would change, not what is on screen. With
+     everything already marked it has nothing to do, and saying so is more
+     use than offering the work again. #}
+  {% if mark_ids %}
+  <button class="btn btn-primary" type="button" id="mark">Mark {{ mark_ids|length }} as listed</button>
+  {% else %}
+  <button class="btn" type="button" disabled title="Tick another channel to mark these there too">
+    All {{ card_count }} listed on {{ picked_label }}
+  </button>
+  {% endif %}
 </div>
 
 <div class="split">
@@ -49,7 +59,11 @@
 
     <div class="run-summary">
       <div>floor &nbsp; {{ floor|money }}</div>
-      <div>listed value &nbsp; <b>{{ run_value|money }}</b></div>
+      {# "at list", not "listed value": on this screen "listed" now means a
+         row marked as being on a marketplace, and the same word for the run's
+         total at list price made the summary read as the value of the marked
+         half. #}
+      <div>at list &nbsp; <b>{{ run_value|money }}</b></div>
       <div>vs market &nbsp; <b>{{ '+' if delta >= 0 }}{{ delta|money }}</b></div>
     </div>
 
@@ -97,7 +111,8 @@
             <td class="r muted">{{ r.market|money if r.market is not none else '—' }}</td>
             <td class="r strong">{{ r.list_price|money if r.list_price is not none else '—' }}</td>
             <td>
-              {% if r.listed %}<span class="pill ok">listed · {{ r.listed_channels }}</span>
+              {% if r.listed_partly %}<span class="pill">{{ r.listed_count }} of {{ r.quantity }} listed · {{ r.listed_channels }}</span>
+              {% elif r.listed %}<span class="pill ok">listed · {{ r.listed_channels }}</span>
               {% else %}<span class="pill">ready</span>{% endif %}
             </td>
           </tr>
@@ -123,8 +138,10 @@
 
 {% block scripts %}
 <script>
-$('#mark').addEventListener('click', async ev => {
-  const ids = {{ rows | map(attribute='ids') | sum(start=[]) | list | tojson }};
+// Absent once everything in the run is marked — the bar shows a disabled
+// button with no handler rather than a live one that would do nothing.
+$('#mark')?.addEventListener('click', async ev => {
+  const ids = {{ mark_ids | tojson }};
   const channels = {{ picked | tojson }};
   if (!ids.length) return;
   ev.target.disabled = true;

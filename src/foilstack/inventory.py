@@ -9,6 +9,7 @@ inventing its own arithmetic.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 from sqlalchemy import select
@@ -386,6 +387,19 @@ def items(
     return out
 
 
+def merge_channels(labels: Iterable[str]) -> list[str]:
+    """The distinct channels named across a set of copies.
+
+    `listed_channels` holds the comma-joined label of one marking run, not a
+    single channel, so two copies reading `tcgplayer` and `ebay, tcgplayer`
+    name three strings and two channels. Splitting rather than uniquing the
+    labels is the difference between "listed on eBay and TCGplayer" and a
+    third marketplace called "ebay, tcgplayer".
+    """
+    seen = {c.strip() for label in labels if label for c in label.split(",") if c.strip()}
+    return sorted(seen)
+
+
 def _summarise(values: list[str], labels: dict[str, str] | None = None) -> str:
     """`NM` when they all agree, `2 NM, 1 LP` when they do not."""
     counts: dict[str, int] = {}
@@ -468,7 +482,7 @@ def groups(
         line["guessed"] = sum(1 for c in copies if c["printing_guessed"])
         line["finish_unpriced"] = sum(1 for c in copies if c["finish_unpriced"])
         line["printing_label"] = _summarise([c["sub_type"] or c["finish_label"] for c in copies])
-        channels = sorted({c["listed_channels"] for c in copies if c["listed_channels"]})
+        channels = merge_channels(c["listed_channels"] for c in copies)
         line["listed_label"] = ", ".join(channels) if channels else "—"
         line["listed"] = any(c["listed"] for c in copies)
         line["sold"] = not in_stock
@@ -542,7 +556,32 @@ def export_rows(
         key = (row["card_id"], row["condition"], row["finish"])
         line = lines.get(key)
         if line is None:
-            line = lines[key] = {**row, "quantity": 0, "ids": []}
+            line = lines[key] = {
+                **row,
+                "quantity": 0,
+                "ids": [],
+                "listed_ids": [],
+                # Per copy, because marking is per copy: one line can be
+                # listed on TCGplayer in one copy and nowhere in the other,
+                # and a caller asking "what is left to mark" needs the ids,
+                # not the summary.
+                "copy_channels": {},
+            }
         line["quantity"] += 1
         line["ids"].append(row["id"])
+        line["copy_channels"][row["id"]] = merge_channels([row["listed_channels"]])
+        if row["listed"]:
+            line["listed_ids"].append(row["id"])
+
+    for line in lines.values():
+        # Aggregated over the copies rather than inherited from whichever one
+        # was seen first. Two copies of a card are one row here and two rows in
+        # the database, so a line can be half listed — and the first copy's
+        # answer is then a coin toss presented as a fact.
+        line["channels"] = sorted({c for cs in line["copy_channels"].values() for c in cs})
+        line["listed_channels"] = ", ".join(line["channels"])
+        line["listed_count"] = len(line["listed_ids"])
+        line["listed"] = line["listed_count"] == line["quantity"]
+        line["listed_partly"] = 0 < line["listed_count"] < line["quantity"]
+
     return sorted(lines.values(), key=lambda r: (r["name"].lower(), r["condition"], r["finish"]))

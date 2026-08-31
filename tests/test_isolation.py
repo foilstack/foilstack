@@ -764,7 +764,15 @@ def _fresh_line(source_id: str, name: str, conditions: list[str]) -> dict:
             )
         )
     session.commit()
-    out = {"card_id": card.id}
+    out = {
+        "card_id": card.id,
+        "item_ids": [
+            i.id
+            for i in session.scalars(
+                sa_select(db.InventoryItem).where(db.InventoryItem.card_id == card.id)
+            ).all()
+        ],
+    }
     session.close()
     return out
 
@@ -2533,3 +2541,102 @@ def test_the_wrong_tcgplayer_file_is_refused_with_a_reason(app_and_data):
     )
     assert response.status_code == 400
     assert "Export Filtered CSV" in response.text
+
+
+def _run(client, line, **params):
+    """The listing run for one card's copies and nothing else."""
+    query = "".join(f"&id={i}" for i in line["item_ids"])
+    for key, value in params.items():
+        query += f"&{key}={value}"
+    return client.get("/listings?rule=market" + query).text
+
+
+def test_the_mark_button_counts_cards_not_listings(app_and_data):
+    """Two copies of one card are one marketplace listing and two cards.
+
+    The button used to count the rows on screen, so a seller holding 41 cards
+    across 37 listings was offered "Mark 37 as listed" beside a topbar badge
+    reading 41 and an inventory screen reading 41. Nothing was broken except
+    the only number that said what the button would do.
+    """
+    app, _ = app_and_data
+    line = _fresh_line("t:countcards", "Count Me Twice", ["NM", "NM"])
+    page = _run(_signed_in(app), line)
+
+    assert "Mark 2 as listed" in page, "two cards, however many listings they make"
+    assert "Mark 1 as listed" not in page
+
+
+def test_everything_marked_leaves_nothing_to_mark(app_and_data):
+    """The complaint that started this: all of it listed, still being asked."""
+    app, _ = app_and_data
+    line = _fresh_line("t:allmarked", "Already Listed", ["NM", "LP"])
+    client = _signed_in(app)
+
+    assert (
+        client.post(
+            "/api/listings/mark",
+            json={"ids": line["item_ids"], "channels": ["tcgplayer"]},
+        ).json()["marked"]
+        == 2
+    )
+
+    page = _run(client, line)
+    assert "All 2 listed on TCGplayer" in page
+    assert "Mark 2 as listed" not in page, "there is nothing left to mark"
+
+
+def test_a_second_channel_reopens_the_button(app_and_data):
+    """Listed on TCGplayer is not listed on eBay, and the run knows which."""
+    app, _ = app_and_data
+    line = _fresh_line("t:twochannels", "Also On eBay", ["NM"])
+    client = _signed_in(app)
+    client.post(
+        "/api/listings/mark",
+        json={"ids": line["item_ids"], "channels": ["tcgplayer"]},
+    )
+
+    page = _run(client, line, channel="ebay")
+    assert "Mark 1 as listed" in page, "unlisted on eBay is still work to do"
+
+
+def test_marking_a_second_channel_keeps_the_first(app_and_data):
+    """A card on both marketplaces is on both.
+
+    Overwriting the label said the seller had taken the TCGplayer listing
+    down — which they never said, and which no screen here can do.
+    """
+    from foilstack import db
+
+    app, _ = app_and_data
+    line = _fresh_line("t:keepfirst", "On Both", ["NM"])
+    client = _signed_in(app)
+    for channel in ("tcgplayer", "ebay"):
+        client.post(
+            "/api/listings/mark",
+            json={"ids": line["item_ids"], "channels": [channel]},
+        )
+
+    session = db.session()
+    item = session.get(db.InventoryItem, line["item_ids"][0])
+    assert item.listed_channels == "ebay, tcgplayer"
+    session.close()
+
+
+def test_a_half_marked_line_says_which_half(app_and_data):
+    """One copy listed and one not is neither "listed" nor "ready".
+
+    The line inherited whichever copy was read first, so the same two cards
+    reported either state depending on row order.
+    """
+    app, _ = app_and_data
+    line = _fresh_line("t:halfmarked", "Half Listed", ["NM", "NM"])
+    client = _signed_in(app)
+    client.post(
+        "/api/listings/mark",
+        json={"ids": line["item_ids"][:1], "channels": ["tcgplayer"]},
+    )
+
+    page = _run(client, line)
+    assert "1 of 2 listed" in page
+    assert "Mark 1 as listed" in page, "only the unmarked copy is left"

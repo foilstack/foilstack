@@ -576,6 +576,30 @@ def _seed(source_url: str, preview_url: str) -> None:
     )
     session.commit()
 
+    # Some of it already on a marketplace, including exactly one copy of the
+    # card that has two. Without this the listing screen photographs in one
+    # state only — everything "ready", the button offering the whole run — and
+    # the three states that screen actually has are the reason its counts were
+    # wrong: listed, half listed, and nothing left to mark.
+    stock = session.scalars(
+        select(db.InventoryItem)
+        .where(db.InventoryItem.user_id == user.id, db.InventoryItem.status == "stock")
+        .order_by(db.InventoryItem.id)
+    ).all()
+    listed_at = dt.datetime.now(dt.UTC) - dt.timedelta(days=3)
+    seen: set[tuple] = set()
+    for item in stock[: len(stock) // 2]:
+        # One copy of the duplicated line and not the other, so the "1 of 2
+        # listed" pill has something to render.
+        key = (item.card_id, item.condition, item.finish)
+        if key in seen:
+            continue
+        seen.add(key)
+        item.listed = 1
+        item.listed_channels = "tcgplayer"
+        item.listed_at = listed_at
+    session.commit()
+
     # Prices on the cards still in the queue too. Every review row in the
     # preview rendered without one, because prices were only ever seeded on
     # cards that had already been confirmed — and the price beside a match is
