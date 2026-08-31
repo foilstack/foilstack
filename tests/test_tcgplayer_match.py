@@ -75,9 +75,6 @@ def test_the_columns_we_did_not_come_to_write_are_carried_through_untouched():
     assert row["Rarity"] == "R"
     assert row["TCG Market Price"] == "1.68"
     assert row["TCG Low Price"] == "1.4100"
-    # Blank in their file and blank in ours. Writing it would *set* the total
-    # rather than add to it, which deletes whatever else they have listed.
-    assert row["Total Quantity"] == ""
 
 
 def test_condition_and_printing_pick_different_skus_of_one_card():
@@ -162,6 +159,34 @@ def test_the_quantities_in_their_file_are_never_read():
     # Carried through, because it is a column we do not write — but it must not
     # have been mistaken for stock we hold.
     assert row["Total Quantity"] == "41"
+
+
+def test_a_blank_total_quantity_becomes_an_explicit_zero():
+    """The uploader rejects a blank total on a row it is importing.
+
+    Their export leaves it blank on every card they hold none of, which is
+    most of them, so the file it produces is not one it will take back
+    unaltered. Zero says exactly what blank said, in the spelling it accepts.
+    """
+    body, _ = tcgplayer.fill(_upload(THEIRS), [_ours()])
+    row = dict(zip(tcgplayer.HEADER, list(csv.reader(io.StringIO(body)))[1], strict=True))
+    assert row["Total Quantity"] == "0"
+    assert row["Add to Quantity"] == "3"
+
+
+def test_a_total_quantity_they_already_have_is_never_overwritten():
+    """Zeroing it would apply the add to a total we invented.
+
+    `Total Quantity` sets the count outright. A seller holding five and adding
+    three must end at eight, so the only blank-to-zero rule that is safe is the
+    one that fires on a blank.
+    """
+    theirs = [
+        '"4519","Magic","10th Edition","Abundance","","249","R","Near Mint","1.68","","2.9000","1.4100","5","0","",""'
+    ]
+    body, _ = tcgplayer.fill(_upload(theirs), [_ours()])
+    row = dict(zip(tcgplayer.HEADER, list(csv.reader(io.StringIO(body)))[1], strict=True))
+    assert row["Total Quantity"] == "5"
 
 
 def test_the_file_is_shaped_like_the_one_it_came_from():

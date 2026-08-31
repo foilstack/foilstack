@@ -56,16 +56,23 @@ HEADER = [
     "Photo URL",
 ]
 
-# `Total Quantity` *sets* the count and `Add to Quantity` raises it. foilstack
-# knows what came out of one import, never what the seller already has listed,
-# so it may only ever add — a total written from a partial picture deletes the
-# rest of their stock.
 # A whole Magic product line exports at about 100 MB, so anything below a few
 # hundred is a ceiling that rejects the ordinary case. It exists because the
 # size of an uploaded file is chosen by whoever is signed in, not because any
 # real export approaches it.
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 
+# `Total Quantity` *sets* the count and `Add to Quantity` raises it. foilstack
+# knows what came out of one import, never what the seller already has listed,
+# so it may only ever add — a total written from a partial picture deletes the
+# rest of their stock. Their own value is therefore carried straight through.
+#
+# But it may not be left *blank* on a row being imported, which their export
+# leaves it on every row they hold none of. So a blank one becomes an explicit
+# zero, which says the same thing in the only spelling the uploader accepts.
+# Only a blank one: a row where they already hold five must keep saying five,
+# or the add is applied to a total we just invented.
+TOTAL_COLUMN = "Total Quantity"
 QUANTITY_COLUMN = "Add to Quantity"
 PRICE_COLUMN = "TCG Marketplace Price"
 
@@ -170,6 +177,8 @@ def fill(upload: Iterable[bytes], rows: list[dict[str, Any]]) -> tuple[str, Matc
         line = [their[column] for column in HEADER]
         line[HEADER.index(QUANTITY_COLUMN)] = str(int(ours["quantity"]))
         line[HEADER.index(PRICE_COLUMN)] = f"{float(ours['list_price']):.2f}"
+        if not line[HEADER.index(TOTAL_COLUMN)].strip():
+            line[HEADER.index(TOTAL_COLUMN)] = "0"
         found[key] = line
 
     # Written the way their own export writes it: CRLF, every data field

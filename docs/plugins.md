@@ -95,6 +95,12 @@ is why the listings screen offers a round trip instead.
 `foilstack.tcgplayer` takes the seller's own **Export Filtered CSV** from the
 TCGplayer pricing screen, finds their stock among its rows, writes `Add to
 Quantity` and `TCG Marketplace Price`, and returns those rows and nothing else.
+
+`Total Quantity` is theirs and is carried through, with one exception: a blank
+one becomes `0`. Their export leaves it blank on every card they hold none of,
+and the uploader will not take a blank on a row it is importing. Only a blank
+one — a row where they already hold five has to keep saying five, or the add is
+applied to a total we invented.
 The ids come back because they were theirs to begin with, and so does every
 informative column — Rarity, Photo URL, the three price columns — which the
 exporter above can only leave empty. The header row is theirs by construction.

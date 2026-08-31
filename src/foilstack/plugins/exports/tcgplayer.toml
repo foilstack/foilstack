@@ -78,6 +78,11 @@ transform = "money2"
 # Quantity` *sets* the count and `Add to Quantity` increases it; foilstack
 # knows what came out of one import, not what the seller already has listed,
 # and a total written from a partial picture deletes the rest of their stock.
+#
+# Blank is also not importable — the uploader wants a number here on any row it
+# is taking. Only the round trip can supply one honestly, because only it can
+# see what the seller already holds, so this stays empty and the file stays a
+# description of the format rather than something to upload.
 [[columns]]
 header = "Total Quantity"
 const = ""
