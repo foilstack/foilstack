@@ -16,8 +16,8 @@ Inventory becomes a CSV the seller uploads to a marketplace themselves.
 
 ```
 src/foilstack/
-  cli.py          ingest, embed, sets, rematch, sync-prices, enrich, migrate,
-                  plugins
+  cli.py          ingest, embed, sets, rematch, sync-prices, enrich, purge,
+                  migrate, plugins
   config.py       nearly every setting, read once from the environment
   db.py           the schema. One row in `inventory` is one physical card
   search.py       nearest-neighbour over card_embeddings (cosine, HNSW)
@@ -229,6 +229,25 @@ Two habits worth keeping:
   every one of those is somebody's business data. A single process-wide log
   reads fine on a self-hosted install and hands a hosted seller's activity to
   whoever loads the listings page next.
+* **A write a browser can send twice must survive being sent twice.** One row
+  in `inventory` is one physical card, and confirming a scan inserted one
+  every time the request arrived — so a double-click, a proxy retry, or the
+  same `scan_id` twice in one bulk payload made two cards out of one
+  photograph, which then counted, priced and exported. `_confirm` is
+  idempotent and returns whether it created anything; the partial unique index
+  on `inventory.scan_id` is the half that survives two requests racing, and
+  `FOR UPDATE` on the scan is what makes them queue instead of collide.
+* **A quota is only real if something gives the bytes back.** `usage_bytes`
+  sums `scans.size_bytes`, and discarding used to move a status and nothing
+  else — so storage only ever grew, and the 413 telling a full account to
+  "discard some scans first" asked for something that could not work.
+  Discarding now deletes the image and zeroes the row's `size_bytes`. The row
+  and its candidates stay: they are the record of *why* a scan was thrown
+  away, and they cost almost nothing next to the photograph. Deleting an
+  inventory row deliberately does **not** purge — bulk delete refuses sold
+  rows on the stated grounds that an in-stock row is recoverable "because its
+  scan is on disk", and that promise has to stay true. `foilstack purge` is
+  where an operator asks for those.
 * **Route declaration order survives into the route table.** FastAPI matches
   routes in the order they are declared and routers in the order they are
   included, so a same-shape pair still depends on which came first. Declare
@@ -462,3 +481,10 @@ that file is the whole of the monitoring.
 `FOILSTACK_MULTI_USER=true` requires a real `FOILSTACK_SECRET_KEY`; the app
 refuses to start otherwise, because that key signs session cookies and the
 shipped default is public.
+
+A monitoring file has to be writable from wherever writes it. The `offsite`
+container mounts the backup directory twice — `/backups` read-only, which is
+what it replicates and must not be able to damage, and `/state` writable,
+which is where `OFFSITE_FAILING` goes. It was written to `/backups` at first,
+so a failing run could not raise the alarm and a good one could not clear a
+stale marker: the monitoring was a no-op for as long as it existed.

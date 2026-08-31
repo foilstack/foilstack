@@ -11,6 +11,7 @@ preserved the original order for exactly that reason; keep it.
 from __future__ import annotations
 
 import datetime as dt
+import math
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -24,6 +25,12 @@ from foilstack.web.chrome import _chrome, templates
 from foilstack.web.deps import api_owner, db_session, owner, settings_dep
 
 router = APIRouter()
+
+# A ceiling on what a seller may type into a money field. Not a business rule
+# about how dear a card can be — the dearest card ever sold went for about two
+# million — but a guard on the arithmetic downstream, which has to survive a
+# fat finger on the keyboard as well as a hostile client.
+MAX_MONEY = 100_000_000.0
 
 
 @router.get("/inventory", response_class=HTMLResponse)
@@ -319,9 +326,23 @@ async def api_inventory_update(
                 setattr(item, field, None)
             else:
                 try:
-                    setattr(item, field, max(0.0, float(raw)))
+                    value = float(raw)
                 except (TypeError, ValueError):
                     raise HTTPException(400, f"{field} must be a number") from None
+                # `inf` is a number as far as `float()` is concerned, and it
+                # survived the clamp below because it really is greater than
+                # zero. One of them anywhere in a seller's inventory makes
+                # every total that touches it infinite, and JSON has no way to
+                # write the result — so the analytics screen and the export
+                # both break on a value that was accepted without comment.
+                # `nan` never reached the column, but only by accident:
+                # `max(0.0, nan)` returns 0.0, which silently discarded what
+                # was typed rather than refusing it.
+                if not math.isfinite(value):
+                    raise HTTPException(400, f"{field} must be a finite number")
+                if value > MAX_MONEY:
+                    raise HTTPException(400, f"{field} is implausibly large")
+                setattr(item, field, max(0.0, value))
     if "notes" in payload:
         item.notes = (payload["notes"] or "").strip()[:2000] or None
 

@@ -457,6 +457,15 @@ class InventoryItem(Base):
 
 
 Index("ix_inventory_user_status", InventoryItem.user_id, InventoryItem.status)
+# One row is one physical card, and one scan is one physical card — so a scan
+# may be spoken for exactly once. Partial, because `scan_id` goes NULL when a
+# scan is deleted and any number of rows may have lost theirs.
+Index(
+    "uq_inventory_scan_id",
+    InventoryItem.scan_id,
+    unique=True,
+    postgresql_where=InventoryItem.scan_id.isnot(None),
+)
 
 
 _engine = None
