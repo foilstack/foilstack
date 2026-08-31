@@ -65,6 +65,14 @@ def page_listings(
         for item_id, on in r["copy_channels"].items()
         if not picked.issubset(on)
     )
+    # And what the other button would change: the copies recorded on at least
+    # one channel in this run. The two overlap on purpose — a copy on
+    # TCGplayer with eBay also ticked has something to add and something to
+    # take away, and offering only one of those would make the pair of buttons
+    # disagree about the same row.
+    unmark_ids = sorted(
+        item_id for r in rows for item_id, on in r["copy_channels"].items() if picked & set(on)
+    )
     picked_label = ", ".join(c["name"] for c in CHANNELS if c["key"] in picked)
 
     ids = "".join(f"&id={i}" for i in sorted(chosen))
@@ -112,6 +120,7 @@ def page_listings(
             "picked_label": picked_label,
             "card_count": card_count,
             "mark_ids": mark_ids,
+            "unmark_ids": unmark_ids,
             "selected_ids": sorted(chosen),
             "run_value": run_value,
             "market_value": market_value,
@@ -193,6 +202,28 @@ def page_analytics(
     )
 
 
+def _marking_targets(payload: dict, session, user_id: int) -> tuple[list, list[str]]:
+    """The rows and channels named by a mark/unmark request.
+
+    Shared so the two directions cannot drift, and so neither can be written
+    without the `user_id` filter — the whole difference between marking your
+    own cards and marking somebody else's is one `where` clause.
+    """
+    ids = [int(i) for i in (payload.get("ids") or [])]
+    channels = [c for c in (payload.get("channels") or []) if c in {c2["key"] for c2 in CHANNELS}]
+    if not ids:
+        raise HTTPException(400, "no rows selected")
+    if not channels:
+        raise HTTPException(400, "no channels selected")
+    items = session.scalars(
+        select(db.InventoryItem).where(
+            db.InventoryItem.id.in_(ids),
+            db.InventoryItem.user_id == user_id,
+        )
+    ).all()
+    return list(items), channels
+
+
 @router.post("/api/listings/mark")
 async def api_mark_listed(
     request: Request,
@@ -205,34 +236,56 @@ async def api_mark_listed(
     button that calls it does not claim to: you export the CSV, you upload it,
     and this is how you tell foilstack you did.
     """
-    payload = await request.json()
-    ids = [int(i) for i in (payload.get("ids") or [])]
-    channels = [c for c in (payload.get("channels") or []) if c in {c2["key"] for c2 in CHANNELS}]
-    if not ids:
-        raise HTTPException(400, "no rows selected")
-    if not channels:
-        raise HTTPException(400, "no channels selected")
-
-    label = ", ".join(channels)
-    items = session.scalars(
-        select(db.InventoryItem).where(
-            db.InventoryItem.id.in_(ids),
-            db.InventoryItem.user_id == user.id,
-        )
-    ).all()
+    items, channels = _marking_targets(await request.json(), session, user.id)
     now = dt.datetime.now(dt.UTC)
     for item in items:
         # Added to, not replaced. A card listed on TCGplayer and then also on
         # eBay is on both, and overwriting the label said the seller had taken
-        # the first listing down — which they never told us and which there is
-        # no screen to do.
+        # the first listing down — which they never told us. Taking one down is
+        # `unmark`, which names the channel it is removing.
         on = set(inventory.merge_channels([item.listed_channels or ""])) | set(channels)
         item.listed = 1
         item.listed_channels = ", ".join(sorted(on))
         item.listed_at = now
     session.commit()
-    joblog.add(user.id, f"marked {len(items)} cards listed on {label}")
+    joblog.add(user.id, f"marked {len(items)} cards listed on {', '.join(channels)}")
     return {"ok": True, "marked": len(items)}
+
+
+@router.post("/api/listings/unmark")
+async def api_unmark_listed(
+    request: Request,
+    session=Depends(db_session),
+    user: db.User = Depends(api_owner),
+):
+    """Take these rows back off these channels — in our record of it.
+
+    The counterpart to `mark`, and the same disclaimer twice over: this does
+    not delete a live listing any more than marking created one. A seller who
+    ends an auction tells foilstack here, and the card returns to the run so
+    the next export contains it again.
+    """
+    items, channels = _marking_targets(await request.json(), session, user.id)
+    dropped = set(channels)
+    changed = 0
+    for item in items:
+        on = set(inventory.merge_channels([item.listed_channels or ""]))
+        left = on - dropped
+        if left == on:
+            continue
+        changed += 1
+        item.listed_channels = ", ".join(sorted(left)) or None
+        # `listed` is "on a marketplace somewhere", so it survives losing one
+        # of two channels and falls only when the last one goes. `listed_at`
+        # goes with it: on a row still listed it dates the remaining listing,
+        # which this did not touch, and on an empty one it would date a
+        # listing that no longer exists.
+        item.listed = 1 if left else 0
+        if not left:
+            item.listed_at = None
+    session.commit()
+    joblog.add(user.id, f"unmarked {changed} cards on {', '.join(channels)}")
+    return {"ok": True, "unmarked": changed}
 
 
 # Declared ahead of `/export/{name}`. FastAPI matches in declaration order and

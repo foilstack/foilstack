@@ -218,6 +218,17 @@ def test_stranger_cannot_mark_someone_elses_rows_listed(stranger, app_and_data):
     assert r.json()["marked"] == 0
 
 
+def test_stranger_cannot_unmark_someone_elses_rows(stranger, app_and_data):
+    """Unlisting somebody's card is as much a write as listing it, and the
+    quieter of the two: it puts a card back into an export they already ran."""
+    _, ids = app_and_data
+    r = stranger.post(
+        "/api/listings/unmark",
+        json={"ids": [ids["item"]], "channels": ["tcgplayer"]},
+    )
+    assert r.json()["unmarked"] == 0
+
+
 def test_stranger_cannot_open_the_match_panel(stranger, app_and_data):
     """The panel names the scan's candidates, which is a statement about what
     someone else photographed."""
@@ -2544,10 +2555,16 @@ def test_the_wrong_tcgplayer_file_is_refused_with_a_reason(app_and_data):
 
 
 def _run(client, line, **params):
-    """The listing run for one card's copies and nothing else."""
+    """The listing run for one card's copies and nothing else.
+
+    A list value repeats the key, because `channel` is genuinely repeated in
+    the query string and a run with two channels ticked is the state the
+    button labels have to get right.
+    """
     query = "".join(f"&id={i}" for i in line["item_ids"])
     for key, value in params.items():
-        query += f"&{key}={value}"
+        for one in value if isinstance(value, list) else [value]:
+            query += f"&{key}={one}"
     return client.get("/listings?rule=market" + query).text
 
 
@@ -2563,8 +2580,8 @@ def test_the_mark_button_counts_cards_not_listings(app_and_data):
     line = _fresh_line("t:countcards", "Count Me Twice", ["NM", "NM"])
     page = _run(_signed_in(app), line)
 
-    assert "Mark 2 as listed" in page, "two cards, however many listings they make"
-    assert "Mark 1 as listed" not in page
+    assert "Mark 2 on TCGplayer" in page, "two cards, however many listings they make"
+    assert "Mark 1 on TCGplayer" not in page
 
 
 def test_everything_marked_leaves_nothing_to_mark(app_and_data):
@@ -2583,7 +2600,7 @@ def test_everything_marked_leaves_nothing_to_mark(app_and_data):
 
     page = _run(client, line)
     assert "All 2 listed on TCGplayer" in page
-    assert "Mark 2 as listed" not in page, "there is nothing left to mark"
+    assert "Mark 2 on" not in page, "there is nothing left to mark"
 
 
 def test_a_second_channel_reopens_the_button(app_and_data):
@@ -2597,14 +2614,15 @@ def test_a_second_channel_reopens_the_button(app_and_data):
     )
 
     page = _run(client, line, channel="ebay")
-    assert "Mark 1 as listed" in page, "unlisted on eBay is still work to do"
+    assert "Mark 1 on eBay" in page, "unlisted on eBay is still work to do"
 
 
 def test_marking_a_second_channel_keeps_the_first(app_and_data):
     """A card on both marketplaces is on both.
 
     Overwriting the label said the seller had taken the TCGplayer listing
-    down — which they never said, and which no screen here can do.
+    down — which they never said. Saying it is `unmark`, which names the
+    channel it removes rather than implying one from a second marking.
     """
     from foilstack import db
 
@@ -2639,4 +2657,124 @@ def test_a_half_marked_line_says_which_half(app_and_data):
 
     page = _run(client, line)
     assert "1 of 2 listed" in page
-    assert "Mark 1 as listed" in page, "only the unmarked copy is left"
+    assert "Mark 1 on TCGplayer" in page, "only the unmarked copy is left"
+
+
+def test_unmarking_one_channel_leaves_the_other(app_and_data):
+    """A card taken off eBay is still on TCGplayer.
+
+    The mirror of the marking rule: removing the label wholesale would say the
+    seller had ended both listings, and they named one.
+    """
+    from foilstack import db
+
+    app, _ = app_and_data
+    line = _fresh_line("t:unmarkone", "Off eBay Only", ["NM"])
+    client = _signed_in(app)
+    client.post(
+        "/api/listings/mark",
+        json={"ids": line["item_ids"], "channels": ["tcgplayer", "ebay"]},
+    )
+    assert (
+        client.post(
+            "/api/listings/unmark",
+            json={"ids": line["item_ids"], "channels": ["ebay"]},
+        ).json()["unmarked"]
+        == 1
+    )
+
+    session = db.session()
+    item = session.get(db.InventoryItem, line["item_ids"][0])
+    assert item.listed_channels == "tcgplayer"
+    assert item.listed == 1, "still on a marketplace, so still listed"
+    assert item.listed_at is not None
+    session.close()
+
+
+def test_unmarking_the_last_channel_makes_the_card_ready_again(app_and_data):
+    """Nowhere listed is not listed, and the run offers it again.
+
+    The point of the feature: a card whose listing ended has to come back into
+    the export, or the seller's next upload silently omits it forever.
+    """
+    from foilstack import db
+
+    app, _ = app_and_data
+    line = _fresh_line("t:unmarklast", "Back On The Shelf", ["NM"])
+    client = _signed_in(app)
+    client.post(
+        "/api/listings/mark",
+        json={"ids": line["item_ids"], "channels": ["tcgplayer"]},
+    )
+    client.post(
+        "/api/listings/unmark",
+        json={"ids": line["item_ids"], "channels": ["tcgplayer"]},
+    )
+
+    session = db.session()
+    item = session.get(db.InventoryItem, line["item_ids"][0])
+    assert item.listed == 0
+    assert item.listed_channels is None
+    assert item.listed_at is None, "a timestamp here dates a listing that is gone"
+    session.close()
+
+    page = _run(client, line)
+    assert "Mark 1 on TCGplayer" in page, "it is work to do again"
+    assert "Unmark" not in page, "nothing left on a picked channel"
+
+
+def test_the_unmark_button_counts_only_what_is_on_a_picked_channel(app_and_data):
+    """One copy listed of two, and the button says one — not two, not none."""
+    app, _ = app_and_data
+    line = _fresh_line("t:unmarkcount", "Half Off", ["NM", "NM"])
+    client = _signed_in(app)
+    client.post(
+        "/api/listings/mark",
+        json={"ids": line["item_ids"][:1], "channels": ["tcgplayer"]},
+    )
+
+    page = _run(client, line)
+    assert "Unmark 1 on TCGplayer" in page
+    # Both buttons live at once, and they are about different copies.
+    assert "Mark 1 on TCGplayer" in page
+
+
+def test_unmarking_ignores_a_channel_the_card_is_not_on(app_and_data):
+    """Taking a card off a marketplace it was never on changes nothing.
+
+    Reported as changed it would tell the seller a listing had come down, and
+    the count in the job log is the only confirmation this screen gives.
+    """
+    app, _ = app_and_data
+    line = _fresh_line("t:unmarkabsent", "Never On eBay", ["NM"])
+    client = _signed_in(app)
+    client.post(
+        "/api/listings/mark",
+        json={"ids": line["item_ids"], "channels": ["tcgplayer"]},
+    )
+
+    r = client.post(
+        "/api/listings/unmark",
+        json={"ids": line["item_ids"], "channels": ["ebay"]},
+    )
+    assert r.json()["unmarked"] == 0
+
+
+def test_both_buttons_name_the_channels_they_act_on(app_and_data):
+    """A count with no channel beside it is ambiguous once two are ticked.
+
+    "Mark 1" against a row already reading "listed · tcgplayer" looks like a
+    bug until you notice the eBay box — the number is about the channel you
+    just ticked, and the button never said so.
+    """
+    app, _ = app_and_data
+    line = _fresh_line("t:bothchannels", "Named On Both", ["NM"])
+    client = _signed_in(app)
+    client.post(
+        "/api/listings/mark",
+        json={"ids": line["item_ids"], "channels": ["tcgplayer"]},
+    )
+
+    page = _run(client, line, channel=["tcgplayer", "ebay"])
+    assert "Mark 1 on TCGplayer, eBay" in page, "still to do on eBay"
+    assert "Unmark 1 on TCGplayer, eBay" in page, "already on TCGplayer"

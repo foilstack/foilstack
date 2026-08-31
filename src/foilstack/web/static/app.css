@@ -270,6 +270,16 @@ body.app {
   font-family: var(--mono); font-size: 11px; color: var(--muted);
   white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis;
 }
+/* The listing run carries three buttons where every other screen carries one
+   or two, and at 1000px — the width the README animation and the landing hero
+   are both captured at — the third wrapped the primary onto a row of its own,
+   orphaned from the pair it belongs to. Wrapping is the wrong give here: the
+   note is repeated verbatim in the status bar along the bottom of the same
+   screen, so truncating it costs nothing, and `.bar-note` already carries the
+   ellipsis to do it. Items only shrink after wrapping, so turning the wrap off
+   is what lets the shrink happen at all. */
+.bar-nowrap { flex-wrap: nowrap; }
+.bar-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 
 /* ==========================================================================
    Controls
