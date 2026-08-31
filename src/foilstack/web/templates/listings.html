@@ -15,6 +15,15 @@
   {# The button counts what it would change, not what is on screen. With
      everything already marked it has nothing to do, and saying so is more
      use than offering the work again. #}
+  {# Shown only when there is something on a picked channel to take off it.
+     No disabled twin, unlike the button beside it: "nothing here is listed" is
+     already what a live Mark button and an empty status column say. #}
+  {% if unmark_ids %}
+  <button class="btn" type="button" id="unmark"
+          title="Undo the record, not the listing — foilstack never posted it">
+    Unmark {{ unmark_ids|length }} on {{ picked_label }}
+  </button>
+  {% endif %}
   {% if mark_ids %}
   <button class="btn btn-primary" type="button" id="mark">Mark {{ mark_ids|length }} as listed</button>
   {% else %}
@@ -138,16 +147,19 @@
 
 {% block scripts %}
 <script>
-// Absent once everything in the run is marked — the bar shows a disabled
-// button with no handler rather than a live one that would do nothing.
-$('#mark')?.addEventListener('click', async ev => {
-  const ids = {{ mark_ids | tojson }};
-  const channels = {{ picked | tojson }};
+const channels = {{ picked | tojson }};
+
+// Either button is absent when it has nothing to do — the bar shows a disabled
+// button or none at all rather than a live one that would change nothing.
+const wireMark = (sel, url, ids) => $(sel)?.addEventListener('click', async ev => {
   if (!ids.length) return;
   ev.target.disabled = true;
   // `quiet`: the button coming back to life is the failure message here.
-  if (await postJSON('/api/listings/mark', { ids, channels }, { quiet: true })) location.reload();
+  if (await postJSON(url, { ids, channels }, { quiet: true })) location.reload();
   else ev.target.disabled = false;
 });
+
+wireMark('#mark', '/api/listings/mark', {{ mark_ids | tojson }});
+wireMark('#unmark', '/api/listings/unmark', {{ unmark_ids | tojson }});
 </script>
 {% endblock %}
