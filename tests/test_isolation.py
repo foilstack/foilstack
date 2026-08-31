@@ -2555,10 +2555,16 @@ def test_the_wrong_tcgplayer_file_is_refused_with_a_reason(app_and_data):
 
 
 def _run(client, line, **params):
-    """The listing run for one card's copies and nothing else."""
+    """The listing run for one card's copies and nothing else.
+
+    A list value repeats the key, because `channel` is genuinely repeated in
+    the query string and a run with two channels ticked is the state the
+    button labels have to get right.
+    """
     query = "".join(f"&id={i}" for i in line["item_ids"])
     for key, value in params.items():
-        query += f"&{key}={value}"
+        for one in value if isinstance(value, list) else [value]:
+            query += f"&{key}={one}"
     return client.get("/listings?rule=market" + query).text
 
 
@@ -2574,8 +2580,8 @@ def test_the_mark_button_counts_cards_not_listings(app_and_data):
     line = _fresh_line("t:countcards", "Count Me Twice", ["NM", "NM"])
     page = _run(_signed_in(app), line)
 
-    assert "Mark 2 as listed" in page, "two cards, however many listings they make"
-    assert "Mark 1 as listed" not in page
+    assert "Mark 2 on TCGplayer" in page, "two cards, however many listings they make"
+    assert "Mark 1 on TCGplayer" not in page
 
 
 def test_everything_marked_leaves_nothing_to_mark(app_and_data):
@@ -2594,7 +2600,7 @@ def test_everything_marked_leaves_nothing_to_mark(app_and_data):
 
     page = _run(client, line)
     assert "All 2 listed on TCGplayer" in page
-    assert "Mark 2 as listed" not in page, "there is nothing left to mark"
+    assert "Mark 2 on" not in page, "there is nothing left to mark"
 
 
 def test_a_second_channel_reopens_the_button(app_and_data):
@@ -2608,7 +2614,7 @@ def test_a_second_channel_reopens_the_button(app_and_data):
     )
 
     page = _run(client, line, channel="ebay")
-    assert "Mark 1 as listed" in page, "unlisted on eBay is still work to do"
+    assert "Mark 1 on eBay" in page, "unlisted on eBay is still work to do"
 
 
 def test_marking_a_second_channel_keeps_the_first(app_and_data):
@@ -2651,7 +2657,7 @@ def test_a_half_marked_line_says_which_half(app_and_data):
 
     page = _run(client, line)
     assert "1 of 2 listed" in page
-    assert "Mark 1 as listed" in page, "only the unmarked copy is left"
+    assert "Mark 1 on TCGplayer" in page, "only the unmarked copy is left"
 
 
 def test_unmarking_one_channel_leaves_the_other(app_and_data):
@@ -2713,7 +2719,7 @@ def test_unmarking_the_last_channel_makes_the_card_ready_again(app_and_data):
     session.close()
 
     page = _run(client, line)
-    assert "Mark 1 as listed" in page, "it is work to do again"
+    assert "Mark 1 on TCGplayer" in page, "it is work to do again"
     assert "Unmark" not in page, "nothing left on a picked channel"
 
 
@@ -2730,7 +2736,7 @@ def test_the_unmark_button_counts_only_what_is_on_a_picked_channel(app_and_data)
     page = _run(client, line)
     assert "Unmark 1 on TCGplayer" in page
     # Both buttons live at once, and they are about different copies.
-    assert "Mark 1 as listed" in page
+    assert "Mark 1 on TCGplayer" in page
 
 
 def test_unmarking_ignores_a_channel_the_card_is_not_on(app_and_data):
@@ -2752,3 +2758,23 @@ def test_unmarking_ignores_a_channel_the_card_is_not_on(app_and_data):
         json={"ids": line["item_ids"], "channels": ["ebay"]},
     )
     assert r.json()["unmarked"] == 0
+
+
+def test_both_buttons_name_the_channels_they_act_on(app_and_data):
+    """A count with no channel beside it is ambiguous once two are ticked.
+
+    "Mark 1" against a row already reading "listed · tcgplayer" looks like a
+    bug until you notice the eBay box — the number is about the channel you
+    just ticked, and the button never said so.
+    """
+    app, _ = app_and_data
+    line = _fresh_line("t:bothchannels", "Named On Both", ["NM"])
+    client = _signed_in(app)
+    client.post(
+        "/api/listings/mark",
+        json={"ids": line["item_ids"], "channels": ["tcgplayer"]},
+    )
+
+    page = _run(client, line, channel=["tcgplayer", "ebay"])
+    assert "Mark 1 on TCGplayer, eBay" in page, "still to do on eBay"
+    assert "Unmark 1 on TCGplayer, eBay" in page, "already on TCGplayer"

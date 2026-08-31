@@ -3,7 +3,7 @@
 {% block status %}{{ card_count }} cards · {{ rows|length }} listings · {{ rule_obj.name }} · {{ run_value|money }} at list{% endblock %}
 
 {% block screen %}
-<div class="bar">
+<div class="bar bar-nowrap">
   <h1>Listing run</h1>
   <span class="bar-note">
     {{ card_count }} card{{ '' if card_count == 1 else 's' }}
@@ -11,26 +11,40 @@
     {% if selected_ids %}· selected{% else %}· whole inventory{% endif %}
   </span>
   <div class="spacer"></div>
+  <div class="bar-actions">
   <a class="btn" href="/inventory">Back to inventory</a>
-  {# The button counts what it would change, not what is on screen. With
-     everything already marked it has nothing to do, and saying so is more
-     use than offering the work again. #}
+  {# Both buttons count what they would change, not what is on screen, and both
+     name the channels they would change it on. The count alone is ambiguous
+     the moment a second channel is ticked: "Mark 6" against six rows already
+     reading "listed · tcgplayer" looks like a bug until you notice the eBay
+     box, and the number moves when you tick it.
+
+     "Mark 6 on TCGplayer" rather than "Mark 6 as listed on TCGplayer", which
+     is what this said first: the bar is captured at 1000px for the README
+     animation and the landing hero, and the longer pair wrapped it onto two
+     rows there. The verb it loses is in the title and in the pills the button
+     produces, and the shorter form reads as the exact undo of the button
+     beside it — which the longer one did not. #}
   {# Shown only when there is something on a picked channel to take off it.
      No disabled twin, unlike the button beside it: "nothing here is listed" is
      already what a live Mark button and an empty status column say. #}
   {% if unmark_ids %}
   <button class="btn" type="button" id="unmark"
-          title="Undo the record, not the listing — foilstack never posted it">
+          title="Record these as no longer listed on {{ picked_label }}. Undoes the record, not the listing — foilstack never posted it.">
     Unmark {{ unmark_ids|length }} on {{ picked_label }}
   </button>
   {% endif %}
   {% if mark_ids %}
-  <button class="btn btn-primary" type="button" id="mark">Mark {{ mark_ids|length }} as listed</button>
+  <button class="btn btn-primary" type="button" id="mark"
+          title="Record these as listed on {{ picked_label }}. Nothing is sent — you upload the CSV yourself.">
+    Mark {{ mark_ids|length }} on {{ picked_label }}
+  </button>
   {% else %}
   <button class="btn" type="button" disabled title="Tick another channel to mark these there too">
     All {{ card_count }} listed on {{ picked_label }}
   </button>
   {% endif %}
+  </div>
 </div>
 
 <div class="split">
