@@ -105,7 +105,13 @@ def usage_bytes(session, user_id: int) -> int:
     Summed from the rows rather than measured on the filesystem: the answer has
     to be available before an upload is accepted, and walking a directory tree
     on every import is a cost that grows with the size of the thing it is
-    protecting. Discarded scans delete their rows, so this falls when they do.
+    protecting.
+
+    It falls when a scan is discarded because `purge_scans` deletes the files
+    and zeroes `size_bytes` in the same breath. That used to be a claim in this
+    docstring and nowhere else: discarding only moved a status, the sum never
+    moved, and the 413 telling a seller to "discard some scans first" asked
+    them to do something that could not work.
     """
     from sqlalchemy import func, select
 
@@ -113,6 +119,72 @@ def usage_bytes(session, user_id: int) -> int:
         select(func.coalesce(func.sum(db.Scan.size_bytes), 0)).where(db.Scan.user_id == user_id)
     )
     return int(total or 0)
+
+
+def purge_scans(session, settings: Settings, scans: list[db.Scan]) -> int:
+    """Delete the images behind discarded scans. Returns the bytes released.
+
+    The row stays and the files go. Those are separable, and they answer
+    different questions: the row carries the candidate list — what the encoder
+    saw, and how close the runners-up were — which is the record of *why* a
+    card was rejected and stays useful long after the photograph of it is not.
+    The photograph is the bulk on disk and the whole of the quota.
+
+    So `size_bytes` becomes 0 rather than the row becoming nothing, and the
+    quota falls by exactly what the disk did.
+
+    Skips any scan an inventory row still points at, whatever its status says.
+    The inventory table and the card page both render that photograph, and a
+    discard endpoint is not where a card someone is selling loses its picture.
+
+    Deliberately not called when an inventory row is *deleted*, even though
+    that marks its scan discarded too. Bulk delete refuses sold rows on the
+    stated grounds that an in-stock row is recoverable "because its scan is on
+    disk" — so deleting a row here and taking its scan with it would quietly
+    withdraw the one promise that makes deleting in bulk safe. Those scans are
+    reclaimed by `foilstack purge`, where an operator is asking for it.
+
+    Missing files are not an error. A purge that has already run, a data
+    directory restored without its scan mirror, and a row from before display
+    copies existed all reach here with nothing to unlink, and all three are
+    ordinary.
+    """
+    from sqlalchemy import select
+
+    ids = [scan.id for scan in scans]
+    if not ids:
+        return 0
+
+    claimed = {
+        scan_id
+        for scan_id in session.scalars(
+            select(db.InventoryItem.scan_id).where(db.InventoryItem.scan_id.in_(ids))
+        )
+        if scan_id is not None
+    }
+
+    released = 0
+    for scan in scans:
+        if scan.id in claimed:
+            continue
+        # Both roots, resolved the same way the image routes resolve them:
+        # `scan_path` is what refuses a stored value that points outside the
+        # directory it is supposed to be relative to, and unlinking is not a
+        # place to start trusting that value more than reading did.
+        for root in (settings.scans_dir, settings.display_dir):
+            path = scan_path(scan.stored_path, root)
+            if path is None:
+                continue
+            try:
+                path.unlink()
+            except OSError as exc:
+                # Worth a line and not worth failing the discard: the seller
+                # asked for the scan to go away, and it has, whatever the
+                # filesystem thinks about the file behind it.
+                logger.warning("could not delete %s: %s", path, exc)
+        released += scan.size_bytes or 0
+        scan.size_bytes = 0
+    return released
 
 
 def extract_archive(archive_path: Path, dest: Path) -> list[Path]:

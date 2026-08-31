@@ -691,12 +691,38 @@ def api_choose(
 
 def _confirm(
     session, user_id: int, scan_id: int, card_id: int, condition: str, finish: str = "nonfoil"
-) -> None:
-    scan = session.get(db.Scan, scan_id)
+) -> bool:
+    """Move one scan into inventory. Returns whether a row was created.
+
+    Confirming twice must not produce two cards. One row in `inventory` is one
+    physical card, and there is exactly one card behind a scan however many
+    times the request arrives — so a double-click, a browser retry, a proxy
+    retry, or the same `scan_id` twice in one bulk payload has to be the same
+    single card, not two. It arrived that way once: nothing here looked at the
+    scan's state, and every replay minted a second row that counted, priced and
+    exported as a card the seller did not have.
+
+    Two guards, because they fail differently. This one answers the ordinary
+    replay, where the first confirmation is committed and visible. The unique
+    index on `inventory.scan_id` answers the race this cannot see, where two
+    requests read before either wrote — `FOR UPDATE` on the scan is what makes
+    them queue rather than collide.
+    """
+    scan = session.get(db.Scan, scan_id, with_for_update=True)
     if scan is None or scan.user_id != user_id:
         raise HTTPException(404, "no such scan")
     if session.get(db.Card, card_id) is None:
         raise HTTPException(400, "no such card")
+
+    existing = session.scalar(
+        select(db.InventoryItem.id).where(db.InventoryItem.scan_id == scan.id)
+    )
+    if existing is not None:
+        # Status and inventory disagreeing is what leaves a card visible
+        # nowhere, so say `confirmed` even when this call created nothing.
+        scan.status = "confirmed"
+        return False
+
     scan.status = "confirmed"
     session.add(
         db.InventoryItem(
@@ -707,6 +733,7 @@ def _confirm(
             finish=finish,
         )
     )
+    return True
 
 
 @router.post("/api/scans/{scan_id}/confirm")
@@ -722,10 +749,11 @@ def api_confirm(
         raise HTTPException(400, "unknown condition")
     if finish not in inventory.FINISHES:
         raise HTTPException(400, "unknown finish")
-    _confirm(session, user.id, scan_id, card_id, condition, finish)
+    created = _confirm(session, user.id, scan_id, card_id, condition, finish)
     session.commit()
-    joblog.add(user.id, f"confirmed scan {scan_id} · {condition} {finish}")
-    return {"ok": True}
+    if created:
+        joblog.add(user.id, f"confirmed scan {scan_id} · {condition} {finish}")
+    return {"ok": True, "created": created}
 
 
 @router.post("/api/scans/commit")
@@ -744,6 +772,12 @@ async def api_commit(
     rows = payload.get("rows") or []
     if not rows:
         raise HTTPException(400, "nothing to commit")
+    committed = 0
+    # One scan is one card however many times the payload names it. The rows
+    # are built from the DOM, so a row rendered twice — or a list assembled
+    # across a re-render — sends the same scan twice, and the unique index
+    # would fail the whole commit rather than the duplicate.
+    seen: set[int] = set()
     for row in rows:
         condition = row.get("condition", "NM")
         finish = row.get("finish", "nonfoil")
@@ -751,10 +785,14 @@ async def api_commit(
             raise HTTPException(400, "unknown condition")
         if finish not in inventory.FINISHES:
             raise HTTPException(400, "unknown finish")
-        _confirm(
+        scan_id = int(row["scan_id"])
+        if scan_id in seen:
+            continue
+        seen.add(scan_id)
+        committed += _confirm(
             session,
             user.id,
-            int(row["scan_id"]),
+            scan_id,
             int(row["card_id"]),
             condition,
             finish,
@@ -763,10 +801,10 @@ async def api_commit(
     guessed = sum(
         1 for r in inventory.items(session, user.id, status="stock") if r["printing_guessed"]
     )
-    joblog.add(user.id, f"committed {len(rows)} scans to inventory")
+    joblog.add(user.id, f"committed {committed} scans to inventory")
     # Told, not buried. A card priced on a guess between printings looks
     # exactly like a card priced on a decision.
-    return {"ok": True, "committed": len(rows), "needs_printing": guessed}
+    return {"ok": True, "committed": committed, "needs_printing": guessed}
 
 
 @router.post("/api/scans/{scan_id}/discard")
@@ -774,11 +812,16 @@ def api_discard(
     scan_id: int,
     session=Depends(db_session),
     user: db.User = Depends(api_owner),
+    settings: Settings = Depends(settings_dep),
 ):
     scan = session.get(db.Scan, scan_id)
     if scan is None or scan.user_id != user.id:
         raise HTTPException(404, "no such scan")
     scan.status = "discarded"
+    # The photograph goes with it, and the quota it was holding comes back.
+    # Without this the only advice the 413 has for a full account — discard
+    # something — moved a status and freed nothing at all.
+    importing.purge_scans(session, settings, [scan])
     session.commit()
     return {"ok": True}
 
@@ -788,6 +831,7 @@ async def api_discard_all(
     request: Request,
     session=Depends(db_session),
     user: db.User = Depends(api_owner),
+    settings: Settings = Depends(settings_dep),
 ):
     payload = await request.json()
     ids = [int(i) for i in (payload.get("scan_ids") or [])]
@@ -796,9 +840,13 @@ async def api_discard_all(
     scans = session.scalars(
         select(db.Scan).where(db.Scan.id.in_(ids), db.Scan.user_id == user.id)
     ).all()
-    for scan in scans:
-        if scan.status != "confirmed":
-            scan.status = "discarded"
+    dropped = [scan for scan in scans if scan.status != "confirmed"]
+    for scan in dropped:
+        scan.status = "discarded"
+    released = importing.purge_scans(session, settings, dropped)
     session.commit()
-    joblog.add(user.id, f"discarded {len(scans)} unreviewed matches")
+    joblog.add(
+        user.id,
+        f"discarded {len(dropped)} unreviewed matches · {released / 1048576:.1f} MB freed",
+    )
     return {"ok": True}

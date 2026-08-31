@@ -28,10 +28,30 @@ echo "This REPLACES the contents of database '$PG_DB'."
 read -r -p "Type the database name to confirm: " CONFIRM
 [[ "$CONFIRM" == "$PG_DB" ]] || { echo "aborted"; exit 1; }
 
-# The web service holds open connections that would block the DROPs inside a
-# --clean dump; stopping it first turns a confusing partial restore into a
-# short outage.
-docker compose stop web
+# Every writer, not just the obvious one. `web` holds open connections that
+# would block the DROPs inside a --clean dump, and `prices` is a second writer
+# that nothing here would otherwise stop: it wakes on its own schedule, and a
+# sync landing in the middle of a restore writes price rows across the
+# boundary, into a database that is halfway to being some earlier day's.
+WRITERS="web prices"
+
+# Whatever happens next, the site comes back. Without this, `set -e` turns any
+# failure after the stop above — a corrupt dump, a psql error, a full disk —
+# into an outage that lasts until somebody notices the site is down and works
+# out why, which is exactly the moment nobody is at their best.
+restart_writers() {
+    local status=$?
+    echo "starting $WRITERS"
+    # shellcheck disable=SC2086
+    docker compose start $WRITERS || true
+    if (( status != 0 )); then
+        echo "restore FAILED (exit $status) — services restarted, database may be partial" >&2
+    fi
+}
+trap restart_writers EXIT
+
+# shellcheck disable=SC2086
+docker compose stop $WRITERS
 gunzip -c "$DUMP" | docker compose exec -T postgres \
     psql --username "$PG_USER" --dbname "$PG_DB" -v ON_ERROR_STOP=1
 
@@ -47,7 +67,5 @@ else
     echo "WARNING: no scan mirror at $SCANS_SRC — the database will come back" >&2
     echo "         with inventory rows whose images are missing." >&2
 fi
-
-docker compose start web
 
 echo "restored $DUMP into $PG_DB"

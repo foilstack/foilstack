@@ -624,6 +624,57 @@ def cmd_migrate(args) -> int:
     return 0
 
 
+def cmd_purge(args) -> int:
+    """Delete the images behind scans that were discarded.
+
+    Discarding now releases a scan's bytes as it happens, so this is for the
+    backlog: every scan discarded before that was true is still on disk and
+    still counted against its owner's quota. It is also the answer for scans
+    discarded by deleting an inventory row, which deliberately leaves the file
+    alone — bulk delete tells the seller an in-stock row is recoverable
+    because its scan is on disk, and that stays true until an operator says
+    otherwise here.
+
+    The candidate list survives. What goes is the photograph and the claim on
+    the quota; what a scan matched, and how closely, is the record of why it
+    was thrown away and costs almost nothing to keep.
+
+    Prints what it would do unless `--yes` is given, because the files are not
+    coming back.
+    """
+    settings = get_settings()
+    db.init(settings.database_url)
+    session = db.session()
+
+    from foilstack.importing import purge_scans
+
+    query = select(db.Scan).where(db.Scan.status == "discarded", db.Scan.size_bytes > 0)
+    if args.user:
+        user = session.scalar(select(db.User).where(db.User.email == args.user.lower()))
+        if user is None:
+            log.error("no account with email %s", args.user)
+            return 2
+        query = query.where(db.Scan.user_id == user.id)
+    scans = session.scalars(query.order_by(db.Scan.id)).all()
+    if not scans:
+        log.info("nothing to purge: no discarded scans are still holding files")
+        return 0
+
+    total = sum(scan.size_bytes or 0 for scan in scans)
+    if not args.yes:
+        log.info(
+            "%s discarded scans holding %.1f MB. Re-run with --yes to delete them.",
+            len(scans),
+            total / 1048576,
+        )
+        return 0
+
+    released = purge_scans(session, settings, list(scans))
+    session.commit()
+    log.info("purged %s scans, freeing %.1f MB", len(scans), released / 1048576)
+    return 0
+
+
 def cmd_plugins(_args) -> int:
     sources = source_plugins()
     exports = export_plugins()
@@ -674,6 +725,18 @@ def main(argv: list[str] | None = None) -> int:
         help="also try cards upstream previously had no image for",
     )
     p_embed.set_defaults(fn=cmd_embed, is_async=True)
+
+    p_purge = sub.add_parser(
+        "purge",
+        help="delete the images behind discarded scans, freeing their quota",
+    )
+    p_purge.add_argument("--user", default=None, help="limit to one account's scans")
+    p_purge.add_argument(
+        "--yes",
+        action="store_true",
+        help="actually delete (without this it only reports what it would free)",
+    )
+    p_purge.set_defaults(fn=cmd_purge, is_async=False)
 
     p_sets = sub.add_parser("sets", help="list the sets a source can fetch")
     p_sets.add_argument("--source", default="tcgcsv")

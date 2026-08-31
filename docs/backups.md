@@ -56,3 +56,10 @@ scripts/restore.sh ~/backups/foilstack/foilstack-latest.sql.gz
 from a `scans/` directory beside the dump unless you name another. It warns
 loudly if there is no mirror to restore from, because a database restored
 without them is an inventory whose every image is a broken link.
+
+It stops `web` *and* `prices` first. Both write to the database, and a price
+sync landing in the middle of a `--clean` restore writes rows across the
+boundary into a database that is halfway to being an earlier day's. Both are
+started again on the way out whatever happens, including a failed restore —
+otherwise the first error after the stop leaves the site down until somebody
+notices.

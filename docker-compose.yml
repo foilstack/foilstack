@@ -246,7 +246,15 @@ services:
       OFFSITE_REMOTE: ${FOILSTACK_OFFSITE_REMOTE:-}
       OFFSITE_EVERY: ${FOILSTACK_OFFSITE_EVERY:-86400}
     volumes:
+      # The same directory twice, deliberately. `/backups` is the copy source
+      # and stays read-only, because the one job of this container is to not be
+      # able to damage the backups it is replicating. `/state` is the same
+      # files writable, and exists only so the failure marker can be written —
+      # it went to `/backups` once, which is read-only, so a failed run could
+      # not raise the alarm and a good one could not clear a stale marker. The
+      # monitoring was a no-op from the first commit.
       - ${FOILSTACK_BACKUP_DIR:-./backups}:/backups:ro
+      - ${FOILSTACK_BACKUP_DIR:-./backups}:/state
       - ${FOILSTACK_RCLONE_CONFIG:-~/.config/rclone}:/config/rclone:ro
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -260,13 +268,19 @@ services:
           # `copy`, never `sync`. sync makes the remote match the local
           # directory, which means a local disk that has just wiped itself
           # would replicate that faithfully to the one copy that survived it.
+          # The markers are excluded from the copy. `copy` never deletes, so
+          # a marker replicated during an outage would sit on the remote for
+          # good, outliving the failure it described by however long the
+          # bucket lasts.
           if rclone copy /backups "$${OFFSITE_REMOTE}" \
-               --config /config/rclone/rclone.conf --stats-one-line -v; then
+               --config /config/rclone/rclone.conf \
+               --exclude "OFFSITE_FAILING" --exclude "BACKUP_FAILING" \
+               --stats-one-line -v; then
             echo "offsite ok at $$(date -Iseconds)"
-            rm -f /backups/OFFSITE_FAILING
+            rm -f /state/OFFSITE_FAILING
           else
             echo "offsite FAILED at $$(date -Iseconds)"
-            echo "$$(date -Iseconds) rclone copy failed" >> /backups/OFFSITE_FAILING
+            echo "$$(date -Iseconds) rclone copy failed" >> /state/OFFSITE_FAILING
           fi
           sleep "$${OFFSITE_EVERY}"
         done
