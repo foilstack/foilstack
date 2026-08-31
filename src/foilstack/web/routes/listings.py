@@ -48,6 +48,25 @@ def page_listings(
     rows = inventory.export_rows(session, user.id, rule, ids=chosen or None)
     run_value = sum((r["list_price"] or 0) * r["quantity"] for r in rows)
     market_value = sum((r["market"] or 0) * r["quantity"] for r in rows)
+
+    # Two different counts, and the screen needs both. A row here is one
+    # marketplace listing; a card is one thing in a box. Four duplicate copies
+    # make 41 cards into 37 listings, and a button offering to mark "37" while
+    # inventory and the topbar both say 41 reads as a bug in whichever number
+    # the seller trusts less.
+    card_count = sum(r["quantity"] for r in rows)
+    # What pressing the button would actually change: the copies not yet
+    # recorded as listed on every channel selected for this run. A card marked
+    # on TCGplayer is still unlisted on eBay, so this grows again the moment a
+    # second channel is ticked.
+    mark_ids = sorted(
+        item_id
+        for r in rows
+        for item_id, on in r["copy_channels"].items()
+        if not picked.issubset(on)
+    )
+    picked_label = ", ".join(c["name"] for c in CHANNELS if c["key"] in picked)
+
     ids = "".join(f"&id={i}" for i in sorted(chosen))
     chans = "".join(f"&channel={c}" for c in sorted(picked))
     exporters = export_plugins()
@@ -90,6 +109,9 @@ def page_listings(
                 for c in CHANNELS
             ],
             "picked": sorted(picked),
+            "picked_label": picked_label,
+            "card_count": card_count,
+            "mark_ids": mark_ids,
             "selected_ids": sorted(chosen),
             "run_value": run_value,
             "market_value": market_value,
@@ -123,7 +145,11 @@ def page_analytics(
         by_game[r["game"]] = by_game.get(r["game"], 0.0) + (r["market"] or 0) * r["quantity"]
     top = sorted(by_game.items(), key=lambda kv: -kv[1])[:5]
     peak = max((v for _, v in top), default=0.0) or 1.0
-    listed_value = sum(r["market"] or 0 for r in rows if r["listed"])
+    # Stock only, to match `totals["market"]` — a sold row counted here made
+    # "listed value" include cards that are no longer on the shelf, and the
+    # "not yet listed" figure beside it is that total minus this one, so one
+    # sold-and-listed card overstated the first and understated the second.
+    listed_value = sum(r["market"] or 0 for r in rows if r["listed"] and not r["sold"])
 
     # Real sales, now that they are recorded. Sell-through and days-to-sell are
     # computable from what we hold; fees and shipping are not, and are not
@@ -194,12 +220,18 @@ async def api_mark_listed(
             db.InventoryItem.user_id == user.id,
         )
     ).all()
+    now = dt.datetime.now(dt.UTC)
     for item in items:
+        # Added to, not replaced. A card listed on TCGplayer and then also on
+        # eBay is on both, and overwriting the label said the seller had taken
+        # the first listing down — which they never told us and which there is
+        # no screen to do.
+        on = set(inventory.merge_channels([item.listed_channels or ""])) | set(channels)
         item.listed = 1
-        item.listed_channels = label
-        item.listed_at = dt.datetime.now(dt.UTC)
+        item.listed_channels = ", ".join(sorted(on))
+        item.listed_at = now
     session.commit()
-    joblog.add(user.id, f"marked {len(items)} rows listed on {label}")
+    joblog.add(user.id, f"marked {len(items)} cards listed on {label}")
     return {"ok": True, "marked": len(items)}
 
 
