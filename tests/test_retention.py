@@ -1,13 +1,16 @@
-"""Confirming twice, and what discarding actually frees.
+"""Confirming twice, what discarding actually frees, and surviving a restart.
 
-Two rules that had nothing holding them up. One row in `inventory` is one
-physical card, so confirming the same scan twice must not make two of them —
-and the storage quota tells a full account to discard something, which has to
-be advice that works.
+Three rules that had nothing holding them up. One row in `inventory` is one
+physical card, so confirming the same scan twice must not make two of them.
+The storage quota tells a full account to discard something, which has to be
+advice that works. And an import only runs inside the web process, so a job
+that process was working on when it died has to be marked failed by the next
+one — left active, it hangs the import screen on work nobody is doing.
 
-Both need a real database: one is enforced partly by a unique index, and the
-other counts bytes with a SQL sum. So this builds its own, the way
-`test_isolation` and `test_cohort` do, and skips cleanly where there is none.
+All three need a real database: one is enforced partly by a unique index, one
+counts bytes with a SQL sum, and one is a sweep over rows at startup. So this
+builds its own, the way `test_isolation` and `test_cohort` do, and skips
+cleanly where there is none.
 """
 
 from __future__ import annotations
@@ -348,3 +351,138 @@ def test_a_full_account_can_upload_after_discarding(client, app_and_data, monkey
     finally:
         monkeypatch.delenv("FOILSTACK_MAX_ACCOUNT_MB", raising=False)
         get_settings.cache_clear()
+
+
+def _job(app_and_data, *, status: str, total: int = 0, processed: int = 0) -> int:
+    """One import job in a given state. Self-contained, like `_scan`."""
+    from foilstack import db
+
+    _, ids, _ = app_and_data
+    session = db.session()
+    job = db.ImportJob(
+        user_id=ids["user"],
+        filename="stack.zip",
+        status=status,
+        total=total,
+        processed=processed,
+    )
+    session.add(job)
+    session.commit()
+    job_id = job.id
+    session.close()
+    return job_id
+
+
+def _job_row(job_id: int):
+    from foilstack import db
+
+    session = db.session()
+    try:
+        job = session.get(db.ImportJob, job_id)
+        return job.status, job.message
+    finally:
+        session.close()
+
+
+def _reap():
+    from foilstack import db, importing
+
+    session = db.session()
+    try:
+        return importing.reap_interrupted_jobs(session)
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize("status", ["pending", "matching", "grouping"])
+def test_reap_fails_every_active_status(app_and_data, status):
+    """All three, not just the two the import screen used to know about.
+
+    `grouping` is the one that was missed everywhere, and it fails differently
+    from the others: the screen never called it active, so a job killed during
+    the cohort pass vanished instead of hanging.
+    """
+    job_id = _job(app_and_data, status=status, total=10, processed=10)
+
+    assert _reap() >= 1
+
+    state, message = _job_row(job_id)
+    assert state == "failed"
+    assert "restart" in message
+
+
+def test_reap_leaves_finished_jobs_alone(app_and_data):
+    """A done job is not a corpse, and a failed one keeps the reason it failed."""
+    done = _job(app_and_data, status="done", total=4, processed=4)
+    already = _job(app_and_data, status="failed", total=4, processed=1)
+
+    from foilstack import db
+
+    session = db.session()
+    session.get(db.ImportJob, already).message = "encoder unreachable"
+    session.commit()
+    session.close()
+
+    _reap()
+
+    assert _job_row(done) == ("done", None)
+    assert _job_row(already) == ("failed", "encoder unreachable")
+
+
+def test_reap_message_says_what_landed(app_and_data):
+    """The counts, because the queue cannot answer "how much of it arrived".
+
+    Matched scans sit in the queue among every other pending scan, so a seller
+    reading it back cannot tell which half of their upload is missing.
+    """
+    partial = _job(app_and_data, status="matching", total=300, processed=47)
+    nothing = _job(app_and_data, status="pending", total=0, processed=0)
+    grouped = _job(app_and_data, status="grouping", total=300, processed=300)
+
+    _reap()
+
+    assert "47 of 300" in _job_row(partial)[1]
+
+    # Nothing was extracted, so there is no partial state to explain — just
+    # do it again.
+    assert "before any scan was matched" in _job_row(nothing)[1]
+
+    # Every scan matched here. Telling this seller to re-upload would be
+    # telling them to duplicate all three hundred.
+    grouped_message = _job_row(grouped)[1]
+    assert "upload" not in grouped_message
+    assert "game or set" in grouped_message
+
+
+def test_import_screen_stops_polling_a_reaped_job(app_and_data, client):
+    """The behaviour the whole change is for.
+
+    Before: a killed job stayed `matching`, the screen picked it as `active`
+    and the browser polled it every 700ms forever under a sweeping bar. The
+    assertion is on the poll call rather than on any markup around it, because
+    starting that loop is the thing that was wrong.
+    """
+    job_id = _job(app_and_data, status="matching", total=300, processed=47)
+
+    assert f"poll({job_id})" in client.get("/app").text
+
+    _reap()
+
+    body = client.get("/app").text
+    assert f"poll({job_id})" not in body
+    # And the seller is told why, rather than the job simply going quiet.
+    assert "47 of 300" in body
+
+
+def test_import_screen_follows_a_grouping_job(app_and_data, client):
+    """The other half of the same omission.
+
+    The screen's status list left `grouping` out, so a job in the cohort pass
+    was not `active` and the page stopped following it — the seller watched
+    the bar reach the end and then saw nothing more, on a job still working.
+    """
+    job_id = _job(app_and_data, status="grouping", total=300, processed=300)
+    try:
+        assert f"poll({job_id})" in client.get("/app").text
+    finally:
+        _reap()

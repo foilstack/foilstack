@@ -237,6 +237,27 @@ Two habits worth keeping:
   idempotent and returns whether it created anything; the partial unique index
   on `inventory.scan_id` is the half that survives two requests racing, and
   `FOR UPDATE` on the scan is what makes them queue instead of collide.
+* **An import only advances while the web process is alive.** `run_import` is
+  a `BackgroundTasks` coroutine, not a queued job — nothing outside the process
+  knows it is running and nothing owns it across a restart. The archive was
+  staged in a `mkdtemp` the reboot took with it, and on the cohort pass the
+  candidate pool is only ever in memory, so there is nothing to resume. Left
+  alone the row keeps saying `matching`, and the import screen polls it every
+  700ms forever under a bar that sweeps for work nobody is doing. Startup
+  sweeps them to `failed` with a message naming what landed. Boot is the proof
+  and no timestamp is needed: if this process is starting, no import is running
+  anywhere — which stops being true the moment there are two replicas, so that
+  assumption is written at the call site. The sweep is also the first thing at
+  boot that opens a connection, `db.init` only building the engine, and it is
+  wrapped for that reason: housekeeping that can fail a boot fails harder than
+  the rows it was tidying.
+
+  The statuses live in one tuple, `importing.ACTIVE_STATUSES`, because the
+  screen's own copy was missing `grouping` — so a job killed during matching
+  hung the page and one killed during the cohort pass vanished from it in
+  silence. Two different wrong answers to the same event, from one list
+  written twice.
+
 * **A quota is only real if something gives the bytes back.** `usage_bytes`
   sums `scans.size_bytes`, and discarding used to move a status and nothing
   else — so storage only ever grew, and the 413 telling a full account to
