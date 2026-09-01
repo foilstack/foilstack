@@ -33,7 +33,7 @@ from sqlalchemy.orm import selectinload
 
 from foilstack import db, importing, inventory, search
 from foilstack.config import Settings
-from foilstack.importing import run_import
+from foilstack.importing import ACTIVE_STATUSES, run_import
 from foilstack.web import joblog
 from foilstack.web.chrome import _chrome, _money, templates
 from foilstack.web.deps import api_owner, db_session, owner, settings_dep
@@ -376,7 +376,7 @@ def page_import(
         .order_by(db.ImportJob.id.desc())
         .limit(6)
     ).all()
-    active = next((j for j in jobs if j.status in ("pending", "matching")), None)
+    active = next((j for j in jobs if j.status in ACTIVE_STATUSES), None)
 
     everything = _queue_rows(session, user.id)
     counts = {

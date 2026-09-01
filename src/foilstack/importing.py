@@ -28,7 +28,10 @@ import asyncio
 import logging
 import os
 import zipfile
+from contextlib import suppress
 from pathlib import Path, PurePosixPath
+
+from sqlalchemy import select
 
 from foilstack import db, images, inventory, search
 from foilstack.config import Settings
@@ -44,6 +47,15 @@ MAX_ENTRY_BYTES = 40 * 1024 * 1024
 # from the laptop it is running on.
 MAX_IMAGES = int(os.getenv("FOILSTACK_MAX_IMAGES", "5000"))
 MAX_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
+
+# The statuses a job is in while something is still working on it. Shared with
+# the import screen rather than spelled out beside it: the screen's own copy
+# was missing `grouping`, so a job killed during the cohort pass disappeared
+# from it without a word while one killed during matching hung it forever —
+# two different wrong answers to the same event. One tuple, and a fourth
+# status cannot be taught to only half the readers.
+ACTIVE_STATUSES = ("pending", "matching", "grouping")
+
 CANDIDATE_COUNT = 5
 # How deep the search goes when the batch has been declared one game or one
 # set. Five is the right number to *show* — past that the runners-up are noise
@@ -336,6 +348,76 @@ async def run_import(job_id: int, archive_path: Path, settings: Settings) -> Non
     finally:
         session.close()
         archive_path.unlink(missing_ok=True)
+        # And the directory it was staged in, which nothing else was removing:
+        # the route makes a fresh `mkdtemp` per upload and then returns, so
+        # this task is the only thing left that could. `rmdir` rather than
+        # `rmtree` because it refuses a directory with anything still in it,
+        # which is what makes it safe against a caller that passed an archive
+        # sitting among other files.
+        with suppress(OSError):
+            archive_path.parent.rmdir()
+
+
+def reap_interrupted_jobs(session) -> int:
+    """Fail every job left mid-flight by a process that is no longer running.
+
+    `run_import` is a background task inside the web process, so a job only
+    advances while that process lives, and nothing owns one across a restart:
+    the archive was staged in a temporary directory the reboot took with it,
+    and on the cohort pass the candidate pool the batch is decided from was
+    only ever in memory. There is no resuming one. The only honest thing left
+    is to say so — because the alternative is what shipped, a row still
+    claiming `matching` that the import screen polls every 700ms forever,
+    under a progress bar that sweeps for work nobody is doing.
+
+    Boot is the proof, which is why this needs no timestamp and no staleness
+    window: if this process is starting then no import is running anywhere, so
+    every active row is by definition a corpse. That holds while the
+    application is one process — uvicorn is started without `--workers` and
+    compose runs a single `web` service. A second replica would break it, by
+    failing jobs the other one is still working through.
+
+    Deliberately not scoped by `user_id`. That is the one documented exception
+    rather than a forgotten rule: this runs at startup on behalf of the
+    install, not inside a request on behalf of a seller.
+    """
+    jobs = session.scalars(
+        select(db.ImportJob).where(db.ImportJob.status.in_(ACTIVE_STATUSES))
+    ).all()
+    for job in jobs:
+        # Message first: it is chosen off the status the job died in, and
+        # overwriting that before reading it would collapse all three cases
+        # onto the last one.
+        job.message = _interrupted_message(job)
+        job.status = "failed"
+    session.commit()
+    return len(jobs)
+
+
+def _interrupted_message(job: db.ImportJob) -> str:
+    """What was lost, in the seller's terms, so they know what to do next.
+
+    Three shapes because three things go wrong. The queue cannot answer "how
+    much of my upload landed" on its own — matched scans sit in it among
+    everything else — so the counts come off the job row, which has them.
+    """
+    if job.status == "grouping":
+        # Every scan matched; what did not finish is the pass that re-points
+        # them at what the rest of the batch implies. Telling this seller to
+        # re-upload would be telling them to duplicate the whole batch.
+        return (
+            f"interrupted by a restart after matching — all {job.total} scans "
+            "are in the queue, matched one by one, but the batch's shared "
+            "game or set was never applied to them"
+        )
+    if job.total:
+        return (
+            f"interrupted by a restart — {job.processed} of {job.total} scans "
+            "matched and are in the queue; upload the archive again for the rest"
+        )
+    # Killed before `extract_archive` returned, so `total` is still its default
+    # and not one scan row exists. Nothing landed and nothing needs sorting out.
+    return "interrupted by a restart before any scan was matched; upload it again"
 
 
 async def _match_one(

@@ -92,6 +92,26 @@ async def _lifespan(_app: FastAPI):
     settings.refs_dir.mkdir(parents=True, exist_ok=True)
     settings.display_dir.mkdir(parents=True, exist_ok=True)
     db.init(settings.database_url)
+    # An import only advances while this process is alive, so anything still
+    # marked active belongs to a process that is not. Left alone, those rows
+    # hang the import screen on a job that will never finish. Safe here only
+    # because the app is a single process; see `reap_interrupted_jobs`.
+    #
+    # Wrapped, because this is the first thing at startup that actually opens
+    # a connection — `db.init` only builds the engine — and housekeeping is
+    # not worth a boot. A web container that refuses to start because Postgres
+    # was two seconds behind it fails harder than the stale rows it was trying
+    # to tidy, and it fails on every page rather than one.
+    try:
+        session = db.session()
+        try:
+            reaped = importing.reap_interrupted_jobs(session)
+        finally:
+            session.close()
+        if reaped:
+            logger.info("failed %s import job(s) left behind by a previous process", reaped)
+    except Exception:
+        logger.exception("could not sweep interrupted import jobs")
     yield
 
 
