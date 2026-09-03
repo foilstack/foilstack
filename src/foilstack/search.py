@@ -14,12 +14,32 @@ from __future__ import annotations
 
 from sqlalchemy import text
 
-# How hard the index looks before answering. The default (40) is tuned for
-# recall on a corpus far larger than a typical self-hosted catalogue; the cost
-# of raising it here is under a millisecond against a job that spends most of
-# its time on image I/O, and the benefit is on exactly the hard scans — worn
-# cards, bad lighting — that the review queue exists for.
-EF_SEARCH = 100
+# How hard the index looks before answering. Measured on 187 real scans against
+# a 144k-vector catalogue, not guessed — an earlier 100 here was picked on the
+# reasoning that pgvector's default of 40 is tuned for a corpus larger than a
+# self-hosted catalogue, which got the direction right and the size wrong.
+#
+#   ef     true best in top 25     ms/query
+#   40           173/187              1.9
+#   100          178/187              2.4
+#   400          184/187              3.7
+#   800          187/187              4.5
+#
+# Nine scans in 187 did not have their nearest neighbour ranked low, they had
+# it missing: a Dragon Ball card whose own printing sits at 0.83 came back as a
+# Magic card at 0.73, with nothing from its set anywhere in fifty rows. Note
+# that recall@1 and recall@25 fail together at every width — when the graph
+# misses, the card is unreachable rather than deep, so asking for more rows is
+# not the lever and `importing.COHORT_CANDIDATE_COUNT` cannot rescue this.
+#
+# Two milliseconds, against an encoder pass measured in hundreds of them. The
+# miss it buys off is the expensive kind: the batch pass finds nothing of its
+# own set among the candidates and strands the row on another game's card, so
+# the seller sees a confident wrong answer rather than a weak right one. 1000
+# is the most pgvector accepts, and the margin below it is for a catalogue that
+# is still growing — recall falls as vectors are added, so this is a number to
+# re-measure after a few more games are ingested, not one to set and forget.
+EF_SEARCH = 800
 
 _SEARCH = text(
     """
