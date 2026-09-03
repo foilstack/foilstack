@@ -73,39 +73,54 @@
           <div class="field-label">Default condition</div>
           <div class="chip-set" id="cond-set">
             {% for c in conditions %}
-            <button class="chip {{ 'on' if c == 'NM' }}" type="button" data-cond="{{ c }}">{{ c }}</button>
+            <button class="chip {{ 'on' if c == match.cond }}" type="button" data-cond="{{ c }}">{{ c }}</button>
             {% endfor %}
           </div>
         </div>
         <div>
           <div class="field-label">Default finish</div>
           <div class="chip-set" id="finish-set">
-            <button class="chip on" type="button" data-finish="nonfoil">Non-foil</button>
-            <button class="chip" type="button" data-finish="foil">Foil</button>
+            <button class="chip {{ 'on' if match.finish == 'nonfoil' }}" type="button" data-finish="nonfoil">Non-foil</button>
+            <button class="chip {{ 'on' if match.finish == 'foil' }}" type="button" data-finish="foil">Foil</button>
           </div>
         </div>
         <div>
           <div class="field-label">Auto-accept above</div>
+          {# Off ships selected, and no percentage is offered as the default.
+             Auto-accepting is the one thing on this screen that puts a card
+             into inventory with nobody having looked at it, and inventory is
+             what gets priced and exported — so it is the seller's to turn on,
+             not something they have to notice and turn off. #}
           <div class="chip-set" id="thr-set">
+            <button class="chip {{ 'on' if not match.thr }}" type="button" data-thr="off">Off</button>
             {% for t in thresholds %}
-            <button class="chip {{ 'on' if t == auto_accept }}" type="button" data-thr="{{ t }}">{{ "%.0f"|format(t * 100) }}%</button>
+            <button class="chip {{ 'on' if t == match.thr }}" type="button" data-thr="{{ t }}">{{ "%.0f"|format(t * 100) }}%</button>
             {% endfor %}
           </div>
         </div>
         <div>
-          {# Off by default, and it has to stay that way: this is the only
-             setting on the screen that overrules a match the encoder was sure
-             about, and a batch that is not really one set is worse off with it
-             on. The seller is asserting something about the pile in their
-             hand, so it is theirs to tick.
+          {# Off until a seller ticks it, and nothing but a tick may turn it
+             on: this is the only setting on the screen that overrules a match
+             the encoder was sure about, and a batch that is not really one set
+             is worse off with it on. The seller is asserting something about
+             the pile in their hand, so it is theirs to tick.
+
+             It is remembered across imports along with the rest of the panel,
+             which is the one place that claim gets stretched — the assertion
+             was about the last pile, not this one. It stays defensible only
+             because the chip is painted on before the file is chosen and sits
+             directly above the Start button, so carrying it forward is a
+             visible answer the seller can untick, not a hidden one.
 
              The label is not "Batch is all one…" — an ellipsis set in the same
              uppercase mono as every other label on the panel reads as a
              truncated string, and sends the reader looking for the rest. #}
           <div class="field-label">Batch is all one</div>
           <div class="chip-set" id="cohort-set">
-            <button class="chip" type="button" data-cohort="game" aria-pressed="false">Game</button>
-            <button class="chip" type="button" data-cohort="set" aria-pressed="false">Set</button>
+            <button class="chip {{ 'on' if match.same_game }}" type="button" data-cohort="game"
+                    aria-pressed="{{ 'true' if match.same_game else 'false' }}">Game</button>
+            <button class="chip {{ 'on' if match.same_set }}" type="button" data-cohort="set"
+                    aria-pressed="{{ 'true' if match.same_set else 'false' }}">Set</button>
           </div>
         </div>
       </div>
@@ -118,7 +133,9 @@
           version does.
         </p>
         <p class="setting-note">
-          A scan skips the review queue only when all three of these are true.
+          Auto-accept is <b>off</b> unless you pick a percentage, and off means
+          every scan waits for you in the review queue. Pick one and a scan
+          skips the queue only when all three of these are true.
         </p>
         <ul class="setting-note setting-list">
           <li>It scores above the threshold you picked.</li>
@@ -314,9 +331,30 @@
 
 /* ---------- import pane ---------- */
 const drop = $('#drop'), fileInput = $('#file'), chip = $('#filechip');
+/* Seeded from what the server already painted, not from the defaults. The
+   chips are the answer; this object only has to agree with them. */
 let chosen = null, settings = {
-  cond: 'NM', thr: {{ auto_accept }}, finish: 'nonfoil', sameGame: false, sameSet: false
+  cond: {{ match.cond|tojson }}, thr: {{ match.thr|tojson }}, finish: {{ match.finish|tojson }},
+  sameGame: {{ match.same_game|tojson }}, sameSet: {{ match.same_set|tojson }}
 };
+
+/* A finished import lands back here through `location.href`, which is a fresh
+   page and a fresh `settings` — so a seller working through a shelf of boxes
+   re-answered the whole panel for every zip. Remembered in a cookie rather
+   than localStorage for the reason the folds are: the server can read it, so
+   the chips come back already right instead of flicking from the default to
+   the remembered one after the script parses. */
+const MATCH_COOKIE = 'foilstack_match_{{ user.id }}';
+
+function saveSettings() {
+  const v = ['cond:' + settings.cond, 'finish:' + settings.finish,
+             'thr:' + (settings.thr === null ? 'off' : settings.thr),
+             'game:' + (settings.sameGame ? 1 : 0),
+             'set:' + (settings.sameSet ? 1 : 0)].join(',');
+  // `path=/app` so it rides with this screen and nothing else — at `/` every
+  // thumbnail would carry it too.
+  document.cookie = MATCH_COOKIE + '=' + v + '; path=/app; max-age=31536000; SameSite=Lax';
+}
 
 const ZIP_RE = /\.zip$/i, IMAGE_RE = /\.(jpe?g|png|tiff?|webp)$/i;
 const MB = 1048576;
@@ -374,10 +412,11 @@ function chipSet(root, key, cast) {
     $$('button', root).forEach(x => x.classList.remove('on'));
     b.classList.add('on');
     settings[key] = cast(b.dataset[key]);
+    saveSettings();
   }));
 }
 chipSet($('#cond-set'), 'cond', String);
-chipSet($('#thr-set'), 'thr', parseFloat);
+chipSet($('#thr-set'), 'thr', v => v === 'off' ? null : parseFloat(v));
 chipSet($('#finish-set'), 'finish', String);
 
 /* Not `chipSet`. Those are radio groups, where exactly one chip is on and
@@ -406,6 +445,7 @@ $$('button', $('#cohort-set')).forEach(b => b.addEventListener('click', () => {
   if (key === 'sameSet' && settings.sameSet) settings.sameGame = true;
   if (key === 'sameGame' && !settings.sameGame) settings.sameSet = false;
   paintCohort();
+  saveSettings();
 }));
 
 /* The bar runs three times over one import: it fills as the archive goes up,
@@ -469,7 +509,10 @@ $('#go').addEventListener('click', async () => {
   $('#go').textContent = 'Importing…';
   const body = new FormData();
   chosen.forEach(f => body.append('archive', f));
-  body.append('auto_accept', settings.thr);
+  // Omitted entirely when Off. The route reads a missing threshold as "this
+  // job never auto-accepts", so there is no value here that means off and no
+  // way for a dropped field to become a permissive one.
+  if (settings.thr !== null) body.append('auto_accept', settings.thr);
   body.append('default_condition', settings.cond);
   body.append('default_finish', settings.finish);
   body.append('same_game', settings.sameGame);

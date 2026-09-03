@@ -193,7 +193,11 @@ def _seed(source_url: str, preview_url: str) -> None:
     import datetime as dt
 
     from foilstack import db
+    from foilstack.config import get_settings
+    from foilstack.importing import scan_path
     from foilstack.web import auth
+
+    scans_dir = get_settings().scans_dir
 
     src = create_engine(source_url, future=True)
     with src.connect() as conn:
@@ -214,12 +218,24 @@ def _seed(source_url: str, preview_url: str) -> None:
                     "  JOIN candidates c ON c.scan_id = s.id AND c.rank = 0"
                     "  JOIN cards cd ON cd.id = c.card_id"
                     " WHERE cd.image_url IS NOT NULL AND cd.market IS NOT NULL"
-                    " ORDER BY c.score DESC LIMIT 60"
+                    "   AND s.size_bytes > 0"
+                    " ORDER BY c.score DESC LIMIT 400"
                 )
             )
             .mappings()
             .all()
         )
+
+        # The photograph has to still be there. Discarding a scan gives the
+        # bytes back — the image is deleted and `size_bytes` zeroed — while the
+        # row and its candidates stay, because they are the record of why it
+        # was thrown away. So the best-scoring pairs in a database that has
+        # been used are exactly the ones most likely to have no picture behind
+        # them, and the screen the hero shoots renders four broken thumbnails
+        # under captions claiming a 94% match. The zero is the cheap half of
+        # the check and the stat is the honest one: a data directory can be
+        # shared, moved or restored without the column knowing.
+        pairs = [r for r in pairs if scan_path(r["stored_path"], scans_dir)][:60]
 
         # The runners-up, from the same matching run.
         #
@@ -470,8 +486,17 @@ def _seed(source_url: str, preview_url: str) -> None:
     # a healthy catalogue can only ever be looked at in their failure state.
     # Magic gets a backfill and Pokemon does not, because that is the real
     # shape of it — MTGJSON is the only enricher and it is a Magic project.
+    #
+    # Every game that got seeded, not a hardcoded pair. The footer names any
+    # ingested game with no sync run behind it, so a fixture that seeds cards
+    # from a third game and a sync log from two puts a red "no prices" badge
+    # across the bottom of the landing hero — a broken install advertised on
+    # the front page, and the install is not broken.
     now = dt.datetime.now(dt.UTC)
-    for game, ago, printings, changed in (("magic", 2, 486, 31), ("pokemon", 5, 118, 9)):
+    ages = {"magic": (2, 486, 31), "pokemon": (5, 118, 9)}
+    seeded_games = sorted(g for g in session.scalars(select(db.Card.game).distinct()) if g)
+    for game in seeded_games:
+        ago, printings, changed = ages.get(game, (3, 204, 17))
         session.add(
             db.SyncState(
                 source="tcgcsv",
