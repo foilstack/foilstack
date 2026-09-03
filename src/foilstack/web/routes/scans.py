@@ -362,6 +362,56 @@ def _folded_jobs(request: Request, user_id: int) -> set[int]:
     return {int(part) for part in raw.split(",")[:FOLDED_MAX] if part.isdigit()}
 
 
+# The panel's answers are the same for one seller across batch after batch, so
+# they are remembered per account — and in a cookie for the same reason the
+# folds are: sent with the request, the chips paint right the first time rather
+# than correcting themselves once the script has run. Named per account for the
+# same reason too; one browser can be signed into two of them.
+MATCH_COOKIE = "foilstack_match"
+
+FINISHES = ("nonfoil", "foil")
+
+
+def _match_prefs(
+    request: Request, user_id: int, settings: Settings, thresholds: list[float]
+) -> dict:
+    """What this browser last set the match panel to.
+
+    Every value is checked against what the screen actually offers rather than
+    trusted, because this is a string a browser hands back a year later: a
+    condition that is not a condition, or a threshold that is not one of the
+    chips, would render a row with nothing on and then import under a default
+    the seller could not see. Anything unrecognised falls back to the default
+    one field at a time — a single bad field must not throw away the other
+    four.
+    """
+    raw = request.cookies.get(f"{MATCH_COOKIE}_{user_id}", "")
+    got = dict(part.split(":", 1) for part in raw.split(",") if part.count(":") == 1)
+
+    # None is Off, and Off is what anything unrecognised falls back to. The
+    # cookie writes the literal "off", which fails to parse as a float and
+    # lands in the same place as a missing, mangled or no-longer-offered
+    # value — every road that is not "the seller picked this chip" leads to
+    # reviewing the scan, which is the answer that cannot cost them a card.
+    # Rounded to two places on both sides so a configured 0.945 falls on the
+    # 94% chip rather than on nothing.
+    try:
+        thr = round(float(got.get("thr", "")), 2)
+    except (TypeError, ValueError):
+        thr = None
+
+    same_set = got.get("set") == "1"
+    return {
+        "cond": got["cond"] if got.get("cond") in inventory.CONDITIONS else "NM",
+        "finish": got["finish"] if got.get("finish") in FINISHES else "nonfoil",
+        "thr": thr if thr in thresholds else None,
+        # Widened the way the browser and the server both widen it, so a
+        # hand-edited cookie cannot produce a set cohort with no game behind it.
+        "same_game": same_set or got.get("game") == "1",
+        "same_set": same_set,
+    }
+
+
 @router.get("/app", response_class=HTMLResponse)
 def page_import(
     request: Request,
@@ -377,6 +427,13 @@ def page_import(
         .limit(6)
     ).all()
     active = next((j for j in jobs if j.status in ACTIVE_STATUSES), None)
+
+    # The three standard chips plus whatever this install configured, so an
+    # operator who set 0.90 can actually pick 0.90 and a remembered threshold
+    # always has a chip to paint on. None of them is selected by default —
+    # that is the Off chip's job, and `FOILSTACK_AUTO_ACCEPT` names the
+    # threshold on offer rather than one already running.
+    thresholds = sorted({0.88, 0.92, 0.96, round(settings.auto_accept, 2)})
 
     everything = _queue_rows(session, user.id)
     counts = {
@@ -407,8 +464,8 @@ def page_import(
             "counts": counts,
             "filter": filter,
             "queue_value": sum(r["market"] for r in rows),
-            "auto_accept": settings.auto_accept,
-            "thresholds": [0.88, 0.92, 0.96],
+            "thresholds": thresholds,
+            "match": _match_prefs(request, user.id, settings, thresholds),
             "max_images": importing.MAX_IMAGES,
             "max_mb": settings.max_archive_mb,
             "conditions": inventory.CONDITIONS,

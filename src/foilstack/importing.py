@@ -463,10 +463,25 @@ async def _match_one(
         scan.status = "pending"
         return
 
-    if _may_auto_accept(session, hits, settings, job.auto_accept):
+    if _job_accepts(session, hits, settings, job):
         _accept(session, scan, hits[0][0], job)
     else:
         scan.status = "pending"
+
+
+def _job_accepts(session, hits, settings: Settings, job: db.ImportJob) -> bool:
+    """Whether this job may skip the queue for this scan.
+
+    A job with no threshold never auto-accepts anything. Auto-accept is off
+    unless the seller turned it on, and it is off rather than falling back to
+    the configured default because those are two different answers to "nobody
+    said": one puts every scan in front of a person, the other quietly writes
+    inventory nobody asked it to. The screen has an Off chip and it ships
+    selected, so a stock install reviews everything.
+    """
+    return job.auto_accept is not None and _may_auto_accept(
+        session, hits, settings, job.auto_accept
+    )
 
 
 def _accept(session, scan, card_id: int, job: db.ImportJob) -> None:
@@ -585,7 +600,7 @@ def apply_cohort(
 
         top = cards.get(hits[0][0])
         if top is not None and _cohort_key(top, job.same_set) == cohort:
-            if _may_auto_accept(session, hits[:CANDIDATE_COUNT], settings, job.auto_accept):
+            if _job_accepts(session, hits[:CANDIDATE_COUNT], settings, job):
                 _accept(session, scan, hits[0][0], job)
             continue
 

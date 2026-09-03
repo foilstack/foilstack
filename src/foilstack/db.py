@@ -257,6 +257,10 @@ class ImportJob(Base):
     and a threshold that only exists in a config file is one nobody adjusts —
     but it also has to stay attached to the job afterwards, because "why did
     this scan auto-accept" is unanswerable if the setting has since changed.
+
+    A NULL `auto_accept` means this job never auto-accepted anything, which is
+    the shipped default. It does not mean "fall back to the configured
+    threshold": a job that was never told to skip the queue must not skip it.
     """
 
     __tablename__ = "import_jobs"

@@ -297,6 +297,44 @@ Two habits worth keeping:
   `importing.py` and `FOILSTACK_EMBED_CONCURRENCY` in `cli.py` are module
   constants read at import, and the first of them is printed on the import
   screen as a promise to the seller.
+* **Auto-accept is off unless the seller turns it on.** It is the one control
+  on the import screen that puts a card into inventory with nobody having
+  looked at it, and inventory is what gets priced, exported and sold against —
+  so it ships with an `Off` chip selected and no percentage offered as the
+  default. That is a different answer from "fall back to the configured
+  threshold", and the difference lives in one place: `ImportJob.auto_accept`
+  is NULL for a job that was never given one, and `_job_accepts` reads NULL as
+  never rather than as the default. The browser omits the form field entirely
+  when Off, so there is no value on the wire that means off and no way for a
+  dropped field to become a permissive one. `_may_auto_accept` keeps its own
+  `settings.auto_accept` fallback because it is the matching policy and its
+  tests are about the three rules, not about who asked.
+
+  `FOILSTACK_AUTO_ACCEPT` now names *the threshold on offer*, not one already
+  running. It is still a chip — the grid is the three standard percentages
+  plus the configured value, so an operator who set 0.90 can pick 0.90 and a
+  remembered threshold always has a chip to paint on — and both sides round to
+  two places, so a configured 0.945 lands on the 94% chip rather than on
+  nothing. The row had a real bug before any of this: it offered 88/92/96
+  against a shipped default of 94, so a stock install painted nothing while a
+  threshold was very much running.
+* **The match panel is remembered per account, in a cookie.** A finished
+  import returns to `/app` through `location.href`, which is a fresh page and
+  a fresh `settings` object, so a seller working through a shelf of boxes
+  re-answered the whole panel for every zip. `_match_prefs` reads it at render
+  time for the reason `_folded_jobs` does — the chips paint right the first
+  time instead of flicking from the default once the script parses. Every
+  field is validated against what the screen offers, one field at a time: a
+  cookie survives a year and a condition that is not a condition, or a
+  threshold that is not one of the chips, would import under a setting nothing
+  on screen admits to. Every road that is not "the seller picked this chip"
+  leads to the safe answer — for the threshold that is Off, which cannot cost
+  anyone a card. The cohort tick is remembered too, which is the one
+  place the "the seller is asserting something about the pile in their hand"
+  rule gets stretched — it holds only because the chip is painted on above the
+  Start button before a file is chosen, so a carried-over assertion is one
+  they can see and untick.
+
 * **Bump `_asset_version()` inputs when you add a static file.** It hashes the
   files it knows about; one it does not know about ships behind a stale query
   string, and the deploy then looks like it did nothing. `tests/test_assets.py`

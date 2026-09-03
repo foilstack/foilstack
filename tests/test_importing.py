@@ -110,6 +110,25 @@ def test_clear_winner_is_auto_accepted():
     assert _may_auto_accept(session, [(1, 0.990), (2, 0.800)], _S()) is True
 
 
+def test_a_job_with_no_threshold_never_auto_accepts():
+    """Auto-accept is off unless the seller picked a percentage, and off is a
+    different answer from "fall back to the configured default" — this scan
+    would sail past 0.94 on every other rule."""
+    from types import SimpleNamespace
+
+    from foilstack.importing import _job_accepts
+
+    session = _FakeSession(
+        {
+            1: _FakeCard("Gyarados", "006/102", "Holofoil"),
+            2: _FakeCard("Squirtle", "063/102", "Normal"),
+        }
+    )
+    hits = [(1, 0.990), (2, 0.800)]
+    assert _job_accepts(session, hits, _S(), SimpleNamespace(auto_accept=None)) is False
+    assert _job_accepts(session, hits, _S(), SimpleNamespace(auto_accept=0.88)) is True
+
+
 def test_below_threshold_is_never_auto_accepted():
     from foilstack.importing import _may_auto_accept
 
