@@ -83,6 +83,78 @@ def search(session, vector, model: str, k: int = 5) -> list[tuple[int, float]]:
     return [(int(card_id), float(score)) for card_id, score in rows]
 
 
+_WITHIN = text(
+    """
+    WITH pool AS MATERIALIZED (
+        SELECT e.card_id,
+               e.embedding <=> CAST(:v AS halfvec) AS dist
+          FROM card_embeddings e
+          JOIN cards c ON c.id = e.card_id
+         WHERE e.model = :model
+           AND c.game = :game
+           AND (:set_name = '' OR c.set_name = :set_name)
+    )
+    SELECT card_id, 1 - dist AS score
+      FROM pool
+     ORDER BY dist
+     LIMIT :k
+    """
+)
+
+
+def search_within(
+    session,
+    vector,
+    model: str,
+    *,
+    game: str,
+    set_name: str = "",
+    k: int = 5,
+) -> list[tuple[int, float]]:
+    """The nearest references *inside one game or set*, exactly.
+
+    `search` answers "what does this look like"; this answers "what in this set
+    does this look like", and they are different questions. A card can be
+    absent from the global top fifty and still be the best answer in its own
+    set — that is not an index fault but arithmetic, because the set is a
+    thousandth of the catalogue and the other 999 parts get to crowd it out.
+    So the batch pass cannot be served by reading further down one global
+    ranking, however far down it reads. It has to ask a narrower question.
+
+    Two things about the SQL are load-bearing, and both look like noise:
+
+    * **The distance is computed inside the CTE**, so the outer `ORDER BY`
+      sorts a plain float column. Written the obvious way — filter in the
+      `WHERE`, order by the vector operator — the planner is free to drive the
+      query from the HNSW index and apply the filter afterwards, and on a
+      low-selectivity filter it does. Measured: ordering by `<=>` with
+      `game = 'magic'` walked forty index rows, found none of them Magic, and
+      returned **nothing at all**. Silently empty is the worst possible answer
+      here, because the caller reads it as "this set has no such card".
+    * **`MATERIALIZED`** keeps the planner from inlining the CTE and arriving
+      back at that same plan.
+
+    Between them the index is never consulted and the answer is exact, which is
+    the point: this is the fallback for when approximate search has already let
+    a scan down. Cost is linear in the size of the cohort rather than in the
+    catalogue — 3ms for a set of 161, 40ms for a 4,000-card game, 410ms for a
+    113,000-card one. Only scans that need re-pointing pay it.
+    """
+    if vector is None or len(vector) == 0:
+        return []
+    rows = session.execute(
+        _WITHIN,
+        {
+            "v": as_literal(vector),
+            "model": model,
+            "game": game,
+            "set_name": set_name or "",
+            "k": int(k),
+        },
+    ).all()
+    return [(int(card_id), float(score)) for card_id, score in rows]
+
+
 def count(session, model: str | None = None) -> int:
     """How many reference images are encoded, for the status line."""
     if model is None:
