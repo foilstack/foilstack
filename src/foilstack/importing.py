@@ -30,6 +30,7 @@ import os
 import zipfile
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
+from typing import Any, NamedTuple
 
 from sqlalchemy import select
 
@@ -59,10 +60,12 @@ ACTIVE_STATUSES = ("pending", "matching", "grouping")
 CANDIDATE_COUNT = 5
 # How deep the search goes when the batch has been declared one game or one
 # set. Five is the right number to *show* — past that the runners-up are noise
-# a person has to read — but it is the wrong number to choose from: a Pokemon
-# scan that matched five Magic cards has no conforming runner-up in its top
-# five, and that is precisely the scan the setting exists to rescue. The extra
-# twenty cost nothing in the index and are never stored unless one is used.
+# a person has to read — but it is the wrong number to hold an election on:
+# `_cohort_votes` scores a cohort by how widely it appears across the batch,
+# and a set that is present in every scan's candidates while topping few of
+# them is invisible at five. This is no longer how a stray scan is *rescued* —
+# `search.search_within` does that, and does it without a depth limit at all —
+# so twenty-five is now purely the width of the ballot.
 COHORT_CANDIDATE_COUNT = 25
 
 # How far two printings' prices may diverge before a match between them has to
@@ -74,6 +77,24 @@ MIN_ABSOLUTE_GAP = 1.00
 
 class ImportError_(RuntimeError):
     pass
+
+
+class Pooled(NamedTuple):
+    """What one scan contributes to the batch pass, held until the batch ends.
+
+    The ranking is what the cohort is elected from. The vector is what a scan
+    that lost the election gets re-searched with, and keeping it is what lets
+    the second pass ask a question the first one could not: not "how far down
+    this ranking is something from the batch's set" but "what is the best card
+    *in* that set". Re-encoding to recover it would be an extra encoder pass
+    per stray scan, which is the expensive half of an import.
+
+    4 KB a scan, so 20 MB at the 5000-image ceiling, and it goes when the job
+    does.
+    """
+
+    hits: list[tuple[int, float]]
+    vector: Any
 
 
 def scan_path(stored_path: str, scans_dir: Path) -> Path | None:
@@ -293,14 +314,12 @@ async def run_import(job_id: int, archive_path: Path, settings: Settings) -> Non
 
         # A batch declared one game or one set cannot decide anything until it
         # has seen all of itself, so the auto-accept decision waits for the
-        # second pass and the hits every scan is holding are kept in memory
-        # until then. Held rather than stored: they are the working out, not
-        # the answer, and only the one that gets used is worth a row. Five
-        # thousand scans of twenty-five `(int, float)` pairs is a few megabytes
-        # for the life of one job.
-        pool: dict[int, list[tuple[int, float]]] | None = (
-            {} if (job.same_game or job.same_set) else None
-        )
+        # second pass and what every scan is holding stays in memory until
+        # then. Held rather than stored: it is the working out, not the answer,
+        # and only the one that gets used is worth a row. See `Pooled` for the
+        # size of it — the vectors dominate, at 20 MB for a full 5000-image
+        # archive, which is the price of not re-encoding the strays.
+        pool: dict[int, Pooled] | None = {} if (job.same_game or job.same_set) else None
 
         for path in files:
             try:
@@ -425,7 +444,7 @@ async def _match_one(
     scan,
     settings: Settings,
     job: db.ImportJob,
-    pool: dict[int, list[tuple[int, float]]] | None = None,
+    pool: dict[int, Pooled] | None = None,
 ) -> None:
     path = scan_path(scan.stored_path, settings.scans_dir)
     if path is None:
@@ -459,7 +478,7 @@ async def _match_one(
         # here and re-pointing afterwards would mean writing inventory and then
         # taking it back, and a card that reached inventory has already been
         # priced, exported and possibly sold against.
-        pool[scan.id] = hits
+        pool[scan.id] = Pooled(hits, vector)
         scan.status = "pending"
         return
 
@@ -517,7 +536,7 @@ def _cohort_key(card: db.Card, same_set: bool) -> tuple[str, ...]:
 
 
 def _cohort_votes(
-    pool: dict[int, list[tuple[int, float]]],
+    pool: dict[int, Pooled],
     cards: dict[int, db.Card],
     same_set: bool,
 ) -> dict[tuple[str, ...], float]:
@@ -536,9 +555,9 @@ def _cohort_votes(
     list, which is the signal this counts.
     """
     votes: dict[tuple[str, ...], float] = {}
-    for hits in pool.values():
+    for pooled in pool.values():
         best: dict[tuple[str, ...], float] = {}
-        for card_id, score in hits:
+        for card_id, score in pooled.hits:
             card = cards.get(card_id)
             if card is None:
                 continue
@@ -553,8 +572,10 @@ def _cohort_votes(
 def apply_cohort(
     session,
     job: db.ImportJob,
-    pool: dict[int, list[tuple[int, float]]],
+    pool: dict[int, Pooled],
     settings: Settings,
+    *,
+    accept: bool = True,
 ) -> None:
     """Second pass: hold the batch to the one game, or the one set, it mostly is.
 
@@ -567,17 +588,37 @@ def apply_cohort(
 
     So: work out what the batch agrees on, then walk back through it. A scan
     whose best match already belongs to that cohort is left exactly as it was
-    and decided on its own merits. A scan whose best match does not is moved to
-    its highest-scoring candidate that does — recorded in `cohort_card_id`,
-    which is a claim about the batch and not about the scan, and never
-    auto-accepted. A heuristic about the neighbours is a good reason to put a
-    card in front of a person and a bad reason to skip them.
+    and decided on its own merits. A scan whose best match does not is
+    **searched again, inside the cohort** — recorded in `cohort_card_id`, which
+    is a claim about the batch and not about the scan, and never auto-accepted.
+    A heuristic about the neighbours is a good reason to put a card in front of
+    a person and a bad reason to skip them.
 
-    A scan with nothing conforming anywhere in its candidates keeps the
-    encoder's answer and goes to review too, because the one thing that is
-    certain about it is that it contradicts the rest of the batch.
+    Searching again is the part that had to be learned. This used to read down
+    the scan's existing candidate list for the first entry that conformed, and
+    gave up when none of them did — which sounds equivalent and is not, because
+    a global ranking is a poor place to look for the best member of a small
+    set. A Dragon Ball card whose own printing sat at 0.83 was returned as a
+    Magic card at 0.73 with nothing from its set in fifty rows, so the batch
+    pass found nothing to move it to and stranded it on the wrong game while
+    the right answer sat one filtered query away. Reading deeper is not the
+    fix and no depth would have been: 161 cards out of 144,555 do not have to
+    appear anywhere in a top-N to be the answer. Ask the narrower question
+    instead — `search.search_within`, which is exact.
+
+    So the only scan that still keeps the encoder's answer is one whose cohort
+    turns out to hold no encoded card at all, which the election makes very
+    nearly impossible: the cohort was elected by cards that matched, so at
+    least one of them is encoded. It is counted rather than assumed away.
+
+    `accept=False` runs the pass without the auto-accept half, which is what a
+    re-match over an existing batch wants. Auto-accept is an answer to "may
+    this skip the queue on its way in"; a batch already sitting in the queue is
+    past that, somebody is working through it, and a repair that quietly moved
+    part of it into inventory would be taking a decision nobody asked for
+    behind the back of the person making it.
     """
-    ids = {card_id for hits in pool.values() for card_id, _ in hits}
+    ids = {card_id for pooled in pool.values() for card_id, _ in pooled.hits}
     cards = _load_cards(session, ids)
 
     votes = _cohort_votes(pool, cards, job.same_set)
@@ -593,39 +634,52 @@ def apply_cohort(
 
     scans = {scan.id: scan for scan in job.scans}
     moved = stranded = 0
-    for scan_id, hits in pool.items():
+    for scan_id, pooled in pool.items():
         scan = scans.get(scan_id)
-        if scan is None or not hits:
+        if scan is None or not pooled.hits:
             continue
 
-        top = cards.get(hits[0][0])
+        top = cards.get(pooled.hits[0][0])
         if top is not None and _cohort_key(top, job.same_set) == cohort:
-            if _job_accepts(session, hits[:CANDIDATE_COUNT], settings, job):
-                _accept(session, scan, hits[0][0], job)
+            if accept and _job_accepts(session, pooled.hits[:CANDIDATE_COUNT], settings, job):
+                _accept(session, scan, pooled.hits[0][0], job)
             continue
 
-        pick = next(
-            (
-                (rank, card_id, score)
-                for rank, (card_id, score) in enumerate(hits)
-                if card_id in cards and _cohort_key(cards[card_id], job.same_set) == cohort
-            ),
-            None,
+        within = search.search_within(
+            session,
+            pooled.vector,
+            settings.embed_model,
+            game=cohort[0],
+            set_name=cohort[1] if job.same_set else "",
+            k=1,
         )
-        if pick is None:
+        if not within:
             stranded += 1
             continue
 
-        rank, card_id, score = pick
+        card_id, score = within[0]
         scan.cohort_card_id = card_id
-        if rank >= CANDIDATE_COUNT:
-            # Only the top five are stored, so a pick from deeper in the search
-            # has no row yet and the queue would show a match with no score
-            # beside it and no way back to it. Written at its real rank rather
-            # than appended at five: the rank is what the encoder said, and
-            # "the batch had to reach past nineteen better-scoring cards for
-            # this" is the whole story of the row.
-            session.add(db.Candidate(scan_id=scan.id, card_id=card_id, score=score, rank=rank))
+        rank = next((n for n, (cid, _) in enumerate(pooled.hits) if cid == card_id), None)
+        if rank is None or rank >= CANDIDATE_COUNT:
+            # Only the top five are stored, so a pick the queue has no row for
+            # would render with no score beside it and no way back to it.
+            #
+            # The rank written is the card's real place in the global search
+            # when it had one — "the batch had to reach past nineteen
+            # better-scoring cards for this" is the whole story of that row.
+            # When it had none, it is filed at the end of what was looked at
+            # rather than given an invented position: the filtered search
+            # returns no global rank and computing one would mean scoring the
+            # entire catalogue to answer a question nothing asks. Ordering is
+            # all the column is for here, and last is where it belongs.
+            session.add(
+                db.Candidate(
+                    scan_id=scan.id,
+                    card_id=card_id,
+                    score=score,
+                    rank=len(pooled.hits) if rank is None else rank,
+                )
+            )
         moved += 1
 
     # Set before the commit, not after it. `run_import` happens to commit again
@@ -665,7 +719,11 @@ def _cohort_message(job: db.ImportJob, cohort: tuple[str, ...], moved: int, stra
     label = " · ".join(part for part in cohort if part)
     bits = [f"{what}: {label}", f"{moved} moved to it"]
     if stranded:
-        bits.append(f"{stranded} with nothing in it to move to")
+        # Not a routine outcome any more, and worded so it does not read like
+        # one: since the move is a filtered search rather than a walk down the
+        # candidate list, the only way to land here is a cohort with nothing
+        # encoded in it. That is a catalogue problem, not a match problem.
+        bits.append(f"{stranded} the catalogue had no encoded card for")
     return " · ".join(bits)
 
 
@@ -746,7 +804,53 @@ def _add_to_inventory(
     )
 
 
-async def rematch_scan(session, scan, settings: Settings) -> bool:
+async def rematch_job(session, job: db.ImportJob, settings: Settings) -> tuple[int, int, int]:
+    """Re-match one whole batch, and hold it to its cohort again.
+
+    `rematch_scan` on its own cannot restore what the batch knew — it drops
+    `cohort_card_id` and has no way to earn it back, because one scan is not a
+    batch. So re-matching an archive card by card silently costs the seller
+    every correction the second pass had made, which on a real import is most
+    of the rows it touched. This is the same operation with the batch put back
+    around it: re-encode each scan, collect the rankings, then run the election
+    and the re-pointing over the lot.
+
+    Returns (scans seen, scans that now have a match, failures).
+
+    Scans already confirmed are skipped and therefore do not vote. That is a
+    real difference from the import, where every scan does, and it is the right
+    one: a confirmed scan is inventory, this will not re-decide it, and letting
+    it vote would mean the election could move rows on the strength of cards it
+    is not allowed to touch.
+
+    Nothing here auto-accepts, whatever the job was originally run with — see
+    `apply_cohort`.
+    """
+    pool: dict[int, Pooled] | None = {} if (job.same_game or job.same_set) else None
+    seen = changed = failed = 0
+    for scan in job.scans:
+        if scan.status == "confirmed":
+            continue
+        seen += 1
+        try:
+            if await rematch_scan(session, scan, settings, pool):
+                changed += 1
+        except Exception as exc:  # noqa: BLE001 - one bad scan must not end the run
+            logger.warning("re-match failed for %s: %s", scan.filename, type(exc).__name__)
+            failed += 1
+    session.commit()
+
+    if pool:
+        apply_cohort(session, job, pool, settings, accept=False)
+    return seen, changed, failed
+
+
+async def rematch_scan(
+    session,
+    scan,
+    settings: Settings,
+    pool: dict[int, Pooled] | None = None,
+) -> bool:
     """Re-encode one stored scan and replace its candidates.
 
     Returns True if it now has a match. Used after ingesting a set the seller
@@ -766,8 +870,14 @@ async def rematch_scan(session, scan, settings: Settings) -> bool:
     claim. A person's choice is about the card. The batch's is about a search
     result, and this replaces that search result — so the pick is left pointing
     into a ranking that no longer exists, chosen over runners-up that are gone.
-    The batch cannot be re-run for one scan, so the honest thing is to drop
-    back to what the new search says and let the queue ask.
+    Dropping back to what the new search says and letting the queue ask is the
+    honest answer when one scan is re-matched alone.
+
+    When a whole batch is re-matched, it is not alone, and `pool` is how it
+    says so: the caller collects a `Pooled` per scan and runs `apply_cohort`
+    over the lot afterwards, which puts the claim back having actually re-made
+    it. The search goes deeper in that case for the same reason it does during
+    an import — the ballot needs the width.
     """
     if scan.status == "confirmed":
         return False
@@ -779,7 +889,12 @@ async def rematch_scan(session, scan, settings: Settings) -> bool:
 
     vector = await embed_image(settings.embedder_url, path.read_bytes())
     images.make_display_copy(path, settings.display_dir, scan.stored_path)
-    hits = search.search(session, vector, settings.embed_model, k=CANDIDATE_COUNT)
+    hits = search.search(
+        session,
+        vector,
+        settings.embed_model,
+        k=COHORT_CANDIDATE_COUNT if pool is not None else CANDIDATE_COUNT,
+    )
 
     for candidate in list(scan.candidates):
         session.delete(candidate)
@@ -792,8 +907,10 @@ async def rematch_scan(session, scan, settings: Settings) -> bool:
         return False
 
     scan.best_score = hits[0][1]
-    for rank, (card_id, score) in enumerate(hits):
+    for rank, (card_id, score) in enumerate(hits[:CANDIDATE_COUNT]):
         session.add(db.Candidate(scan_id=scan.id, card_id=card_id, score=score, rank=rank))
     scan.status = "pending"
     scan.error = None
+    if pool is not None:
+        pool[scan.id] = Pooled(hits, vector)
     return True

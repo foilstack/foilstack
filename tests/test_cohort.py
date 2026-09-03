@@ -10,18 +10,30 @@ count before believing a green run, as with `test_isolation.py`.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, text
 
-from foilstack.importing import _cohort_key, _cohort_votes
+from foilstack.importing import Pooled, _cohort_key, _cohort_votes
 
 
 class _Card:
     def __init__(self, game, set_name):
         self.game, self.set_name = game, set_name
+
+
+def _ballot(hits):
+    """A `Pooled` for the election tests, which are about the ranking alone.
+
+    `_cohort_votes` never looks at the vector — the vector is what the pass
+    *acts* on, once the election is over — so these hand it None rather than
+    manufacture something the arithmetic would ignore.
+    """
+    return Pooled(hits, None)
 
 
 def test_the_key_is_the_game_alone_unless_the_set_was_asked_for():
@@ -44,9 +56,9 @@ def test_the_batchs_game_wins_over_a_scattering_of_others():
         3: _Card("mtg", "Alpha"),
     }
     pool = {
-        1: [(1, 0.98), (3, 0.71)],
-        2: [(2, 0.97), (3, 0.70)],
-        3: [(3, 0.93), (1, 0.72)],
+        1: _ballot([(1, 0.98), (3, 0.71)]),
+        2: _ballot([(2, 0.97), (3, 0.70)]),
+        3: _ballot([(3, 0.93), (1, 0.72)]),
     }
     votes = _cohort_votes(pool, cards, same_set=False)
     assert max(votes, key=lambda k: votes[k]) == ("pokemon",)
@@ -69,10 +81,10 @@ def test_a_set_that_rarely_comes_first_still_wins_on_being_everywhere():
         5: _Card("mtg", "Revised"),
     }
     pool = {
-        1: [(2, 0.96), (1, 0.95)],
-        2: [(3, 0.96), (1, 0.95)],
-        3: [(4, 0.96), (1, 0.95)],
-        4: [(5, 0.96), (1, 0.95)],
+        1: _ballot([(2, 0.96), (1, 0.95)]),
+        2: _ballot([(3, 0.96), (1, 0.95)]),
+        3: _ballot([(4, 0.96), (1, 0.95)]),
+        4: _ballot([(5, 0.96), (1, 0.95)]),
     }
     votes = _cohort_votes(pool, cards, same_set=True)
     assert max(votes, key=lambda k: votes[k]) == ("mtg", "Opened")
@@ -84,13 +96,41 @@ def test_one_scan_votes_once_for_a_set_however_many_printings_it_matched():
     scan's worth of evidence."""
     cards = {n: _Card("mtg", "Core") for n in range(1, 8)}
     cards[8] = _Card("mtg", "Small")
-    crowded = {1: [(n, 0.9) for n in range(1, 8)]}
+    crowded = {1: _ballot([(n, 0.9) for n in range(1, 8)])}
     votes = _cohort_votes(crowded, cards, same_set=True)
     assert votes[("mtg", "Core")] == pytest.approx(0.9)
 
 
 # --------------------------------------------------------------------------
 # The pass itself, against a real database.
+
+DIM = 1024
+MODEL = "test-encoder"
+
+
+def _slots(ids):
+    """One embedding slot per seeded card, by id so both sides agree."""
+    return {card_id: n for n, card_id in enumerate(sorted(ids.values()))}
+
+
+def _onehot(slot):
+    v = [0.0] * DIM
+    v[slot] = 1.0
+    return v
+
+
+def _blend(ids, weights):
+    """A vector that leans on the named cards in the proportions given."""
+    slots = _slots(ids)
+    v = [0.0] * DIM
+    for name, weight in weights.items():
+        v[slots[ids[name]]] = weight
+    return v
+
+
+def _literal(vector):
+    return "[" + ",".join(repr(float(x)) for x in vector) + "]"
+
 
 ADMIN_URL = os.getenv(
     "FOILSTACK_TEST_DATABASE_URL",
@@ -112,6 +152,9 @@ def seeded(tmp_path_factory):
     url = ADMIN_URL.rsplit("/", 1)[0] + "/" + name
     os.environ["DATABASE_URL"] = url
     os.environ["FOILSTACK_DATA_DIR"] = str(tmp_path_factory.mktemp("data"))
+    # The pass searches `card_embeddings` by model, so the seeded vectors and
+    # the settings the pass reads have to name the same one.
+    os.environ["EMBED_MODEL"] = MODEL
 
     # Cleared before alembic runs, not after: `migrations/env.py` reads
     # `get_settings()`, so a settings object cached by an earlier import sends
@@ -177,6 +220,24 @@ def seeded(tmp_path_factory):
     session.add_all(cards.values())
     session.commit()
     ids = {k: c.id for k, c in cards.items()}
+
+    # `apply_cohort` searches the catalogue now instead of re-reading a list it
+    # was handed, so the catalogue has to be encoded or the pass has nothing to
+    # find. One slot per card keeps the vectors orthogonal, which is what makes
+    # a filtered search's answer something these tests can state up front: the
+    # cosine between a blend and a card is that card's weight over the blend's
+    # norm, so whichever card carries the most weight wins, and by how much is
+    # arithmetic rather than a property of the encoder.
+    slots = _slots(ids)
+    for card_id, slot in slots.items():
+        session.execute(
+            text(
+                "INSERT INTO card_embeddings (card_id, embedding, model) "
+                "VALUES (:id, CAST(:v AS halfvec), :m)"
+            ),
+            {"id": card_id, "v": _literal(_onehot(slot)), "m": MODEL},
+        )
+    session.commit()
     session.close()
 
     yield url, user.id, ids
@@ -190,15 +251,34 @@ def seeded(tmp_path_factory):
         conn.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
 
 
-def _batch(session, user_id, pool_by_index, *, same_game=False, same_set=True, auto_accept=0.94):
+def _batch(
+    session,
+    user_id,
+    ids,
+    pool_by_index,
+    *,
+    same_game=False,
+    same_set=True,
+    auto_accept=0.94,
+    vectors=None,
+):
     """One import job with a scan per entry in `pool_by_index`.
 
     Each entry is the hit list that scan's search returned; the stored
     candidates are its first five, exactly as `_match_one` would have written
     them. Returns the job and the pool `apply_cohort` expects.
+
+    A scan carries its vector as well as its ranking, because the pass
+    re-searches with it. The default is the blend the hits themselves imply —
+    each matched card weighted by what it scored — which is the honest stand-in
+    for "the vector that produced this ranking" and keeps a filtered search
+    agreeing with the list wherever both have an opinion. Pass `vectors` where
+    the point of the test is that they *disagree*: that is the whole case for
+    searching again, and a default that could never express it would prove
+    nothing.
     """
     from foilstack import db
-    from foilstack.importing import CANDIDATE_COUNT
+    from foilstack.importing import CANDIDATE_COUNT, Pooled
 
     job = db.ImportJob(
         user_id=user_id,
@@ -228,7 +308,14 @@ def _batch(session, user_id, pool_by_index, *, same_game=False, same_set=True, a
         for rank, (card_id, score) in enumerate(hits[:CANDIDATE_COUNT]):
             session.add(db.Candidate(scan_id=scan.id, card_id=card_id, score=score, rank=rank))
         session.commit()
-        pool[scan.id] = hits
+        by_id = {card_id: n for n, card_id in enumerate(sorted(ids.values()))}
+        if vectors is not None and vectors[n] is not None:
+            vector = vectors[n]
+        else:
+            vector = [0.0] * DIM
+            for card_id, score in hits:
+                vector[by_id[card_id]] = score
+        pool[scan.id] = Pooled(hits, vector)
     return job, pool
 
 
@@ -242,6 +329,7 @@ def test_a_stray_game_is_pulled_back_to_the_batchs_own(seeded):
     job, pool = _batch(
         session,
         user_id,
+        ids,
         [
             [(ids["base_a"], 0.97)],
             [(ids["base_b"], 0.96)],
@@ -274,6 +362,7 @@ def test_a_moved_scan_is_never_auto_accepted(seeded):
     job, pool = _batch(
         session,
         user_id,
+        ids,
         [
             [(ids["base_a"], 0.99)],
             [(ids["base_b"], 0.99)],
@@ -293,7 +382,15 @@ def test_a_moved_scan_is_never_auto_accepted(seeded):
     session.close()
 
 
-def test_a_scan_with_nothing_conforming_keeps_the_encoders_answer(seeded):
+def test_a_scan_with_nothing_conforming_is_still_moved(seeded):
+    """The case that used to strand a card on the wrong game.
+
+    The stray's candidate list holds one entry and it is Magic, so there is
+    nothing in it belonging to the batch's set and reading further down would
+    find nothing either — the list is all there is. What rescues it is that the
+    pass does not read the list: it searches Base Set directly, and Base Set
+    has an answer whether or not the global ranking ever mentioned one.
+    """
     from foilstack import db
     from foilstack.config import get_settings
     from foilstack.importing import apply_cohort
@@ -303,18 +400,114 @@ def test_a_scan_with_nothing_conforming_keeps_the_encoders_answer(seeded):
     job, pool = _batch(
         session,
         user_id,
+        ids,
+        [
+            [(ids["base_a"], 0.97)],
+            [(ids["base_b"], 0.96)],
+            [(ids["mtg"], 0.95)],
+        ],
+        # Leans on Blastoise under the Magic card it actually matched. Nothing
+        # in the ranking says so; only the vector does, which is the point.
+        vectors=[None, None, _blend(ids, {"mtg": 0.95, "base_b": 0.44, "base_a": 0.11})],
+    )
+    apply_cohort(session, job, pool, get_settings())
+
+    stray = session.get(db.Scan, max(pool))
+    assert stray.cohort_card_id == ids["base_b"]
+    assert stray.status == "pending"
+    # Never auto-accepted, however it was arrived at.
+    assert stray.auto_accepted == 0
+    assert "the catalogue had no encoded card for" not in (job.message or "")
+    session.close()
+
+
+def test_a_card_absent_from_the_ranking_gets_a_candidate_row_to_show(seeded):
+    """A move the global search never proposed still has to render.
+
+    The queue reads its score off a candidate row, so a card pulled in by the
+    filtered search alone needs one written for it — filed after everything
+    that was actually looked at, because the search that found it does not
+    produce a global rank and inventing one would be a claim about a ranking
+    this card was never in.
+    """
+    from foilstack import db
+    from foilstack.config import get_settings
+    from foilstack.importing import apply_cohort
+
+    _, user_id, ids = seeded
+    session = db.session()
+    job, pool = _batch(
+        session,
+        user_id,
+        ids,
+        [
+            [(ids["base_a"], 0.97)],
+            [(ids["base_b"], 0.96)],
+            [(ids["mtg"], 0.95)],
+        ],
+        vectors=[None, None, _blend(ids, {"mtg": 0.95, "base_b": 0.44, "base_a": 0.11})],
+    )
+    apply_cohort(session, job, pool, get_settings())
+
+    scan = session.get(db.Scan, max(pool))
+    session.refresh(scan)
+    written = [c for c in scan.candidates if c.card_id == ids["base_b"]]
+    assert len(written) == 1
+    assert written[0].rank == 1  # one hit was looked at, so this sits after it
+    # The encoder's own answer stays reachable underneath it.
+    assert ids["mtg"] in [c.card_id for c in scan.candidates]
+    session.close()
+
+
+def test_the_encoders_answer_is_kept_when_the_cohort_has_nothing_encoded(seeded):
+    """The one remaining way to strand a scan, and it is a catalogue fault.
+
+    Every seeded card is encoded, so this has to break that deliberately: a
+    job whose elected cohort names a set with no vectors behind it. The pass
+    must leave the scan alone rather than write a match it cannot justify.
+    """
+    from foilstack import db
+    from foilstack.config import get_settings
+    from foilstack.importing import apply_cohort
+
+    _, user_id, ids = seeded
+    session = db.session()
+    job, pool = _batch(
+        session,
+        user_id,
+        ids,
         [
             [(ids["base_a"], 0.97)],
             [(ids["base_b"], 0.96)],
             [(ids["mtg"], 0.95)],
         ],
     )
+    session.execute(
+        text("DELETE FROM card_embeddings WHERE card_id IN (:a, :b)"),
+        {"a": ids["base_a"], "b": ids["base_b"]},
+    )
+    session.commit()
     apply_cohort(session, job, pool, get_settings())
 
-    stranded = session.get(db.Scan, max(pool))
-    assert stranded.cohort_card_id is None
-    assert stranded.status == "pending"
-    assert "nothing in it" in (job.message or "")
+    stray = session.get(db.Scan, max(pool))
+    assert stray.cohort_card_id is None
+    assert stray.status == "pending"
+    assert "the catalogue had no encoded card for" in (job.message or "")
+
+    session.execute(
+        text(
+            "INSERT INTO card_embeddings (card_id, embedding, model) "
+            "VALUES (:a, CAST(:va AS halfvec), :m), (:b, CAST(:vb AS halfvec), :m)"
+        ),
+        {
+            "a": ids["base_a"],
+            "va": _literal(_onehot(_slots(ids)[ids["base_a"]])),
+            "b": ids["base_b"],
+            "vb": _literal(_onehot(_slots(ids)[ids["base_b"]])),
+            "m": MODEL,
+        },
+    )
+    session.commit()
     session.close()
 
 
@@ -332,6 +525,7 @@ def test_a_pick_from_below_the_stored_five_gets_a_candidate_row(seeded):
     job, pool = _batch(
         session,
         user_id,
+        ids,
         [
             [(ids["base_a"], 0.97)],
             [(ids["base_b"], 0.96)],
@@ -347,7 +541,23 @@ def test_a_pick_from_below_the_stored_five_gets_a_candidate_row(seeded):
     assert len(written) == 1
     # Its real place in the search, not an index appended after the stored five.
     assert written[0].rank == 6
-    assert written[0].score == pytest.approx(0.80)
+
+    # The score is what the filtered search measured, not the number the global
+    # ranking was carrying for the same card. In a real import those are one
+    # cosine and the distinction is invisible; here the seeded vectors are made
+    # to disagree with the hit list precisely so it is not.
+    from foilstack import search
+
+    best = search.search_within(
+        session,
+        pool[scan.id].vector,
+        get_settings().embed_model,
+        game="pokemon",
+        set_name="Base Set",
+        k=1,
+    )
+    assert best[0][0] == ids["base_a"]
+    assert written[0].score == pytest.approx(best[0][1])
     session.close()
 
 
@@ -365,9 +575,80 @@ def test_the_same_batch_settles_the_same_way_twice(seeded):
         job, pool = _batch(
             session,
             user_id,
+            ids,
             [[(ids["base_a"], 0.90)], [(ids["jungle"], 0.90)]],
         )
         apply_cohort(session, job, pool, get_settings())
         settled.add(job.cohort_set)
         session.close()
     assert len(settled) == 1
+
+
+def test_a_batch_rematch_puts_the_cohort_pick_back(seeded, monkeypatch):
+    """The reason `--job` exists rather than re-matching scan by scan.
+
+    `rematch_scan` drops `cohort_card_id` and cannot earn it back, so repairing
+    a batch one scan at a time costs the seller every correction the second
+    pass had made. Run per job, the election happens again afterwards and the
+    correction is re-made — from a fresh search, not carried over.
+    """
+    import foilstack.importing as importing
+    from foilstack import db
+    from foilstack.config import get_settings
+
+    _, user_id, ids = seeded
+    session = db.session()
+    job, pool = _batch(
+        session,
+        user_id,
+        ids,
+        [
+            [(ids["base_a"], 0.97)],
+            [(ids["base_b"], 0.96)],
+            [(ids["mtg"], 0.95)],
+        ],
+    )
+    stray_id = max(pool)
+    vectors = {
+        min(pool): _blend(ids, {"base_a": 0.97}),
+        sorted(pool)[1]: _blend(ids, {"base_b": 0.96}),
+        stray_id: _blend(ids, {"mtg": 0.95, "base_b": 0.44}),
+    }
+
+    # The scans have no images on disk, and what this is about is the batch
+    # being kept together rather than the encoder. So the encode is stubbed and
+    # everything downstream of it — the search, the election, the re-pointing —
+    # is the real thing.
+    async def fake_embed(_url, _bytes):
+        return fake_embed.current
+
+    monkeypatch.setattr(importing, "embed_image", fake_embed)
+    monkeypatch.setattr(importing.images, "make_display_copy", lambda *a, **k: None)
+
+    async def one(session, scan, settings, pool=None):
+        fake_embed.current = vectors[scan.id]
+        monkeypatch.setattr(importing, "scan_path", lambda *a, **k: Path(__file__))
+        return await real_rematch(session, scan, settings, pool)
+
+    real_rematch = importing.rematch_scan
+    monkeypatch.setattr(importing, "rematch_scan", one)
+
+    seen, changed, failed = asyncio.run(importing.rematch_job(session, job, get_settings()))
+    assert (seen, changed, failed) == (3, 3, 0)
+
+    stray = session.get(db.Scan, stray_id)
+    session.refresh(stray)
+    assert stray.cohort_card_id == ids["base_b"]
+    # A repair does not put cards into inventory behind the seller's back, even
+    # though the job it is repairing was imported with auto-accept on.
+    assert job.auto_accept == 0.94
+    assert [s.status for s in job.scans] == ["pending"] * 3
+    # Scoped to this job's own scans: the fixture is module-wide and earlier
+    # tests in it accept cards on purpose, so a bare count of the account's
+    # inventory would be reading their work and not this one's.
+    assert not (
+        session.query(db.InventoryItem)
+        .filter(db.InventoryItem.scan_id.in_([s.id for s in job.scans]))
+        .count()
+    )
+    session.close()

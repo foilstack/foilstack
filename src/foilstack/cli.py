@@ -294,12 +294,22 @@ async def cmd_rematch(args) -> int:
     fix for "everything matched the wrong game", and without this the only way
     to benefit from a newly ingested set is to upload the same archive again.
     The images are already on disk and already paid for.
+
+    `--job` is the same repair with the batch kept together. Scan by scan is
+    the wrong shape for an archive that was imported as one game or one set:
+    each scan loses the cohort pick it had and nothing can give it back, so a
+    seller repairing a batch pays for the repair by losing the corrections. Per
+    job, the second pass runs again afterwards and the corrections are re-made
+    rather than dropped.
     """
     settings = get_settings()
     db.init(settings.database_url)
     session = db.session()
 
-    from foilstack.importing import rematch_scan
+    from foilstack.importing import rematch_job, rematch_scan
+
+    if args.job:
+        return await _rematch_jobs(session, settings, args.job, rematch_job)
 
     query = select(db.Scan)
     if args.status != "all":
@@ -329,6 +339,36 @@ async def cmd_rematch(args) -> int:
             log.info("  %s/%s", i, len(scans))
     session.commit()
     log.info("re-matched %s scans (%s now have a match, %s failed)", len(scans), changed, failed)
+    return 0
+
+
+async def _rematch_jobs(session, settings, job_ids, rematch_job) -> int:
+    """Re-match whole batches, one import job at a time.
+
+    Every job is named in the log before it runs and counted after it, because
+    this rewrites rows a seller is in the middle of reviewing and "which of the
+    four did it actually do" is the question they will have.
+    """
+    jobs = []
+    for job_id in job_ids:
+        job = session.get(db.ImportJob, job_id)
+        if job is None:
+            log.error("no import job with id %s", job_id)
+            return 2
+        jobs.append(job)
+
+    for job in jobs:
+        held = "same set" if job.same_set else "same game" if job.same_game else "no cohort"
+        log.info("re-matching job %s (%s, %s)", job.id, job.filename, held)
+        seen, changed, failed = await rematch_job(session, job, settings)
+        session.commit()
+        log.info(
+            "  %s scans re-matched, %s now have a match, %s failed%s",
+            seen,
+            changed,
+            failed,
+            f" · {job.message}" if job.message else "",
+        )
     return 0
 
 
@@ -755,6 +795,13 @@ def main(argv: list[str] | None = None) -> int:
         help="which scans to redo (default: unmatched)",
     )
     p_rematch.add_argument("--user", default=None, help="limit to one account's scans")
+    p_rematch.add_argument(
+        "--job",
+        type=int,
+        action="append",
+        metavar="ID",
+        help="re-match a whole import job and run its batch pass again; repeatable",
+    )
     p_rematch.set_defaults(fn=cmd_rematch, is_async=True)
 
     p_sync = sub.add_parser(
