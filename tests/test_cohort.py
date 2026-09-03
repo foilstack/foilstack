@@ -10,8 +10,10 @@ count before believing a green run, as with `test_isolation.py`.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -580,3 +582,73 @@ def test_the_same_batch_settles_the_same_way_twice(seeded):
         settled.add(job.cohort_set)
         session.close()
     assert len(settled) == 1
+
+
+def test_a_batch_rematch_puts_the_cohort_pick_back(seeded, monkeypatch):
+    """The reason `--job` exists rather than re-matching scan by scan.
+
+    `rematch_scan` drops `cohort_card_id` and cannot earn it back, so repairing
+    a batch one scan at a time costs the seller every correction the second
+    pass had made. Run per job, the election happens again afterwards and the
+    correction is re-made — from a fresh search, not carried over.
+    """
+    import foilstack.importing as importing
+    from foilstack import db
+    from foilstack.config import get_settings
+
+    _, user_id, ids = seeded
+    session = db.session()
+    job, pool = _batch(
+        session,
+        user_id,
+        ids,
+        [
+            [(ids["base_a"], 0.97)],
+            [(ids["base_b"], 0.96)],
+            [(ids["mtg"], 0.95)],
+        ],
+    )
+    stray_id = max(pool)
+    vectors = {
+        min(pool): _blend(ids, {"base_a": 0.97}),
+        sorted(pool)[1]: _blend(ids, {"base_b": 0.96}),
+        stray_id: _blend(ids, {"mtg": 0.95, "base_b": 0.44}),
+    }
+
+    # The scans have no images on disk, and what this is about is the batch
+    # being kept together rather than the encoder. So the encode is stubbed and
+    # everything downstream of it — the search, the election, the re-pointing —
+    # is the real thing.
+    async def fake_embed(_url, _bytes):
+        return fake_embed.current
+
+    monkeypatch.setattr(importing, "embed_image", fake_embed)
+    monkeypatch.setattr(importing.images, "make_display_copy", lambda *a, **k: None)
+
+    async def one(session, scan, settings, pool=None):
+        fake_embed.current = vectors[scan.id]
+        monkeypatch.setattr(importing, "scan_path", lambda *a, **k: Path(__file__))
+        return await real_rematch(session, scan, settings, pool)
+
+    real_rematch = importing.rematch_scan
+    monkeypatch.setattr(importing, "rematch_scan", one)
+
+    seen, changed, failed = asyncio.run(importing.rematch_job(session, job, get_settings()))
+    assert (seen, changed, failed) == (3, 3, 0)
+
+    stray = session.get(db.Scan, stray_id)
+    session.refresh(stray)
+    assert stray.cohort_card_id == ids["base_b"]
+    # A repair does not put cards into inventory behind the seller's back, even
+    # though the job it is repairing was imported with auto-accept on.
+    assert job.auto_accept == 0.94
+    assert [s.status for s in job.scans] == ["pending"] * 3
+    # Scoped to this job's own scans: the fixture is module-wide and earlier
+    # tests in it accept cards on purpose, so a bare count of the account's
+    # inventory would be reading their work and not this one's.
+    assert not (
+        session.query(db.InventoryItem)
+        .filter(db.InventoryItem.scan_id.in_([s.id for s in job.scans]))
+        .count()
+    )
+    session.close()

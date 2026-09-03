@@ -574,6 +574,8 @@ def apply_cohort(
     job: db.ImportJob,
     pool: dict[int, Pooled],
     settings: Settings,
+    *,
+    accept: bool = True,
 ) -> None:
     """Second pass: hold the batch to the one game, or the one set, it mostly is.
 
@@ -608,6 +610,13 @@ def apply_cohort(
     turns out to hold no encoded card at all, which the election makes very
     nearly impossible: the cohort was elected by cards that matched, so at
     least one of them is encoded. It is counted rather than assumed away.
+
+    `accept=False` runs the pass without the auto-accept half, which is what a
+    re-match over an existing batch wants. Auto-accept is an answer to "may
+    this skip the queue on its way in"; a batch already sitting in the queue is
+    past that, somebody is working through it, and a repair that quietly moved
+    part of it into inventory would be taking a decision nobody asked for
+    behind the back of the person making it.
     """
     ids = {card_id for pooled in pool.values() for card_id, _ in pooled.hits}
     cards = _load_cards(session, ids)
@@ -632,7 +641,7 @@ def apply_cohort(
 
         top = cards.get(pooled.hits[0][0])
         if top is not None and _cohort_key(top, job.same_set) == cohort:
-            if _job_accepts(session, pooled.hits[:CANDIDATE_COUNT], settings, job):
+            if accept and _job_accepts(session, pooled.hits[:CANDIDATE_COUNT], settings, job):
                 _accept(session, scan, pooled.hits[0][0], job)
             continue
 
@@ -795,7 +804,53 @@ def _add_to_inventory(
     )
 
 
-async def rematch_scan(session, scan, settings: Settings) -> bool:
+async def rematch_job(session, job: db.ImportJob, settings: Settings) -> tuple[int, int, int]:
+    """Re-match one whole batch, and hold it to its cohort again.
+
+    `rematch_scan` on its own cannot restore what the batch knew — it drops
+    `cohort_card_id` and has no way to earn it back, because one scan is not a
+    batch. So re-matching an archive card by card silently costs the seller
+    every correction the second pass had made, which on a real import is most
+    of the rows it touched. This is the same operation with the batch put back
+    around it: re-encode each scan, collect the rankings, then run the election
+    and the re-pointing over the lot.
+
+    Returns (scans seen, scans that now have a match, failures).
+
+    Scans already confirmed are skipped and therefore do not vote. That is a
+    real difference from the import, where every scan does, and it is the right
+    one: a confirmed scan is inventory, this will not re-decide it, and letting
+    it vote would mean the election could move rows on the strength of cards it
+    is not allowed to touch.
+
+    Nothing here auto-accepts, whatever the job was originally run with — see
+    `apply_cohort`.
+    """
+    pool: dict[int, Pooled] | None = {} if (job.same_game or job.same_set) else None
+    seen = changed = failed = 0
+    for scan in job.scans:
+        if scan.status == "confirmed":
+            continue
+        seen += 1
+        try:
+            if await rematch_scan(session, scan, settings, pool):
+                changed += 1
+        except Exception as exc:  # noqa: BLE001 - one bad scan must not end the run
+            logger.warning("re-match failed for %s: %s", scan.filename, type(exc).__name__)
+            failed += 1
+    session.commit()
+
+    if pool:
+        apply_cohort(session, job, pool, settings, accept=False)
+    return seen, changed, failed
+
+
+async def rematch_scan(
+    session,
+    scan,
+    settings: Settings,
+    pool: dict[int, Pooled] | None = None,
+) -> bool:
     """Re-encode one stored scan and replace its candidates.
 
     Returns True if it now has a match. Used after ingesting a set the seller
@@ -815,8 +870,14 @@ async def rematch_scan(session, scan, settings: Settings) -> bool:
     claim. A person's choice is about the card. The batch's is about a search
     result, and this replaces that search result — so the pick is left pointing
     into a ranking that no longer exists, chosen over runners-up that are gone.
-    The batch cannot be re-run for one scan, so the honest thing is to drop
-    back to what the new search says and let the queue ask.
+    Dropping back to what the new search says and letting the queue ask is the
+    honest answer when one scan is re-matched alone.
+
+    When a whole batch is re-matched, it is not alone, and `pool` is how it
+    says so: the caller collects a `Pooled` per scan and runs `apply_cohort`
+    over the lot afterwards, which puts the claim back having actually re-made
+    it. The search goes deeper in that case for the same reason it does during
+    an import — the ballot needs the width.
     """
     if scan.status == "confirmed":
         return False
@@ -828,7 +889,12 @@ async def rematch_scan(session, scan, settings: Settings) -> bool:
 
     vector = await embed_image(settings.embedder_url, path.read_bytes())
     images.make_display_copy(path, settings.display_dir, scan.stored_path)
-    hits = search.search(session, vector, settings.embed_model, k=CANDIDATE_COUNT)
+    hits = search.search(
+        session,
+        vector,
+        settings.embed_model,
+        k=COHORT_CANDIDATE_COUNT if pool is not None else CANDIDATE_COUNT,
+    )
 
     for candidate in list(scan.candidates):
         session.delete(candidate)
@@ -841,8 +907,10 @@ async def rematch_scan(session, scan, settings: Settings) -> bool:
         return False
 
     scan.best_score = hits[0][1]
-    for rank, (card_id, score) in enumerate(hits):
+    for rank, (card_id, score) in enumerate(hits[:CANDIDATE_COUNT]):
         session.add(db.Candidate(scan_id=scan.id, card_id=card_id, score=score, rank=rank))
     scan.status = "pending"
     scan.error = None
+    if pool is not None:
+        pool[scan.id] = Pooled(hits, vector)
     return True
