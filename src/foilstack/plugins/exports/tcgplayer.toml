@@ -74,19 +74,23 @@ header = "TCG Low Price"
 field = "low"
 transform = "money2"
 
-# Blank on purpose, so that the row below it is what takes effect. `Total
-# Quantity` *sets* the count and `Add to Quantity` increases it; foilstack
-# knows what came out of one import, not what the seller already has listed,
-# and a total written from a partial picture deletes the rest of their stock.
+# Blank, because there is nothing honest to put here: `Total Quantity` is what
+# the seller already has listed, and this exporter composes a file from our own
+# inventory without ever having seen theirs.
 #
 # Blank is also not importable — the uploader wants a number here on any row it
-# is taking. Only the round trip can supply one honestly, because only it can
-# see what the seller already holds, so this stays empty and the file stays a
-# description of the format rather than something to upload.
+# is taking. So this stays empty and the file stays a description of the format
+# rather than something to upload. Only the round trip can fill it, because
+# only it has their export in hand.
 [[columns]]
 header = "Total Quantity"
 const = ""
 
+# The whole stock line, which is right only because the row above is blank and
+# this file is therefore not uploadable. `Add to Quantity` *adds*: against a
+# real total it would have to be our stock minus theirs, which is what
+# `foilstack.tcgplayer` computes and what makes the round trip the only path
+# to a file worth uploading.
 [[columns]]
 header = "Add to Quantity"
 field = "quantity"

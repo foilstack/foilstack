@@ -19,9 +19,17 @@ right. Rarity, Photo URL and the three price columns are theirs, carried
 through untouched, and the header row is theirs by construction — which is the
 one thing the uploader checks before it reads anything else.
 
-Nothing here reads the quantities in the uploaded file. They are the seller's
-positions on another marketplace and none of foilstack's business; the only
-columns this writes are `Add to Quantity` and `TCG Marketplace Price`.
+The quantities in their file are read, and for one reason: `Add to Quantity` is
+a delta. The number that brings a listing to our stock level is our stock minus
+what they already hold, and writing our stock there instead adds it a second
+time on every run after the first — three copies with one already listed goes
+out as a "3", lands on their "1", and offers four cards that cannot all be
+shipped. An oversell is a cancellation and a mark against the seller, so this
+is the one column of theirs worth reading.
+
+The column takes a negative, which makes the file a sync rather than an append:
+a copy sold or discarded here comes down there on the next run, and uploading
+the same file twice is a no-op the second time.
 """
 
 from __future__ import annotations
@@ -62,16 +70,15 @@ HEADER = [
 # real export approaches it.
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 
-# `Total Quantity` *sets* the count and `Add to Quantity` raises it. foilstack
-# knows what came out of one import, never what the seller already has listed,
-# so it may only ever add — a total written from a partial picture deletes the
-# rest of their stock. Their own value is therefore carried straight through.
+# `Total Quantity` *sets* the count and `Add to Quantity` moves it. We write the
+# second, computed from the first, and hand the first back unchanged — it is the
+# number the delta was measured against, and any other value there applies our
+# delta to a count nobody took.
 #
-# But it may not be left *blank* on a row being imported, which their export
-# leaves it on every row they hold none of. So a blank one becomes an explicit
-# zero, which says the same thing in the only spelling the uploader accepts.
-# Only a blank one: a row where they already hold five must keep saying five,
-# or the add is applied to a total we just invented.
+# It may not be left *blank* on a row being imported, which their export leaves
+# it on every row they hold none of. Blank is their spelling of zero and it goes
+# out as an explicit `0`, which says the same thing in the spelling the uploader
+# accepts.
 TOTAL_COLUMN = "Total Quantity"
 QUANTITY_COLUMN = "Add to Quantity"
 PRICE_COLUMN = "TCG Marketplace Price"
@@ -92,19 +99,28 @@ class MatchReport:
     unpriced: list[str] = field(default_factory=list)
     unmatched: list[str] = field(default_factory=list)
     ambiguous: list[str] = field(default_factory=list)
+    unreadable: list[str] = field(default_factory=list)
+    # Not a skip — these are in the file. They are called out because a
+    # negative delta takes a live listing down, which is the one thing the
+    # round trip does that the seller did not ask for card by card.
+    reduced: list[str] = field(default_factory=list)
 
     @property
     def skipped(self) -> int:
-        return len(self.unpriced) + len(self.unmatched) + len(self.ambiguous)
+        return len(self.unpriced) + len(self.unmatched) + len(self.ambiguous) + len(self.unreadable)
 
     def summary(self) -> str:
         parts = [f"{self.matched} matched"]
+        if self.reduced:
+            parts.append(f"{len(self.reduced)} reduced")
         if self.unmatched:
             parts.append(f"{len(self.unmatched)} not in the export")
         if self.unpriced:
             parts.append(f"{len(self.unpriced)} with no price")
         if self.ambiguous:
             parts.append(f"{len(self.ambiguous)} ambiguous")
+        if self.unreadable:
+            parts.append(f"{len(self.unreadable)} with an unreadable quantity")
         return " · ".join(parts)
 
 
@@ -153,7 +169,8 @@ def fill(upload: Iterable[bytes], rows: list[dict[str, Any]]) -> tuple[str, Matc
             continue
         wanted[key_for(row)] = row
 
-    found: dict[Key, list[str] | None] = {}
+    # A row to write, or the word for why there is not one.
+    found: dict[Key, list[str] | str] = {}
     for their in _read(upload):
         key = (
             their["Product Line"],
@@ -171,14 +188,21 @@ def fill(upload: Iterable[bytes], rows: list[dict[str, Any]]) -> tuple[str, Matc
             # which, so neither is written: an unlisted card is a card the
             # seller can list by hand, and a wrong SKU id edits a listing they
             # did not mean to touch.
-            found[key] = None
+            found[key] = "ambiguous"
             continue
         ours = wanted[key]
+        total = _their_total(their[TOTAL_COLUMN])
+        if total is None:
+            found[key] = "unreadable"
+            continue
         line = [their[column] for column in HEADER]
-        line[HEADER.index(QUANTITY_COLUMN)] = str(int(ours["quantity"]))
+        # The delta, not the stock line. A row already at our level gets a 0
+        # and stays in the file, because the price beside it is still ours to
+        # write and a listing at the right quantity and the wrong price is
+        # what the seller came here to fix.
+        line[HEADER.index(QUANTITY_COLUMN)] = str(int(ours["quantity"]) - total)
         line[HEADER.index(PRICE_COLUMN)] = f"{float(ours['list_price']):.2f}"
-        if not line[HEADER.index(TOTAL_COLUMN)].strip():
-            line[HEADER.index(TOTAL_COLUMN)] = "0"
+        line[HEADER.index(TOTAL_COLUMN)] = str(total)
         found[key] = line
 
     # Written the way their own export writes it: CRLF, every data field
@@ -189,17 +213,38 @@ def fill(upload: Iterable[bytes], rows: list[dict[str, Any]]) -> tuple[str, Matc
     buf = io.StringIO()
     buf.write(",".join(HEADER) + "\r\n")
     writer = csv.writer(buf, lineterminator="\r\n", quoting=csv.QUOTE_ALL)
-    for key, matched in found.items():
-        if matched is None:
-            report.ambiguous.append(_label(wanted[key]))
+    refused = {"ambiguous": report.ambiguous, "unreadable": report.unreadable}
+    for key, outcome in found.items():
+        if isinstance(outcome, str):
+            refused[outcome].append(_label(wanted[key]))
             continue
-        writer.writerow(matched)
+        writer.writerow(outcome)
         report.matched += 1
+        if outcome[HEADER.index(QUANTITY_COLUMN)].startswith("-"):
+            report.reduced.append(_label(wanted[key]))
     for key, row in wanted.items():
         if key not in found:
             report.unmatched.append(_label(row))
 
     return buf.getvalue(), report
+
+
+def _their_total(raw: str) -> int | None:
+    """How many they already hold, from their own column. None if it will not read.
+
+    Tolerant, because the file has usually been through a spreadsheet by the
+    time it comes back and `2`, ` 2 `, `2.0` and `1,024` all mean a number the
+    uploader would take. Anything else is not a count — and reading it as zero
+    is exactly the oversell the delta exists to prevent, so the row is dropped
+    and named instead of guessed at.
+    """
+    text = raw.strip().replace(",", "")
+    if not text:
+        return 0
+    try:
+        return int(float(text))
+    except ValueError:
+        return None
 
 
 def _read(upload: Iterable[bytes]) -> Iterator[dict[str, str]]:

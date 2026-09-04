@@ -147,18 +147,77 @@ def test_an_empty_file_is_rejected_rather_than_answered_with_a_header():
         tcgplayer.fill([b""], [_ours()])
 
 
-def test_the_quantities_in_their_file_are_never_read():
-    """Those are their positions on another marketplace, not our business."""
+def test_the_add_is_our_stock_minus_what_they_already_hold():
+    """The bug this replaced: a whole stock line written into a delta column.
+
+    `Add to Quantity` adds. Three copies with one already listed went out as a
+    "3", landed on their "1", and offered four cards — which is an oversell,
+    a cancellation and a mark against the seller, on every run after the first.
+    """
     theirs = [
-        '"4519","Magic","10th Edition","Abundance","","249","R","Near Mint","1.68","","2.9000","1.4100","41","7","9.99",""'
+        '"4519","Magic","10th Edition","Abundance","","249","R","Near Mint","1.68","","2.9000","1.4100","1","0","",""'
     ]
-    body, _ = tcgplayer.fill(_upload(theirs), [_ours()])
+    body, report = tcgplayer.fill(_upload(theirs), [_ours()])
+    row = dict(zip(tcgplayer.HEADER, list(csv.reader(io.StringIO(body)))[1], strict=True))
+    assert row["Add to Quantity"] == "2", "3 in stock, 1 already listed"
+    assert row["Total Quantity"] == "1", "theirs, and the number the delta was measured against"
+    assert row["TCG Marketplace Price"] == "1.50"
+    assert not report.reduced
+
+
+def test_a_line_already_at_our_level_stays_in_the_file_at_zero():
+    """The price beside it is still ours to write.
+
+    A listing at the right quantity and the wrong price is a thing the seller
+    came here to fix, so the row is not dropped for having no cards to add.
+    """
+    theirs = [
+        '"4519","Magic","10th Edition","Abundance","","249","R","Near Mint","1.68","","2.9000","1.4100","3","0","",""'
+    ]
+    body, report = tcgplayer.fill(_upload(theirs), [_ours()])
+    row = dict(zip(tcgplayer.HEADER, list(csv.reader(io.StringIO(body)))[1], strict=True))
+    assert row["Add to Quantity"] == "0"
+    assert row["TCG Marketplace Price"] == "1.50"
+    assert report.matched == 1
+
+
+def test_more_listed_than_we_hold_comes_back_down():
+    """The column takes a negative, which is what makes this a sync.
+
+    A copy sold or discarded here has to come down there, and the alternative
+    — clamping at zero — leaves a listing for a card that cannot be shipped,
+    which is the same failure the delta was introduced to stop.
+    """
+    theirs = [
+        '"4519","Magic","10th Edition","Abundance","","249","R","Near Mint","1.68","","2.9000","1.4100","5","0","",""'
+    ]
+    body, report = tcgplayer.fill(_upload(theirs), [_ours()])
+    row = dict(zip(tcgplayer.HEADER, list(csv.reader(io.StringIO(body)))[1], strict=True))
+    assert row["Add to Quantity"] == "-2"
+    assert report.reduced and "Abundance" in report.reduced[0], "a listing coming down is said"
+
+
+def test_uploading_the_same_file_twice_is_a_no_op_the_second_time():
+    """Their export after the first upload says what the first upload made it
+    say, so the second run has nothing left to add."""
+    first = [
+        '"4519","Magic","10th Edition","Abundance","","249","R","Near Mint","1.68","","2.9000","1.4100","","0","",""'
+    ]
+    body, _ = tcgplayer.fill(_upload(first), [_ours()])
     row = dict(zip(tcgplayer.HEADER, list(csv.reader(io.StringIO(body)))[1], strict=True))
     assert row["Add to Quantity"] == "3"
-    assert row["TCG Marketplace Price"] == "1.50"
-    # Carried through, because it is a column we do not write — but it must not
-    # have been mistaken for stock we hold.
-    assert row["Total Quantity"] == "41"
+
+    theirs_after = row["Total Quantity"] = str(int(row["Total Quantity"]) + 3)
+    assert theirs_after == "3"
+    again, _ = tcgplayer.fill(
+        _upload([",".join(f'"{row[h]}"' for h in tcgplayer.HEADER)]), [_ours()]
+    )
+    assert (
+        dict(zip(tcgplayer.HEADER, list(csv.reader(io.StringIO(again)))[1], strict=True))[
+            "Add to Quantity"
+        ]
+        == "0"
+    )
 
 
 def test_a_blank_total_quantity_becomes_an_explicit_zero():
@@ -171,22 +230,29 @@ def test_a_blank_total_quantity_becomes_an_explicit_zero():
     body, _ = tcgplayer.fill(_upload(THEIRS), [_ours()])
     row = dict(zip(tcgplayer.HEADER, list(csv.reader(io.StringIO(body)))[1], strict=True))
     assert row["Total Quantity"] == "0"
-    assert row["Add to Quantity"] == "3"
+    assert row["Add to Quantity"] == "3", "nothing listed yet, so the delta is the whole line"
 
 
-def test_a_total_quantity_they_already_have_is_never_overwritten():
-    """Zeroing it would apply the add to a total we invented.
-
-    `Total Quantity` sets the count outright. A seller holding five and adding
-    three must end at eight, so the only blank-to-zero rule that is safe is the
-    one that fires on a blank.
-    """
+def test_a_total_that_has_been_through_a_spreadsheet_still_reads():
+    """`2.0` and `1,024` are what Excel does to a column of integers."""
     theirs = [
-        '"4519","Magic","10th Edition","Abundance","","249","R","Near Mint","1.68","","2.9000","1.4100","5","0","",""'
+        '"4519","Magic","10th Edition","Abundance","","249","R","Near Mint","1.68","","2.9000","1.4100"," 2.0 ","0","",""'
     ]
     body, _ = tcgplayer.fill(_upload(theirs), [_ours()])
     row = dict(zip(tcgplayer.HEADER, list(csv.reader(io.StringIO(body)))[1], strict=True))
-    assert row["Total Quantity"] == "5"
+    assert row["Total Quantity"] == "2"
+    assert row["Add to Quantity"] == "1"
+
+
+def test_a_total_that_is_not_a_number_drops_the_row_and_names_it():
+    """Reading it as zero is the oversell the delta exists to prevent."""
+    theirs = [
+        '"4519","Magic","10th Edition","Abundance","","249","R","Near Mint","1.68","","2.9000","1.4100","lots","0","",""'
+    ]
+    body, report = tcgplayer.fill(_upload(theirs), [_ours()])
+    assert len(list(csv.reader(io.StringIO(body)))) == 1
+    assert report.matched == 0
+    assert report.unreadable and "Abundance" in report.unreadable[0]
 
 
 def test_the_file_is_shaped_like_the_one_it_came_from():

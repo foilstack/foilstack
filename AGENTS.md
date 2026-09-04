@@ -447,6 +447,19 @@ Two habits worth keeping:
   and a row that resolves to some other card's SKU edits that listing instead
   of failing. What makes a file uploadable is `foilstack.tcgplayer`, which
   starts from the seller's own export and takes the ids from there.
+* **`Add to Quantity` is a delta, and our stock is a total.** The round trip
+  wrote the whole stock line into that column, so every run after the first
+  added the cards again: three copies with one already listed went out as a
+  `3`, landed on their `1`, and offered four cards that cannot all be shipped
+  — an oversell, a cancellation and a mark against the seller. It is our stock
+  *minus* their own `Total Quantity`, which is also why that column is read at
+  all when nothing else in their file is, and why a value in it that will not
+  parse drops the row rather than counting as zero. The column takes a
+  negative, so the file is a sync and not an append: a copy sold here comes
+  down there on the next run, and the same file uploaded twice does nothing
+  the second time. `tcgplayer.toml` still writes the bare stock line, which is
+  safe only because it leaves `Total Quantity` blank and the file it produces
+  is not uploadable at all.
 * **`cards.name` is the cleaned spelling and cannot be joined on.** TCGCSV
   gives both: `cleanName`, which is what `name` holds and what reads and
   searches properly, and `name`, which is what every TCGplayer CSV carries.
