@@ -159,7 +159,14 @@ function sync() {
   // five cards would be a lie about what is going to the marketplace.
   const cards = rows.reduce((a, r, i) =>
     a + (boxes[i].checked ? r.querySelectorAll('input[type=hidden][name=id]').length : 0), 0);
-  listbtn.textContent = cards ? 'List ' + cards + ' selected →' : 'List selected →';
+  // And the label says which unit it is in, because the number beside it does
+  // not. The facet chips and the row note count lines — a `Not listed 75` chip
+  // above a `List 123` button is two right answers to two different questions
+  // and reads as one of them being wrong. Only the button knows it is talking
+  // about physical cards, so only the button can say so.
+  listbtn.textContent = cards
+    ? 'List ' + cards + ' card' + (cards === 1 ? '' : 's') + ' →'
+    : 'List selected →';
   listbtn.disabled = cards === 0;
   listbtn.title = cards ? '' : 'Select rows to list';
   label.textContent = baseLabel + (cards ? ' · ' + cards + ' cards selected' : '');
