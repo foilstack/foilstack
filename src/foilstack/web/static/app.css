@@ -308,6 +308,21 @@ body.app {
 .btn-tall { height: 32px; font-size: 13px; }
 .btn-block { flex: 1; }
 .btn:disabled { opacity: .5; cursor: default; }
+/* Disabled-because-busy and disabled-because-there-is-nothing-yet want
+   different paint, and the blanket rule above only suits the first. A primary
+   button is white on colour, so .5 opacity fades the label and the fill toward
+   the same page white and the words land at 2.3:1. That is fine on
+   `Importing…`, which is a button reporting on itself: it was just pressed,
+   and it is read by its position and by what the seller did a second ago.
+   It is not fine on a button that *is* the instruction. `List selected` at
+   rest is the only thing on the inventory bar saying that picking rows leads
+   anywhere, and it has to be readable before anything has been clicked. A
+   disabled control is exempt from the contrast floors, but the exemption
+   assumes the label is not doing any work; here it is doing all of it. */
+.btn-primary.btn-idle:disabled {
+  opacity: 1;
+  background: var(--surface); border-color: var(--rule); color: var(--faint);
+}
 .btn-quiet {
   border: none; background: none; color: var(--faint); cursor: pointer;
   font-family: var(--mono); font-size: 10.5px; padding: 0; height: auto;

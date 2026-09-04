@@ -1087,6 +1087,31 @@ def test_the_topbar_total_agrees_with_the_inventory_table(app_and_data):
     assert float(shown.group(1).replace(",", "")) == round(expected, 2)
 
 
+def test_the_list_button_ships_disabled_so_a_run_needs_a_selection(app_and_data):
+    """No selection must not be a listing run over everything the seller owns.
+
+    The button submits the selection form, and an unticked row submits no id at
+    all — which `/listings` reads as "the whole inventory" and prices
+    accordingly. The screen it was pressed from may well have been narrowed to
+    the eighteen unlisted lines, and none of that narrowing is on the form, so
+    the run answers for cards the seller was not looking at. It ships disabled
+    for that reason rather than merely being relabelled, and it starts that way
+    in the markup rather than waiting for a script to catch up.
+    """
+    app, _ = app_and_data
+    client = _signed_in(app)
+
+    tag = re.search(r"<button[^>]*id=\"listbtn\"[^>]*>", client.get("/inventory").text)
+    assert tag, "the inventory bar no longer has a #listbtn"
+    assert "disabled" in tag.group(0), tag.group(0)
+
+    # And the thing it is guarding: no ids is not an empty run, it is all of
+    # them. If this ever starts answering zero, the button may go back to being
+    # a plain link and this whole test is moot.
+    body = client.get("/listings").text
+    assert "whole inventory" in body
+
+
 def _stock_item(email: str, name: str, source_id: str, sold: bool = False) -> tuple[int, int]:
     """One card with one copy, optionally already sold."""
     import datetime as dt

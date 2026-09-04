@@ -23,7 +23,18 @@
   <span class="bar-note" id="rowlabel">{{ rows|length }}{% if narrowed %} of {{ total_lines }}{% endif %} lines</span>
   <div class="spacer"></div>
   <button class="btn btn-danger" type="button" id="delbtn" hidden>Delete</button>
-  <button class="btn btn-primary" type="submit" form="sel" formaction="/listings" formmethod="get" id="listbtn">List selected →</button>
+  {# Disabled rather than hidden, unlike the Delete button beside it. That one
+     is absent at rest because it is destructive and there is nothing to
+     mis-click; this one is the only thing on the screen that says selecting
+     rows leads anywhere, so it has to stay visible to be the instruction. It
+     starts disabled in the markup rather than waiting for `sync()`, because a
+     live primary button for one parse is one a fast hand can press — and until
+     this it submitted no ids at all, which `/listings` reads as the whole
+     inventory and prices a run over everything the account owns. The filter
+     the seller was looking at is not on that form, so the screen they left
+     said 75 unlisted and the one they arrived at answered for all of it. #}
+  <button class="btn btn-primary btn-idle" type="submit" form="sel" formaction="/listings" formmethod="get"
+          id="listbtn" disabled title="Select rows to list">List selected →</button>
 </div>
 
 {% if facets %}
@@ -148,7 +159,16 @@ function sync() {
   // five cards would be a lie about what is going to the marketplace.
   const cards = rows.reduce((a, r, i) =>
     a + (boxes[i].checked ? r.querySelectorAll('input[type=hidden][name=id]').length : 0), 0);
-  listbtn.textContent = cards ? 'List ' + cards + ' selected →' : 'List selected →';
+  // And the label says which unit it is in, because the number beside it does
+  // not. The facet chips and the row note count lines — a `Not listed 75` chip
+  // above a `List 123` button is two right answers to two different questions
+  // and reads as one of them being wrong. Only the button knows it is talking
+  // about physical cards, so only the button can say so.
+  listbtn.textContent = cards
+    ? 'List ' + cards + ' card' + (cards === 1 ? '' : 's') + ' →'
+    : 'List selected →';
+  listbtn.disabled = cards === 0;
+  listbtn.title = cards ? '' : 'Select rows to list';
   label.textContent = baseLabel + (cards ? ' · ' + cards + ' cards selected' : '');
 
   // Destructive, so it is absent rather than merely disabled until there is
