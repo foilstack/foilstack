@@ -3,28 +3,45 @@
 {% block status %}<span id="status">{{ totals.count }} in stock · {{ totals.market|money }} at market{% if totals.sold_rows %} · {{ totals.sold_rows }} sold, {{ totals.realised|money }} realised{% endif %}</span>{% endblock %}
 
 {% block screen %}
-<div class="bar">
+{# Nowrap for the reason the listing run is: at 1000px, the width the README
+   animation is captured at, the status chips pushed the primary button onto a
+   row of its own and the facet row below it then read as four rows of chrome
+   above the table. The give is the search box, which shrinks. #}
+<div class="bar bar-nowrap">
   <h1>Inventory</h1>
-  <form method="get" action="/inventory">
+  <form class="searchform" method="get" action="/inventory">
     <input class="search" type="search" name="q" value="{{ q }}" placeholder="filter name, set, sku…">
-    {% if rule != 'market' %}<input type="hidden" name="rule" value="{{ rule }}">{% endif %}
+    {# The filters and the sort, carried through, so searching narrows what is
+       on screen rather than throwing the rest of the controls away. #}
+    {% for name, value in carry %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
   </form>
   <div class="chip-set">
-    <a class="chip chip-filter {{ 'on' if show == 'stock' }}" href="/inventory?show=stock{% if q %}&q={{ q }}{% endif %}">In stock {{ counts.stock }}</a>
-    <a class="chip chip-filter {{ 'on' if show == 'sold' }}" href="/inventory?show=sold{% if q %}&q={{ q }}{% endif %}">Sold {{ counts.sold }}</a>
-    <a class="chip chip-filter {{ 'on' if show == 'all' }}" href="/inventory?show=all{% if q %}&q={{ q }}{% endif %}">All {{ counts.all }}</a>
-    {% if counts.printing %}
-    <a class="chip chip-filter {{ 'on' if show == 'printing' }}" href="/inventory?show=printing">Needs printing {{ counts.printing }}</a>
-    {% endif %}
+    {% for c in status_chips %}
+    <a class="chip chip-filter {{ 'on' if c.on }}" href="{{ c.href }}">{{ c.label }} {{ c.count }}</a>
+    {% endfor %}
   </div>
-  <span class="bar-note" id="rowlabel">{{ rows|length }} lines</span>
+  <span class="bar-note" id="rowlabel">{{ rows|length }}{% if narrowed %} of {{ total_lines }}{% endif %} lines</span>
   <div class="spacer"></div>
-  {% for spec in exporters %}
-  <button class="btn" type="submit" form="sel" formaction="/export/{{ spec.name }}" formmethod="get">{{ spec.label }} CSV</button>
-  {% endfor %}
   <button class="btn btn-danger" type="button" id="delbtn" hidden>Delete</button>
   <button class="btn btn-primary" type="submit" form="sel" formaction="/listings" formmethod="get" id="listbtn">List selected →</button>
 </div>
+
+{% if facets %}
+<div class="facets">
+  {% for f in facets %}
+  <div class="facet">
+    <span class="facet-label">{{ f.label }}</span>
+    {% for o in f.options %}
+    <a class="chip chip-sm {{ 'on' if o.on }}" href="{{ o.href }}">{{ o.label }} <span class="facet-n">{{ o.count }}</span></a>
+    {% endfor %}
+    {% if f.hidden %}<span class="facet-more" title="Not shown, because this facet has more values than fit. Use the search box to reach them.">+{{ f.hidden }}</span>{% endif %}
+  </div>
+  {% endfor %}
+  {% if filtered %}
+  <a class="facet-clear" href="{{ clear_href }}">clear {{ filtered }} filter{{ '' if filtered == 1 else 's' }}</a>
+  {% endif %}
+</div>
+{% endif %}
 
 <div class="screen-scroll">
   <form id="sel" method="get" action="/listings">
@@ -34,16 +51,18 @@
       <thead>
         <tr>
           <th class="cbcol"><input type="checkbox" id="all"></th>
-          <th>CARD</th>
+          {# A sortable heading is a link, not a script: the order is in the
+             URL, so a sorted view is one a seller can bookmark and send. #}
+          <th>{{ sorts.name|sortlink('CARD') }}</th>
           <th></th>
-          <th>GAME / SET</th>
-          <th class="r">QTY</th>
+          <th>{{ sorts.set|sortlink('GAME / SET') }}</th>
+          <th class="r">{{ sorts.quantity|sortlink('QTY') }}</th>
           <th>CONDITION</th>
           <th>PRINTING</th>
-          <th class="r">COST</th>
-          <th class="r">MARKET</th>
-          <th class="r">MARGIN</th>
-          <th>LISTED</th>
+          <th class="r">{{ sorts.cost|sortlink('COST') }}</th>
+          <th class="r">{{ sorts.market|sortlink('MARKET') }}</th>
+          <th class="r">{{ sorts.margin|sortlink('MARGIN') }}</th>
+          <th>{{ sorts.listed|sortlink('LISTED') }}</th>
         </tr>
       </thead>
       <tbody>
@@ -90,6 +109,7 @@
     {% if not rows %}
     <div class="empty">
       {% if show == 'printing' %}every card is priced on a printing you chose
+      {% elif filtered and total_lines %}no card matches every filter · <a href="{{ clear_href }}">clear them</a>
       {% elif q %}nothing matches “{{ q }}”
       {% else %}nothing confirmed yet · import some scans to get started{% endif %}
     </div>
@@ -106,6 +126,7 @@ const all = $('#all');
 const listbtn = $('#listbtn');
 const delbtn = $('#delbtn');
 const label = $('#rowlabel');
+const baseLabel = label.textContent;
 
 /* A checked line submits one hidden input per copy it holds. Disabled inputs
    are not submitted, so enabling them is the whole of "select this line" — and
@@ -128,7 +149,7 @@ function sync() {
   const cards = rows.reduce((a, r, i) =>
     a + (boxes[i].checked ? r.querySelectorAll('input[type=hidden][name=id]').length : 0), 0);
   listbtn.textContent = cards ? 'List ' + cards + ' selected →' : 'List selected →';
-  label.textContent = '{{ rows|length }} lines' + (cards ? ' · ' + cards + ' cards selected' : '');
+  label.textContent = baseLabel + (cards ? ' · ' + cards + ' cards selected' : '');
 
   // Destructive, so it is absent rather than merely disabled until there is
   // something to destroy — nothing to mis-click at rest.
