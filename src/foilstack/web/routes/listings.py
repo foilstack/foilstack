@@ -303,10 +303,11 @@ async def export_tcgplayer_match(
     """A TCGplayer pricing export in, the seller's own rows back out.
 
     The upload is theirs and stays theirs: it is read once, never written to
-    disk by us, and nothing from it is stored. The quantities it contains are
-    their positions on another marketplace and are not read at all. See
-    `foilstack.tcgplayer` for why the round trip is necessary — TCGplayer
-    identifies a listing by a SKU id this catalogue has no way to know.
+    disk by us, and nothing from it is stored. One column of it is read — the
+    quantity they already hold, because `Add to Quantity` is a delta and our
+    stock is a total. See `foilstack.tcgplayer` for why the round trip is
+    necessary at all: TCGplayer identifies a listing by a SKU id this
+    catalogue has no way to know.
     """
     rule = rule if rule in inventory.RULE_IDS else inventory.DEFAULT_RULE
     chosen = set(id or [])
@@ -324,8 +325,12 @@ async def export_tcgplayer_match(
     # Named individually rather than counted, because "12 not in the export"
     # is a number a seller can do nothing with and a list of twelve cards is
     # twelve things they can go and check.
-    for label in (report.unmatched + report.ambiguous + report.unpriced)[:6]:
+    for label in (report.unmatched + report.ambiguous + report.unpriced + report.unreadable)[:6]:
         joblog.add(user.id, f"  skipped {label}")
+    # Named too, and not as a skip: these are rows the file takes *down*,
+    # which is the one thing in it the seller did not choose card by card.
+    for label in report.reduced[:6]:
+        joblog.add(user.id, f"  reduced {label}")
 
     return Response(
         content=body,

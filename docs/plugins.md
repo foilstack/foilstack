@@ -96,11 +96,21 @@ is why the listings screen offers a round trip instead.
 TCGplayer pricing screen, finds their stock among its rows, writes `Add to
 Quantity` and `TCG Marketplace Price`, and returns those rows and nothing else.
 
-`Total Quantity` is theirs and is carried through, with one exception: a blank
-one becomes `0`. Their export leaves it blank on every card they hold none of,
-and the uploader will not take a blank on a row it is importing. Only a blank
-one — a row where they already hold five has to keep saying five, or the add is
-applied to a total we invented.
+**`Add to Quantity` is a delta and our stock is a total.** The number written
+is our stock *minus* what their own `Total Quantity` says they already hold.
+Writing the stock line there instead — which is what this did at first — adds
+it a second time on every run after the first: three copies with one already
+listed goes out as a `3`, lands on their `1`, and offers four cards that cannot
+all be shipped. TCGplayer takes a negative here, so the file is a sync rather
+than an append — a copy sold or discarded in foilstack comes down on the next
+run, and uploading the same file twice does nothing the second time.
+
+That is the one column of theirs that is read, and it is why a garbage value in
+it drops the row and names it rather than being read as zero: guessing zero is
+exactly the oversell the delta exists to prevent. `Total Quantity` itself is
+handed back unchanged, because it is the number the delta was measured against.
+A blank one becomes `0` — their spelling on every card they hold none of, and
+one the uploader will not take on a row it is importing.
 The ids come back because they were theirs to begin with, and so does every
 informative column — Rarity, Photo URL, the three price columns — which the
 exporter above can only leave empty. The header row is theirs by construction.
@@ -122,7 +132,6 @@ ingested before it existed needs a re-ingest**, or the round trip quietly falls
 back to the cleaned spelling and reports every punctuated card as missing.
 Re-ingest is a catalogue pull, not a re-encode — embeddings are untouched.
 
-Nothing reads the quantities in the uploaded file. They are the seller's
-positions on another marketplace, and the upload is never written to disk or
-stored; it is streamed once, which is what keeps a 100 MB file to about 30 MB
-of memory and a second and a half.
+Beyond that one column, nothing in the uploaded file is read, and none of it is
+written to disk or stored; it is streamed once, which is what keeps a 100 MB
+file to about 30 MB of memory and a second and a half.
