@@ -12,14 +12,15 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+from typing import Any
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 
 from foilstack import db, inventory, prices, search
 from foilstack.config import Settings
-from foilstack.plugins import export_plugins
 from foilstack.web import joblog
 from foilstack.web.chrome import _chrome, templates
 from foilstack.web.deps import api_owner, db_session, owner, settings_dep
@@ -33,17 +34,54 @@ router = APIRouter()
 MAX_MONEY = 100_000_000.0
 
 
+def _href(params: dict[str, Any]) -> str:
+    """One inventory URL, carrying everything still in force.
+
+    Every control on the screen is a link, and each of them changes one thing
+    and keeps the rest: a status chip that dropped the facets, or a facet that
+    dropped the sort, would make the filters unstackable — which is the whole
+    point of having more than one. Empty values are left out so an untouched
+    screen has a clean URL to bookmark and share.
+    """
+    flat = [
+        (key, str(v))
+        for key, value in params.items()
+        for v in (value if isinstance(value, list) else [value])
+        if v not in ("", None)
+    ]
+    return "/inventory?" + urlencode(flat) if flat else "/inventory"
+
+
 @router.get("/inventory", response_class=HTMLResponse)
 def page_inventory(
     request: Request,
     q: str = "",
     rule: str = inventory.DEFAULT_RULE,
     show: str = "stock",
+    sort: str = inventory.DEFAULT_SORT,
+    dir: str = inventory.DEFAULT_DIR,
+    game: list[str] | None = Query(None),
+    # Aliased rather than named `set`, which would shadow the builtin in a
+    # function that goes on to build sets.
+    card_set: list[str] | None = Query(None, alias="set"),
+    condition: list[str] | None = Query(None),
+    printing: list[str] | None = Query(None),
+    listed: list[str] | None = Query(None),
     session=Depends(db_session),
     user: db.User = Depends(owner),
     settings: Settings = Depends(settings_dep),
 ):
+    """What the seller owns, narrowed and ordered.
+
+    A browsing screen and only that. Everything that turns inventory into a
+    file for a marketplace lives on `/listings`, which is reached from here by
+    selecting rows — the pricing rule, the channel and the TCGplayer round trip
+    are all decisions that screen makes visible, and a one-click CSV here made
+    them silently for you.
+    """
     rule = rule if rule in inventory.RULE_IDS else inventory.DEFAULT_RULE
+    sort = sort if sort in inventory.SORT_VALUES else inventory.DEFAULT_SORT
+    dir = "desc" if dir == "desc" else "asc"
     copies = inventory.items(session, user.id, rule)
     counts = {
         "all": len(copies),
@@ -58,6 +96,7 @@ def page_inventory(
         # The pass to make after an import: every line still priced on a guess
         # between printings, in one place, instead of hunting for the `?`.
         rows = [r for r in inventory.groups(session, user.id, rule, status="stock") if r["guessed"]]
+    total_lines = len(rows)
     needle = q.strip().lower()
     if needle:
         rows = [
@@ -76,6 +115,46 @@ def page_inventory(
                 )
             ).lower()
         ]
+
+    # Narrowed to what the rows can actually offer before anything is filtered.
+    # A value from a stale bookmark or a hand-edited URL is dropped rather than
+    # honoured: honoured it empties the screen, which reads as lost inventory
+    # rather than as a filter that matched nothing.
+    wire = {
+        "game": game,
+        "set": card_set,
+        "condition": condition,
+        "printing": printing,
+        "listed": listed,
+    }
+    picks = {
+        key: set(wire[key] or []) & inventory.present_values(copies, key)
+        for key in inventory.FACET_KEYS
+    }
+
+    # Built before the rows are narrowed, so each chip can count against what
+    # the *other* facets allow rather than against the final result.
+    groups_facets = inventory.facet_options(rows, picks)
+    rows = inventory.sort_groups(inventory.filter_groups(rows, picks), sort, dir)
+
+    def state(**over: Any) -> dict[str, Any]:
+        base: dict[str, Any] = {
+            "q": q,
+            "show": show if show != "stock" else "",
+            "rule": rule if rule != inventory.DEFAULT_RULE else "",
+            "sort": sort if sort != inventory.DEFAULT_SORT else "",
+            "dir": dir if dir != inventory.DEFAULT_DIR else "",
+            **{key: sorted(picks[key]) for key in inventory.FACET_KEYS},
+        }
+        base.update(over)
+        return base
+
+    for facet in groups_facets:
+        for opt in facet["options"]:
+            # A chip toggles its own value and leaves every other control be.
+            chosen = picks[facet["key"]] ^ {opt["value"]}
+            opt["href"] = _href(state(**{facet["key"]: sorted(chosen)}))
+
     return templates.TemplateResponse(
         request,
         "inventory.html",
@@ -86,8 +165,59 @@ def page_inventory(
             "rule": rule,
             "show": show,
             "counts": counts,
+            "facets": groups_facets,
+            "filtered": sum(len(picks[key]) for key in inventory.FACET_KEYS),
+            "narrowed": len(rows) != total_lines,
+            "total_lines": total_lines,
+            "clear_href": _href(state(**{key: [] for key in inventory.FACET_KEYS})),
+            "status_chips": [
+                {
+                    "key": key,
+                    "label": label,
+                    "count": counts[key],
+                    "on": show == key,
+                    # `show` is the one control that resets the sort, because
+                    # the "needs printing" pass has no meaningful order but the
+                    # one it ships with and lands there from any column.
+                    "href": _href(state(show=key if key != "stock" else "")),
+                }
+                for key, label in (
+                    ("stock", "In stock"),
+                    ("sold", "Sold"),
+                    ("all", "All"),
+                    ("printing", "Needs printing"),
+                )
+                if key != "printing" or counts["printing"]
+            ],
+            "sorts": {
+                key: {
+                    "on": sort == key,
+                    "dir": dir if sort == key else "",
+                    # Clicking the column you are already on flips it; landing
+                    # on a new one starts ascending, except for the three where
+                    # "most" is the question being asked.
+                    "href": _href(
+                        state(
+                            sort=key if key != inventory.DEFAULT_SORT else "",
+                            dir=(
+                                ("desc" if dir == "asc" else "asc")
+                                if sort == key
+                                else ("desc" if key in ("quantity", "market", "margin") else "")
+                            ),
+                        )
+                    ),
+                }
+                for key in inventory.SORT_VALUES
+            },
+            # Every filter still in force, as hidden fields, so typing in the
+            # search box narrows what is on screen instead of resetting it.
+            "carry": [
+                (key, v)
+                for key, value in state(q="").items()
+                for v in (value if isinstance(value, list) else [value])
+                if v not in ("", None)
+            ],
             "totals": inventory.totals(copies),
-            "exporters": export_plugins().values(),
             **_chrome(session, request, user, settings),
         },
     )

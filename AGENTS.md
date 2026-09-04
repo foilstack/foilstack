@@ -258,6 +258,31 @@ Two habits worth keeping:
   silence. Two different wrong answers to the same event, from one list
   written twice.
 
+* **Inventory browses; listings lists.** The inventory bar used to carry an
+  `eBay CSV` and a `TCGplayer CSV` button, and the second of them handed the
+  seller a file that cannot be uploaded — `tcgplayer.toml` blanks the SKU id
+  and `Total Quantity` on purpose, and only the round trip through
+  `/export/tcgplayer/match` fills them. Styled identically to the eBay button,
+  which does work, it was a one-click path to a dead file. Both are gone from
+  that screen. `/export/{name}` stays as a route; what changed is that
+  reaching it goes through `/listings`, where the pricing rule, the channel
+  and the upload the round trip needs are all on screen. Anything that turns
+  inventory into a marketplace file belongs there, and the bridge is the row
+  selection and `List selected →`.
+
+* **A guard against a bad filter value must not cancel a good one.** Picks
+  arriving in the querystring are narrowed to the values the account actually
+  owns, so a stale bookmark naming a set they sold out of is ignored rather
+  than emptying the screen. Narrowed to the values *currently on screen*
+  instead — which is what it did first, and what the screenshot caught — the
+  same line silently drops a live filter: pick LP, search for a card with no LP
+  copy, and LP is no longer "present", so the pick is discarded, its chip
+  disappears, and the screen answers with the near-mint copies. A filter that
+  stops applying with nothing on screen to say so is worse than one that
+  matches nothing. `present_values` takes the copies, not the rows, for that
+  reason, and `facet_options` paints a picked value at zero so there is always
+  something to click to undo it.
+
 * **A quota is only real if something gives the bytes back.** `usage_bytes`
   sums `scans.size_bytes`, and discarding used to move a status and nothing
   else — so storage only ever grew, and the 413 telling a full account to

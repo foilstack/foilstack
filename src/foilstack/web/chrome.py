@@ -15,6 +15,7 @@ from pathlib import Path
 
 from fastapi import Request
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
 from sqlalchemy import func, select
 
 from foilstack import __version__, db, inventory, search
@@ -44,6 +45,26 @@ def _money(n: float | None) -> str:
 
 
 templates.env.filters["money"] = _money
+
+
+def _sortlink(spec: dict, label: str) -> Markup:
+    """A column heading that sorts, with an arrow when it is the one in force.
+
+    The arrow points the way the rows are actually ordered rather than the way
+    clicking would take them. A heading is read as a description of what is on
+    screen, and an arrow that describes the next click instead reports every
+    sorted column backwards.
+    """
+    arrow = {"asc": "\u2191", "desc": "\u2193"}.get(spec["dir"], "")
+    return Markup('<a class="sortlink{on}" href="{href}">{label}{arrow}</a>').format(
+        on=" on" if spec["on"] else "",
+        href=spec["href"],
+        label=label,
+        arrow=Markup("&nbsp;") + arrow if arrow else "",
+    )
+
+
+templates.env.filters["sortlink"] = _sortlink
 
 
 def _asset_version() -> str:

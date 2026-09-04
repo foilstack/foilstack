@@ -10,6 +10,7 @@ inventing its own arithmetic.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from itertools import takewhile
 from typing import Any
 
 from sqlalchemy import select
@@ -491,6 +492,221 @@ def groups(
 
     out.sort(key=lambda line: line["name"].lower())
     return out
+
+
+# ---------------------------------------------------------------------------
+# The inventory screen's filters.
+#
+# All of this runs over the grouped lines in memory rather than in SQL, because
+# `groups` is already a Python fold over `items` and the values three of these
+# facets read — condition, printing, whether anything is listed — only exist
+# once the copies are folded together. Pushing the filter down to the query
+# would mean writing that fold twice, in two languages, and having the screen
+# disagree with the card page about the same card.
+
+# How to read one facet's values off a single copy — one row of `items`, one
+# physical card. Defined at the copy rather than at the grouped line because
+# that is the level every one of these values actually exists at, and because
+# the two callers need different levels: the chips are counted over lines, and
+# the vocabulary a pick is validated against is read straight off the copies
+# the account owns. One definition, unioned upwards, is what keeps those two
+# from drifting into disagreeing about what a filter means.
+FACET_VALUES: dict[str, Any] = {
+    "game": lambda copy: {copy["game"]},
+    "set": lambda copy: {copy["set_name"]} if copy["set_name"] else set(),
+    "condition": lambda copy: {copy["condition"]},
+    "printing": lambda copy: {copy["finish"]},
+    "listed": lambda copy: {"listed" if copy["listed"] else "unlisted"},
+}
+
+# `order` is the vocabulary's own order where it has one — NM before DMG reads
+# as a scale, alphabetical does not. Game and set have no such order and are
+# sorted by name; they are also the two whose values come from the catalogue
+# rather than from this file, so they can only ever be listed from the rows.
+FACETS: list[dict[str, Any]] = [
+    {"key": "game", "label": "Game"},
+    {"key": "set", "label": "Set"},
+    {"key": "condition", "label": "Condition", "order": CONDITIONS},
+    {"key": "printing", "label": "Printing", "order": FINISHES, "labels": FINISH_LABEL},
+    {
+        "key": "listed",
+        "label": "Listed",
+        "order": ["unlisted", "listed"],
+        "labels": {"unlisted": "Not listed", "listed": "Listed"},
+    },
+]
+FACET_KEYS = [spec["key"] for spec in FACETS]
+
+# How many values one facet may paint. Only game and set can exceed it — the
+# other three have vocabularies this file declares — and only set realistically
+# does: a seller who has been buying collections owns cards from hundreds of
+# sets, and a chip for every one of them is several hundred pixels of chrome
+# above the table it is supposed to be filtering. The ones kept are those held
+# by the most lines, because a set you own four cards from is one to reach the
+# search box for, not one to browse to.
+FACET_LIMIT = 10
+
+
+def line_values(line: dict[str, Any], key: str) -> set[str]:
+    """One facet's values across every copy on a grouped line.
+
+    A union, so a line holding an NM copy and an LP copy sits under both chips
+    and narrowing to LP keeps the whole line. Dropping the copies that do not
+    match instead would make the quantity, the averaged cost and the totals all
+    disagree with the card page for the same card.
+    """
+    read = FACET_VALUES[key]
+    return {value for copy in line["copies"] for value in read(copy)}
+
+
+def present_values(copies: list[dict[str, Any]], key: str) -> set[str]:
+    """Every value of one facet that some copy this account owns actually has.
+
+    Read off the seller's whole inventory, deliberately, and not off whatever
+    the screen is currently showing. Narrowing a pick to the visible rows looks
+    like the same guard and is a different and much worse one: filter to LP,
+    then search for a card that has no LP copy, and the LP pick is no longer
+    "present" — so it gets dropped, its chip disappears, and the screen answers
+    with the near-mint copies. A filter that silently stops applying is worse
+    than one that matches nothing, because nothing on screen says it happened.
+
+    Against the whole inventory it only ever drops a value the account has no
+    card under at all, which is a stale bookmark or a hand-edited URL. Honouring
+    one of those empties the screen and paints a chip for a set the seller does
+    not own, which reads as lost inventory rather than as an empty filter.
+    """
+    read = FACET_VALUES[key]
+    return {value for copy in copies for value in read(copy)}
+
+
+def filter_groups(rows: list[dict[str, Any]], picks: dict[str, set[str]]) -> list[dict[str, Any]]:
+    """The lines matching every facet that has something picked.
+
+    Values within one facet are ORed and the facets are ANDed: Magic *and*
+    Pokemon means either of them, Magic *and* NM means both at once. That is
+    the only reading under which adding a chip to a facet you have already
+    picked from widens the result, which is what a seller ticking a second
+    game is asking for.
+    """
+    for key, chosen in picks.items():
+        if chosen:
+            rows = [r for r in rows if line_values(r, key) & chosen]
+    return rows
+
+
+def facet_options(rows: list[dict[str, Any]], picks: dict[str, set[str]]) -> list[dict[str, Any]]:
+    """Each facet's values with how many lines hold them, ready to paint.
+
+    A facet is counted against the lines the *other* facets allow, not against
+    the final result. Counted against the result, every unpicked chip in a
+    facet you have already picked from reads zero — which says clicking it
+    would empty the screen when it would in fact add rows.
+
+    A picked value is always painted, at zero if that is what it counts. It is
+    the control for taking the filter off again, and a filter you cannot see is
+    one you cannot undo.
+
+    A facet with fewer than two values is dropped, unless something in it is
+    picked. One chip reading "Magic 340" on a Magic-only inventory is a control
+    that cannot do anything, and a row of them pushes the ones that can off the
+    screen. A facet with more than `FACET_LIMIT` is capped and says how many it
+    is not showing — a filter that quietly omits values is one a seller
+    concludes their cards are missing from.
+    """
+    out: list[dict[str, Any]] = []
+    for spec in FACETS:
+        key = spec["key"]
+        chosen = picks.get(key, set())
+        scope = filter_groups(rows, {k: v for k, v in picks.items() if k != key})
+        counts: dict[str, int] = dict.fromkeys(chosen, 0)
+        for line in scope:
+            for value in line_values(line, key):
+                counts[value] = counts.get(value, 0) + 1
+
+        order = spec.get("order")
+        values = sorted(counts, key=order.index if order else lambda v: str(v).lower())
+        if len(values) < 2 and not chosen:
+            continue
+        hidden = 0
+        if not order and len(values) > FACET_LIMIT:
+            # Chosen by count, painted in the facet's own order. Chosen *and*
+            # painted by count would reorder the row under the cursor every
+            # time a chip elsewhere changed the counts, so a second click lands
+            # on whatever slid into the place the first one was.
+            keep = set(sorted(values, key=lambda v: (-counts[v], str(v).lower()))[:FACET_LIMIT])
+            keep |= chosen
+            hidden = len(values) - len(keep)
+            values = [v for v in values if v in keep]
+        labels = spec.get("labels") or {}
+        out.append(
+            {
+                "key": key,
+                "label": spec["label"],
+                "hidden": hidden,
+                "options": [
+                    {
+                        "value": value,
+                        "label": labels.get(value, value),
+                        "count": counts[value],
+                        "on": value in chosen,
+                    }
+                    for value in values
+                ],
+            }
+        )
+    return out
+
+
+# What each sortable column sorts on. `set` sorts by game, then set, then
+# collector number rather than by the displayed string, so a set reads in the
+# order it was printed instead of 1, 10, 100, 11.
+SORT_VALUES: dict[str, Any] = {
+    "name": lambda line: line["name"].lower(),
+    "set": lambda line: (
+        line["game"].lower(),
+        (line["set_name"] or "").lower(),
+        _number_key(line["number"]),
+    ),
+    "quantity": lambda line: line["quantity"],
+    "cost": lambda line: line["cost"],
+    "market": lambda line: line["market"],
+    "margin": lambda line: line["margin_pct"],
+    "listed": lambda line: line["listed_label"].lower(),
+}
+DEFAULT_SORT = "name"
+DEFAULT_DIR = "asc"
+
+
+def _number_key(number: str | None) -> tuple[int, int, str]:
+    """A collector number ordered as a number where it is one.
+
+    They are strings in the catalogue and routinely are not numbers at all —
+    "H12", "SV49", "233a" — so this is a sort key and not a parse. "233a" sorts
+    with 233 because the digits lead; "H12" does not, and goes in a second
+    block after the numbered run rather than among it. That is the order a set
+    is actually printed in, and it keeps "H12" from landing above "12", which
+    is where a plain digit-prefix key puts it.
+    """
+    text = (number or "").strip()
+    digits = "".join(takewhile(str.isdigit, text))
+    return (0, int(digits), text.lower()) if digits else (1, 0, text.lower())
+
+
+def sort_groups(
+    rows: list[dict[str, Any]], key: str = DEFAULT_SORT, direction: str = DEFAULT_DIR
+) -> list[dict[str, Any]]:
+    """Ordered by one column, with the lines that have no value for it last.
+
+    Missing stays at the bottom in both directions rather than flipping to the
+    top when the sort reverses. A card with no cost recorded is not the
+    cheapest card, and forty of them above the expensive ones is the fastest
+    way to make a working sort look broken.
+    """
+    value = SORT_VALUES.get(key, SORT_VALUES[DEFAULT_SORT])
+    present = [r for r in rows if value(r) is not None]
+    missing = [r for r in rows if value(r) is None]
+    present.sort(key=value, reverse=direction == "desc")
+    return present + missing
 
 
 def totals(rows: list[dict[str, Any]]) -> dict[str, Any]:
