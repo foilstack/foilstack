@@ -115,11 +115,11 @@ def page_inventory(
     rule = rule if rule in inventory.RULE_IDS else inventory.DEFAULT_RULE
     sort = sort if sort in inventory.SORT_VALUES else inventory.DEFAULT_SORT
     dir = "desc" if dir == "desc" else "asc"
-    # Read once, through the thin index, and folded here for each of the three
-    # views this screen offers. It used to be `items()` for the counts, then
-    # `groups()` for the rows, then `groups()` again for the printing pass —
-    # three full reads of the seller's inventory, each building the wide
-    # dictionary a card page needs and this table does not use a third of.
+    # Read once, through the thin index. It used to be `items()` for the
+    # counts, then `groups()` for the rows, then `groups()` again for the
+    # printing pass — three full reads of the seller's inventory, each building
+    # the wide dictionary a card page needs and this table does not use a third
+    # of.
     copies = inventory.index(session, user.id, rule)
     counts = {
         "all": len(copies),
@@ -128,52 +128,30 @@ def page_inventory(
     counts["sold"] = counts["all"] - counts["stock"]
     counts["printing"] = sum(1 for r in copies if r["printing_guessed"] and not r["sold"])
 
-    wanted = show if show in ("stock", "sold") else None
-    rows = inventory.fold([r for r in copies if wanted is None or r["status"] == wanted])
-    if show == "printing":
-        # The pass to make after an import: every line still priced on a guess
-        # between printings, in one place, instead of hunting for the `?`.
-        rows = [r for r in inventory.fold([r for r in copies if not r["sold"]]) if r["guessed"]]
-    total_lines = len(rows)
-    needle = q.strip().lower()
-    if needle:
-        rows = [
-            r
-            for r in rows
-            if needle
-            in " ".join(
-                str(x)
-                for x in (
-                    r["name"],
-                    r["game"],
-                    r["set_name"] or "",
-                    r["conditions"],
-                    r["finishes"],
-                    r["number"] or "",
-                )
-            ).lower()
-        ]
-
-    # Narrowed to what the rows can actually offer before anything is filtered.
-    # A value from a stale bookmark or a hand-edited URL is dropped rather than
-    # honoured: honoured it empties the screen, which reads as lost inventory
-    # rather than as a filter that matched nothing.
-    wire = {
-        "game": game,
-        "set": card_set,
-        "condition": condition,
-        "printing": printing,
-        "listed": listed,
-    }
-    picks = {
-        key: set(wire[key] or []) & inventory.present_values(copies, key)
-        for key in inventory.FACET_KEYS
-    }
-
-    # Built before the rows are narrowed, so each chip can count against what
-    # the *other* facets allow rather than against the final result.
-    groups_facets = inventory.facet_options(rows, picks)
-    rows = inventory.sort_groups(inventory.filter_groups(rows, picks), sort, dir)
+    # The narrowing itself lives in `inventory`, because this screen is no
+    # longer its only caller: "select all matching these filters" hands the
+    # filter to `/listings`, which has to resolve it to the very lines the
+    # seller was looking at. One implementation is the only way that holds.
+    found = inventory.narrow(
+        copies,
+        show=show,
+        q=q,
+        wire={
+            "game": game,
+            "set": card_set,
+            "condition": condition,
+            "printing": printing,
+            "listed": listed,
+        },
+        sort=sort,
+        dir=dir,
+    )
+    rows, total_lines, groups_facets, picks = (
+        found.rows,
+        found.total_lines,
+        found.facets,
+        found.picks,
+    )
 
     # Paged last, after the filters and the sort, so a page number names a
     # place in the result the seller is looking at rather than in the table.
@@ -223,6 +201,16 @@ def page_inventory(
             "q": q,
             "rule": rule,
             "show": show,
+            # The order in force, for the selection form to carry. A page is a
+            # window on an ordering, so "this page" means nothing without it:
+            # left off, a run started from page 2 of a market-descending sort
+            # resolved page 2 of the default name-ascending one, and listed a
+            # hundred lines the seller had never seen. Jinja renders an unknown
+            # name as the empty string, so the omission was silent on both
+            # sides — the form posted `sort=`, and the far end read that as
+            # "unrecognised" and fell back.
+            "sort": sort,
+            "dir": dir,
             "counts": counts,
             "facets": groups_facets,
             "filtered": sum(len(picks[key]) for key in inventory.FACET_KEYS),
@@ -233,6 +221,20 @@ def page_inventory(
             "narrowed": matched_lines != total_lines,
             "total_lines": total_lines,
             "matched_lines": matched_lines,
+            "matched_label": f"{matched_lines:,}",
+            # Exactly the fields `deps.selection_dep` reads, so a run started
+            # from this form resolves the filter that produced this screen.
+            # The sort, the direction and the page go on separately because
+            # only one of the two filter modes needs them.
+            "sel_fields": [
+                (key, v)
+                for key, value in (
+                    {"show": show if show != inventory.DEFAULT_SHOW else "", "q": q}
+                    | {key: sorted(picks[key]) for key in inventory.FACET_KEYS}
+                ).items()
+                for v in (value if isinstance(value, list) else [value])
+                if v not in ("", None)
+            ],
             "page": page,
             "last_page": last_page,
             # 1-based and inclusive, because the label reads "showing 1 to 100"

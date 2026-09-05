@@ -8,7 +8,13 @@
   <span class="bar-note">
     {{ card_count }} card{{ '' if card_count == 1 else 's' }}
     {% if rows|length != card_count %}· {{ rows|length }} listings{% endif %}
-    {% if selected_ids %}· selected{% else %}· whole inventory{% endif %}
+    {# A run chosen by filter says so in its own terms. The seller never saw
+       most of these lines — that is the point of selecting by filter — so a
+       bare "selected" would be the run declining to say what it is over,
+       which is the shape of the bug that made this screen price the whole
+       inventory under a heading reading `Not listed 75`. #}
+    {% if described %}· {{ described }}
+    {% elif selected_ids %}· selected{% else %}· whole inventory{% endif %}
   </span>
   <div class="spacer"></div>
   <div class="bar-actions">

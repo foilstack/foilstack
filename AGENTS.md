@@ -333,6 +333,38 @@ Two habits worth keeping:
   groups by card, so padding rows alone against the seeded 152 cards buys 152
   lines however many rows go in.
 
+* **A selection stopped being a list of ids the moment the screen was paged.**
+  The inventory form submits one `id=` per *copy*, and one page of a hundred
+  lines is around 740 of them — a 6.4 KB querystring, already inside the 8 KB
+  a proxy will commonly accept, before a shop with twenty copies of a staple
+  is considered. "Select all 3,884 matching" would have been a quarter of a
+  megabyte. So the filter travels instead and `/listings` resolves it, which
+  took the same run from 6,443 bytes of URL to 84.
+
+  `deps.Selection` carries three modes and the mode is always **stated**.
+  `sel=""` means the ids and only those; `sel=page` and `sel=all` mean a
+  filter. That is deliberate: `/listings` used to read "no ids" as "everything
+  the account owns" while the filter was nowhere on the form, so a screen
+  reading `Not listed 75` handed off a run priced over the whole inventory.
+  An unrecognised `sel` reads as the ids, never as everything.
+
+  Both ends narrow through **one** `inventory.narrow`. Not two implementations
+  tested for agreement — one implementation, because the failure here is a
+  seller listing a hundred lines they never saw with nothing on either screen
+  to say so. `sel=page` therefore has to carry the sort as well as the page
+  number: a window means nothing without the ordering it is a window on, and
+  the first version left `sort` out of the template context, where Jinja
+  rendered the unknown name as `""` and the far end read that as
+  "unrecognised" and fell back to the default. Page 2 of market-descending
+  resolved page 2 of name-ascending, silently, on both sides.
+
+  A filter run is resolved against the data as it stands when it is priced,
+  not as it stood when the page was drawn — so `/listings` states its own
+  terms ("all 3,884 lines · unlisted") rather than printing a bare count.
+  Bulk delete is deliberately **not** offered for a filter selection: it takes
+  ids, and inventing a meaning there would put the widest possible selection
+  one click from the most destructive button.
+
 * **Route declaration order survives into the route table.** FastAPI matches
   routes in the order they are declared and routers in the order they are
   included, so a same-shape pair still depends on which came first. Declare

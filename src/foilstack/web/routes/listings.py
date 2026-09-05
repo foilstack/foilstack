@@ -13,7 +13,9 @@ says plainly rather than implying a connection that does not exist.
 from __future__ import annotations
 
 import datetime as dt
+import math
 from collections.abc import Iterator
+from urllib.parse import quote_plus
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -25,17 +27,100 @@ from foilstack.config import Settings
 from foilstack.plugins import export_plugins
 from foilstack.web import joblog
 from foilstack.web.chrome import CHANNELS, _aware, _chrome, templates
-from foilstack.web.deps import api_owner, db_session, owner, settings_dep
+from foilstack.web.deps import (
+    Selection,
+    api_owner,
+    db_session,
+    owner,
+    selection_dep,
+    settings_dep,
+)
+from foilstack.web.routes import inventory as inv_routes
 
 router = APIRouter()
+
+
+# How many lines one "select all matching" run may cover.
+#
+# Not a policy about how much a seller may list — it is a guard on a request
+# that resolves an unbounded filter, and the ceiling is well above any real
+# inventory. Without one, a hand-edited `sel=all` on an enormous account turns
+# one GET into a fold over everything they own, repeatedly, from a URL short
+# enough to be shared around.
+MAX_SELECTED_LINES = 50_000
+
+
+def _resolve(session, user_id: int, rule: str, sel: Selection) -> tuple[set[int], str]:
+    """The inventory ids this run covers, and a phrase describing where from.
+
+    Hand-picked ids pass straight through. A filter is resolved through
+    `inventory.narrow` — the same call the inventory screen makes, with the
+    same arguments — so "all matching these filters" means the lines that were
+    on screen and not a second opinion about them.
+
+    The description is returned rather than derived by the caller because it is
+    the only thing standing between a filter run and the bug this replaced: a
+    listing run that could not say what it was over, priced against everything
+    the account owned while the screen behind it read `Not listed 75`.
+    """
+    if not sel.by_filter:
+        return set(sel.ids), ""
+
+    copies = inventory.index(session, user_id, rule)
+    found = inventory.narrow(
+        copies, show=sel.show, q=sel.q, wire=sel.wire(), sort=sel.sort, dir=sel.dir
+    )
+    rows = found.rows
+    if sel.sel == "page":
+        # The same window, arrived at the same way. `page` is clamped here as
+        # it is there, so a run started from the last page of a result that has
+        # since shrunk lists that page rather than nothing.
+        last = max(1, math.ceil(len(rows) / inv_routes.PAGE_SIZE))
+        page = min(max(sel.page, 1), last)
+        start = (page - 1) * inv_routes.PAGE_SIZE
+        rows = rows[start : start + inv_routes.PAGE_SIZE]
+    elif len(rows) > MAX_SELECTED_LINES:
+        raise HTTPException(
+            400,
+            f"that filter matches {len(rows):,} lines, which is more than one "
+            f"listing run may cover. Narrow it further and list in batches.",
+        )
+
+    return {i for line in rows for i in line["ids"]}, _describe(sel, len(rows))
+
+
+def _describe(sel: Selection, lines: int) -> str:
+    """What the seller asked for, in words, for the screen to repeat back.
+
+    A count alone is not enough. The whole hazard of selecting by filter rather
+    than by ticking rows is that the seller cannot see what was selected, so
+    the run has to state its own terms — and state them from the parameters it
+    actually resolved, not from what the previous screen displayed.
+    """
+    where = []
+    if sel.show and sel.show != inventory.DEFAULT_SHOW:
+        where.append(
+            {"sold": "sold", "all": "stock and sold", "printing": "needs printing"}.get(
+                sel.show, sel.show
+            )
+        )
+    if sel.q:
+        where.append(f"matching \u201c{sel.q}\u201d")
+    for key in inventory.FACET_KEYS:
+        values = sel.picks.get(key) or ()
+        if values:
+            where.append(", ".join(values))
+    scope = "this page of" if sel.sel == "page" else "all"
+    plural = "" if lines == 1 else "s"
+    return f"{scope} {lines:,} line{plural}" + (" · " + " · ".join(where) if where else "")
 
 
 @router.get("/listings", response_class=HTMLResponse)
 def page_listings(
     request: Request,
-    id: list[int] | None = Query(None),
     rule: str = inventory.DEFAULT_RULE,
     channel: list[str] | None = Query(None),
+    sel: Selection = Depends(selection_dep),
     session=Depends(db_session),
     user: db.User = Depends(owner),
     settings: Settings = Depends(settings_dep),
@@ -43,7 +128,7 @@ def page_listings(
     """A listing run: the selected rows, priced by one rule, for one or more
     marketplaces. It ends in a CSV — nothing here posts to a marketplace."""
     rule = rule if rule in inventory.RULE_IDS else inventory.DEFAULT_RULE
-    chosen = set(id or [])
+    chosen, described = _resolve(session, user.id, rule, sel)
     picked = set(channel or ["tcgplayer"])
     rows = inventory.export_rows(session, user.id, rule, ids=chosen or None)
     run_value = sum((r["list_price"] or 0) * r["quantity"] for r in rows)
@@ -75,7 +160,11 @@ def page_listings(
     )
     picked_label = ", ".join(c["name"] for c in CHANNELS if c["key"] in picked)
 
-    ids = "".join(f"&id={i}" for i in sorted(chosen))
+    # The selection travels onward as whatever it arrived as. Re-encoding a
+    # filter run as its resolved ids would put the length ceiling back on the
+    # one URL the browser follows after the run is priced — and it is the
+    # longest one, because an export link carries the whole selection too.
+    ids = "".join(f"&{k}={quote_plus(v)}" for k, v in sel.query_items())
     chans = "".join(f"&channel={c}" for c in sorted(picked))
     exporters = export_plugins()
     return templates.TemplateResponse(
@@ -122,6 +211,10 @@ def page_listings(
             "mark_ids": mark_ids,
             "unmark_ids": unmark_ids,
             "selected_ids": sorted(chosen),
+            # What this run is over, in words, when it was chosen by filter
+            # rather than by ticking rows. Empty for a hand-picked run, where
+            # the seller has already seen every line they chose.
+            "described": described,
             "run_value": run_value,
             "market_value": market_value,
             "delta": run_value - market_value,
@@ -296,7 +389,7 @@ async def api_unmark_listed(
 async def export_tcgplayer_match(
     file: UploadFile = File(...),
     rule: str = inventory.DEFAULT_RULE,
-    id: list[int] | None = Query(None),
+    sel: Selection = Depends(selection_dep),
     session=Depends(db_session),
     user: db.User = Depends(owner),
 ):
@@ -310,7 +403,7 @@ async def export_tcgplayer_match(
     catalogue has no way to know.
     """
     rule = rule if rule in inventory.RULE_IDS else inventory.DEFAULT_RULE
-    chosen = set(id or [])
+    chosen, _ = _resolve(session, user.id, rule, sel)
     rows = inventory.export_rows(session, user.id, rule, ids=chosen or None)
     if not rows:
         raise HTTPException(400, "nothing in stock to list")
@@ -360,7 +453,7 @@ def _chunks(file: UploadFile) -> Iterator[bytes]:
 def export_csv(
     name: str,
     rule: str = inventory.DEFAULT_RULE,
-    id: list[int] | None = Query(None),
+    sel: Selection = Depends(selection_dep),
     session=Depends(db_session),
     user: db.User = Depends(owner),
 ):
@@ -368,7 +461,7 @@ def export_csv(
     if spec is None:
         raise HTTPException(404, "no such exporter")
     rule = rule if rule in inventory.RULE_IDS else inventory.DEFAULT_RULE
-    chosen = set(id or [])
+    chosen, _ = _resolve(session, user.id, rule, sel)
     rows = inventory.export_rows(session, user.id, rule, ids=chosen or None)
     body = spec.render(rows)
     joblog.add(user.id, f"wrote {spec.filename} · {len(rows)} rows · {rule}")

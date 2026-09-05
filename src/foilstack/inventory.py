@@ -10,6 +10,7 @@ inventing its own arithmetic.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from itertools import takewhile
 from typing import Any
 
@@ -996,6 +997,103 @@ def sort_groups(
     missing = [r for r in rows if value(r) is None]
     present.sort(key=value, reverse=direction == "desc")
     return present + missing
+
+
+# The status views the screen offers, and what each one asks of a copy.
+# `printing` is not a status at all — it is the pass to make after an import,
+# every line still priced on a guess between printings — so it is answered
+# after the lines are folded rather than by filtering copies.
+SHOW_VALUES = ("stock", "sold", "all", "printing")
+DEFAULT_SHOW = "stock"
+
+
+@dataclass(frozen=True)
+class Narrowed:
+    """One narrowing of an inventory, and the intermediates a screen needs.
+
+    `rows` is what to draw. `total_lines` is what there was before the search
+    box and the facets, so a screen can say "138 of 152" and mean it. `facets`
+    is counted against the *other* facets, which is only computable part-way
+    through. `picks` is what survived validation, which is what the links have
+    to be rebuilt from.
+    """
+
+    rows: list[dict[str, Any]]
+    total_lines: int
+    facets: list[dict[str, Any]]
+    picks: dict[str, set[str]]
+
+
+def narrow(
+    copies: list[dict[str, Any]],
+    *,
+    show: str = DEFAULT_SHOW,
+    q: str = "",
+    wire: dict[str, list[str] | None] | None = None,
+    sort: str = DEFAULT_SORT,
+    dir: str = DEFAULT_DIR,
+) -> Narrowed:
+    """The lines a filter selects, in the order the screen puts them.
+
+    Every step the inventory screen used to run inline, in one place, because
+    it is no longer the only caller. A listing run started by "select all
+    matching these filters" has to resolve to *exactly* the lines the seller
+    was looking at — and the way to guarantee that is not to write the
+    narrowing twice and test that the two agree, it is to have one narrowing.
+
+    Everything here arrives from a querystring, so nothing here trusts its
+    arguments: an unknown sort falls back, a direction that is not "desc" is
+    ascending, and picks are intersected with what the account actually owns.
+    """
+    show = show if show in SHOW_VALUES else DEFAULT_SHOW
+    sort = sort if sort in SORT_VALUES else DEFAULT_SORT
+    dir = "desc" if dir == "desc" else "asc"
+
+    wanted = show if show in ("stock", "sold") else None
+    rows = fold([r for r in copies if wanted is None or r["status"] == wanted])
+    if show == "printing":
+        rows = [r for r in fold([r for r in copies if not r["sold"]]) if r["guessed"]]
+    total_lines = len(rows)
+
+    needle = q.strip().lower()
+    if needle:
+        rows = [
+            r
+            for r in rows
+            if needle
+            in " ".join(
+                str(x)
+                for x in (
+                    r["name"],
+                    r["game"],
+                    r["set_name"] or "",
+                    r["conditions"],
+                    r["finishes"],
+                    r["number"] or "",
+                )
+            ).lower()
+        ]
+
+    # Narrowed to what the account can actually offer before anything is
+    # filtered. A value from a stale bookmark or a hand-edited URL is dropped
+    # rather than honoured: honoured it empties the screen, which reads as lost
+    # inventory rather than as a filter that matched nothing.
+    #
+    # Against the whole inventory, deliberately, and not against the rows the
+    # search has already narrowed — see `present_values`, which is where that
+    # distinction cost a live filter once.
+    given = wire or {}
+    picks = {key: set(given.get(key) or []) & present_values(copies, key) for key in FACET_KEYS}
+
+    # Built before the rows are narrowed, so each chip counts against what the
+    # *other* facets allow rather than against the final result.
+    facets = facet_options(rows, picks)
+    return Narrowed(
+        rows=sort_groups(filter_groups(rows, picks), sort, dir),
+        total_lines=total_lines,
+        facets=facets,
+        picks=picks,
+    )
 
 
 def totals(rows: list[dict[str, Any]]) -> dict[str, Any]:

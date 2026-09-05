@@ -397,6 +397,18 @@ body.app {
   padding: 0 3px;
 }
 
+/* The offer to select past this page. Tinted rather than plain, because it
+   appears between the filter row and the table and has to read as a statement
+   about the selection rather than as another row of controls. It is only ever
+   present when the page is already fully ticked, so it never pushes the table
+   down at rest. */
+.selbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 7px 12px; border-bottom: 1px solid var(--rule);
+  background: var(--green-tint); font-size: 12px;
+}
+.selbar .linkish { font-size: 12px; }
+
 /* A sortable heading. Inherits the heading's own type so the table head does
    not gain a second style — the only thing that marks it as a control is the
    cursor and the arrow on the one in force. */

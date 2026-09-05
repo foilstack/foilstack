@@ -19,6 +19,7 @@ nothing here that SQLite could answer.
 
 from __future__ import annotations
 
+import math
 import os
 import uuid
 
@@ -265,3 +266,103 @@ def test_prices_for_survives_more_cards_than_postgres_can_bind(priced_inventory)
     _, _ = priced_inventory
     with db.session() as session:
         assert inventory._prices_for(session, set(range(1, 70_001))) is not None
+
+
+def test_a_filter_selection_resolves_to_what_the_screen_showed(priced_inventory, monkeypatch):
+    """Selecting by filter must pick the very rows the seller was looking at.
+
+    This is the whole risk of the change. A selection is no longer a list of
+    ids — one page of a hundred lines is around 740 copies and a 6.4 KB
+    querystring, and "everything matching" would be a quarter of a megabyte —
+    so the filter travels and `/listings` resolves it. If the two ever narrow
+    differently, the seller lists cards they never saw and nothing on either
+    screen says so.
+
+    Driven over a page size of two, so the fixture's handful of cards produces
+    real pages rather than one that happens to hold everything.
+    """
+    from foilstack import db, inventory
+    from foilstack.web.deps import build_selection
+    from foilstack.web.routes import inventory as inv_routes
+    from foilstack.web.routes.listings import _resolve
+
+    monkeypatch.setattr(inv_routes, "PAGE_SIZE", 2)
+    _, user_id = priced_inventory
+
+    with db.session() as session:
+        copies = inventory.index(session, user_id, "market")
+        for show in ("stock", "all"):
+            for sort, direction in (("name", "asc"), ("market", "desc"), ("quantity", "desc")):
+                found = inventory.narrow(copies, show=show, sort=sort, dir=direction)
+                pages = max(1, math.ceil(len(found.rows) / 2))
+                assert pages > 1, "the fixture must actually page for this to prove anything"
+
+                for page in range(1, pages + 1):
+                    window = found.rows[(page - 1) * 2 : page * 2]
+                    expected = {i for line in window for i in line["ids"]}
+                    got, described = _resolve(
+                        session,
+                        user_id,
+                        "market",
+                        build_selection(sel="page", show=show, sort=sort, dir=direction, page=page),
+                    )
+                    assert got == expected, (show, sort, direction, page)
+                    assert f"{len(window):,} line" in described
+
+                everything = {i for line in found.rows for i in line["ids"]}
+                got, described = _resolve(
+                    session,
+                    user_id,
+                    "market",
+                    build_selection(sel="all", show=show, sort=sort, dir=direction),
+                )
+                assert got == everything, (show, sort, direction)
+                assert described.startswith("all ")
+
+
+def test_a_page_run_past_the_end_lists_the_last_page(priced_inventory, monkeypatch):
+    """Clamped where the screen clamps, so a stale bookmark lists something.
+
+    404ing instead would be the one case where a seller who paged too far can
+    neither see nor list their own cards.
+    """
+    from foilstack import db, inventory
+    from foilstack.web.deps import build_selection
+    from foilstack.web.routes import inventory as inv_routes
+    from foilstack.web.routes.listings import _resolve
+
+    monkeypatch.setattr(inv_routes, "PAGE_SIZE", 2)
+    _, user_id = priced_inventory
+
+    with db.session() as session:
+        copies = inventory.index(session, user_id, "market")
+        rows = inventory.narrow(copies, show="stock").rows
+        last = rows[(math.ceil(len(rows) / 2) - 1) * 2 :]
+        got, _ = _resolve(session, user_id, "market", build_selection(sel="page", page=9999))
+
+    assert got == {i for line in last for i in line["ids"]}
+
+
+def test_hand_picked_ids_are_not_widened_by_a_filter_riding_along(priced_inventory):
+    """The mode decides, not the presence of parameters.
+
+    The inventory form submits the filter on every run, including a run of
+    three ticked rows, because one form serves both. So a selection with `sel`
+    empty has to mean the ids even with a full filter beside it — otherwise
+    ticking three rows under a facet would list everything under that facet.
+    """
+    from foilstack import db
+    from foilstack.web.deps import build_selection
+    from foilstack.web.routes.listings import _resolve
+
+    _, user_id = priced_inventory
+    with db.session() as session:
+        got, described = _resolve(
+            session,
+            user_id,
+            "market",
+            build_selection(ids=[3, 4], sel="", show="all", wire={"game": ["mtg"]}),
+        )
+
+    assert got == {3, 4}
+    assert described == ""
