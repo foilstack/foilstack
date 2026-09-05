@@ -13,7 +13,7 @@ from collections.abc import Iterable
 from itertools import takewhile
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select, true
 
 from foilstack import db
 from foilstack.plugins.sources.tcgcsv import PRODUCT_LINES
@@ -242,18 +242,290 @@ def sku(item_id: int) -> str:
     return f"FS-{10000 + item_id}"
 
 
+# How many card ids one price fetch may name in a single statement.
+#
+# Postgres carries at most 65535 bind parameters in one message and `IN (...)`
+# renders one per element, so an account holding more distinct cards than that
+# did not get a slow page — it got a 500, and it got one on every screen in the
+# application, because the topbar priced inventory through this same function.
+# A seller buying collections passes 65k distinct cards; that is a cliff rather
+# than a curve, and nothing on the way to it gets slower to warn you.
+#
+# Chunked well below the limit rather than exactly at it: the cap is on the
+# whole message, and this list is not always the only thing in one.
+PRICE_CHUNK = 10_000
+
+
 def _prices_for(session, card_ids: set[int]) -> dict[int, dict[str, Any]]:
     """Every stored printing price for these cards, keyed by card then sub-type.
 
-    Fetched in one query rather than per row: an inventory of a few hundred
-    cards would otherwise issue a few hundred round trips to render a table.
+    Fetched in chunks rather than per row: an inventory of a few hundred cards
+    would otherwise issue a few hundred round trips to render a table, and one
+    of a hundred thousand exceeds what a single statement can bind.
     """
     if not card_ids:
         return {}
     out: dict[int, dict[str, Any]] = {}
-    rows = session.scalars(select(db.CardPrice).where(db.CardPrice.card_id.in_(card_ids))).all()
-    for row in rows:
-        out.setdefault(row.card_id, {})[row.sub_type] = row
+    ids = list(card_ids)
+    for start in range(0, len(ids), PRICE_CHUNK):
+        rows = session.scalars(
+            select(db.CardPrice).where(db.CardPrice.card_id.in_(ids[start : start + PRICE_CHUNK]))
+        ).all()
+        for row in rows:
+            out.setdefault(row.card_id, {})[row.sub_type] = row
+    return out
+
+
+def priced_printing(holder: Any = None) -> Any:
+    """The `card_prices` row that prices one inventory row, as SQL.
+
+    The same decision `resolve_printing` makes in Python — the printing the
+    seller named if the catalogue still has it, otherwise `pick_printing`'s
+    guess — written once as a correlated lateral, so a query can ask what an
+    inventory is worth without materialising every row of it in Python first.
+
+    That there are now two expressions of one rule is the cost of this, and it
+    is paid deliberately: the alternative was a topbar that summed
+    `cards.market` and quoted a different total from the table underneath it,
+    which is the bug the comment in `chrome._chrome` records. `pick_printing`
+    stays the definition for callers that already hold the price map, and
+    `tests/test_inventory_scale.py` drives the two against the same rows,
+    printing by printing, so they cannot drift apart in silence.
+
+    The window functions ride along for free: they are evaluated over every
+    printing of the card before `LIMIT 1` takes one, which is how a single
+    lateral answers "and how many printings were there" and "which sides of the
+    foil line are priced at all" without a second visit to the table.
+    """
+    cp = db.CardPrice
+    # Whatever is being priced, which is not always the `inventory` table.
+    # `position` prices one row per *distinct* card, finish and declared
+    # printing rather than one per card owned, and a lateral hard-wired to
+    # `db.InventoryItem` does not correlate to that — it becomes a cartesian
+    # product that quietly answers for the whole table. SQLAlchemy warns about
+    # it; the numbers it returns look plausible, which is worse.
+    item = db.InventoryItem if holder is None else holder
+    is_foil_printing = func.lower(cp.sub_type).like("%foil%")
+    return (
+        select(
+            cp.sub_type.label("sub_type"),
+            cp.market.label("market"),
+            cp.low.label("low"),
+            func.count().over().label("n_printings"),
+            func.bool_or(is_foil_printing).over().label("has_foil"),
+            func.bool_or(~is_foil_printing).over().label("has_plain"),
+        )
+        .where(cp.card_id == item.card_id)
+        .order_by(
+            # A printing the seller named wins outright, and only if the
+            # catalogue still carries it — upstream renames sub-types, and a
+            # declared printing that has gone should fall back to the guess
+            # rather than price the card at nothing. `IS NOT DISTINCT FROM`
+            # rather than `=` because `item.sub_type` is usually NULL, and a
+            # NULL sort key under DESC sorts first, which would hand every
+            # undeclared row to whichever printing happened to be there.
+            cp.sub_type.is_not_distinct_from(item.sub_type).desc(),
+            # Then the seller's side of the foil line, falling back to the
+            # other side rather than to nothing: a card with a single printing
+            # serves both answers, and pricing it at zero because the seller
+            # said "foil" is worse than pricing it off the only price there is.
+            (is_foil_printing == (item.finish == "foil")).desc(),
+            # And within that side, dearest. It guesses high on purpose:
+            # overpricing leaves a card unsold and noticed, underpricing sells
+            # it at a loss discovered from the payout. Only one is recoverable.
+            func.coalesce(cp.market, 0.0).desc(),
+            cp.sub_type.desc(),
+        )
+        .limit(1)
+        .lateral("priced")
+    )
+
+
+def position(session, user_id: int) -> dict[str, Any]:
+    """What this account holds, in money, without materialising it.
+
+    The topbar's two figures and the count beside them, as one query. It used
+    to be `items()` — the whole inventory built into Python dictionaries so
+    that two numbers could be summed off it — and `_chrome` runs on *every*
+    screen, so the review queue, the import page and a single card page all
+    paid for the whole of inventory before drawing anything. At a hundred and
+    fifty thousand rows that was around four seconds and eight hundred
+    megabytes per request, on pages that never mention inventory.
+
+    Priced through `priced_printing`, so this agrees with the table on
+    `/inventory` rather than with `cards.market`, which is the plain
+    printing's price and quoted every foil at the wrong number.
+
+    Grouped before it is priced. Rows sharing a card, a finish and a declared
+    printing resolve to the same catalogue row by construction, so pricing
+    them once and multiplying by the count asks the catalogue a question per
+    *distinct card* rather than per card owned — which is the difference
+    between one lookup and forty for a seller with forty copies of a staple.
+    """
+    item = db.InventoryItem
+    held = (
+        select(
+            item.card_id.label("card_id"),
+            item.finish.label("finish"),
+            item.sub_type.label("sub_type"),
+            func.count().label("n"),
+        )
+        .where(item.user_id == user_id, item.status == "stock")
+        .group_by(item.card_id, item.finish, item.sub_type)
+        .subquery()
+    )
+    priced = priced_printing(held.c)
+    declared = priced.c.sub_type.is_not_distinct_from(held.c.sub_type)
+    row = session.execute(
+        select(
+            func.coalesce(func.sum(held.c.n), 0),
+            func.coalesce(func.sum(func.coalesce(priced.c.market, db.Card.market) * held.c.n), 0.0),
+            func.coalesce(
+                func.sum(held.c.n).filter(
+                    priced.c.sub_type.is_not(None),
+                    priced.c.n_printings > 1,
+                    ~declared,
+                ),
+                0,
+            ),
+        )
+        .select_from(held)
+        .join(db.Card, db.Card.id == held.c.card_id)
+        .outerjoin(priced, true())
+    ).one()
+    return {"count": int(row[0]), "market": float(row[1]), "needs_printing": int(row[2])}
+
+
+def index(
+    session, user_id: int, rule: str = DEFAULT_RULE, status: str | None = None
+) -> list[dict[str, Any]]:
+    """One thin dict per copy: enough to count, filter, sort, total and group.
+
+    `items()` answers the same question in about twice as many keys, and every
+    one of the extra ones costs something — the printing list is a second query
+    and a list of dicts per row, the TCGplayer spellings are strings nothing on
+    the inventory screen reads. That is the right shape for a card page, an
+    edit panel or a marketplace export, all of which are bounded by a card, a
+    row or a selection. It is the wrong shape for the whole of a seller's
+    inventory, which is what the facet counts and the totals bar genuinely
+    need to see.
+
+    So this is the whole-set read and `items()` is the detailed one. Measured
+    over 150,000 rows: `items()` takes about 3.8 seconds and peaks at 840 MB,
+    this takes about 1.1 seconds and 350 MB, and the inventory screen called
+    the first of them three times per render.
+
+    The keys it does carry are named identically, so `fold` and `totals` and
+    the facets work over either. What it deliberately omits is `printings` —
+    absent rather than empty, because an empty list is a claim that the
+    catalogue prices this card in nothing at all, and the card page draws its
+    printing chips off exactly that.
+    """
+    item, card = db.InventoryItem, db.Card
+    priced = priced_printing()
+    query = (
+        select(
+            item.id,
+            item.card_id,
+            item.condition,
+            item.finish,
+            item.sub_type,
+            item.status,
+            item.cost,
+            item.sold_price,
+            item.listed,
+            item.listed_channels,
+            item.scan_id,
+            card.name,
+            card.game,
+            card.set_name,
+            card.number,
+            card.variant,
+            card.image_url,
+            card.market,
+            priced.c.sub_type,
+            priced.c.market,
+            priced.c.low,
+            priced.c.n_printings,
+            priced.c.has_foil,
+            priced.c.has_plain,
+        )
+        .select_from(item)
+        .join(card, card.id == item.card_id)
+        .outerjoin(priced, true())
+        .where(item.user_id == user_id)
+    )
+    if status is not None:
+        query = query.where(item.status == status)
+
+    out: list[dict[str, Any]] = []
+    for row in session.execute(query.order_by(item.id.desc())):
+        (
+            item_id,
+            card_id,
+            condition,
+            finish,
+            declared_sub,
+            item_status,
+            cost,
+            sold_price,
+            listed,
+            listed_channels,
+            scan_id,
+            name,
+            game,
+            set_name,
+            number,
+            variant,
+            image_url,
+            card_market,
+            sub,
+            sub_market,
+            low,
+            n_printings,
+            has_foil,
+            has_plain,
+        ) = row
+        # `resolve_printing` returns "did a person choose this", and the pick
+        # is ordered so that a declared printing the catalogue still carries
+        # wins outright. So the two agree exactly here, and one that the
+        # catalogue has dropped reads as the guess it fell back to.
+        declared = bool(declared_sub) and sub == declared_sub
+        market = sub_market if sub_market is not None else card_market
+        available = {side for side, on in (("foil", has_foil), ("nonfoil", has_plain)) if on}
+        out.append(
+            {
+                "id": item_id,
+                "card_id": card_id,
+                "name": name,
+                "game": game,
+                "set_name": set_name,
+                "number": number,
+                "variant": variant,
+                "image_url": image_url,
+                "condition": condition,
+                "finish": finish,
+                "finish_label": FINISH_LABEL.get(finish, finish),
+                "is_foil": finish == "foil",
+                "quantity": 1,
+                "status": item_status,
+                "sold": item_status == "sold",
+                "sold_price": sold_price,
+                "cost": cost,
+                "market": market,
+                "low": low,
+                "sub_type": sub,
+                "printing_declared": declared,
+                "printing_guessed": bool(sub) and not declared and (n_printings or 0) > 1,
+                "finishes_priced": sorted(available),
+                "finish_unpriced": bool(n_printings) and finish not in available,
+                "list_price": list_price(market, condition, rule, low),
+                "scan_id": scan_id,
+                "listed": bool(listed),
+                "listed_channels": listed_channels or "",
+                "listed_label": listed_channels or "\u2014",
+            }
+        )
     return out
 
 
@@ -433,8 +705,25 @@ def groups(
     card, which is what a scan is evidence of and what carries its own cost,
     notes and sale.
     """
+    return fold(items(session, user_id, rule, status))
+
+
+def fold(copies: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The same grouping, over copies already in hand.
+
+    Split out of `groups` so the inventory screen can read its copies once,
+    through `index`, and fold them without a second trip — it used to call
+    `groups` twice and `items` a third time to draw one page, which is three
+    reads of the whole inventory for one screen.
+
+    Works over either shape of copy. `printings` is the one key `index` does
+    not carry, and it is read with `.get` for that reason: a line folded from
+    thin copies reports `None` there, meaning "not fetched", which is a
+    different claim from `[]` — the empty list says the catalogue prices this
+    card in nothing, and the card page draws its printing chips off it.
+    """
     lines: dict[int, dict[str, Any]] = {}
-    for row in items(session, user_id, rule, status):
+    for row in copies:
         line = lines.get(row["card_id"])
         if line is None:
             line = lines[row["card_id"]] = {
@@ -479,7 +768,7 @@ def groups(
             if line["cost"] is not None and line["market"]
             else None
         )
-        line["printings"] = copies[0]["printings"]
+        line["printings"] = copies[0].get("printings")
         line["guessed"] = sum(1 for c in copies if c["printing_guessed"])
         line["finish_unpriced"] = sum(1 for c in copies if c["finish_unpriced"])
         line["printing_label"] = _summarise([c["sub_type"] or c["finish_label"] for c in copies])

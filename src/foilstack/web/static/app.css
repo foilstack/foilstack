@@ -379,6 +379,24 @@ body.app {
 }
 .facet-clear:hover { color: var(--warn); text-decoration: none; }
 
+/* The paging control under a table.
+   Centred rather than left-aligned: it is the end of the rows, not another
+   filter, and sitting under the first column it reads as one. Sticky-free and
+   inside the scroller on purpose — a pager pinned to the viewport claims the
+   table continues past it, which is the one thing it is there to deny. */
+.pager {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+  gap: 3px; padding: 14px 12px 22px;
+}
+/* Present but dead at the ends of the run. Absent instead, the row reflows by
+   one chip width every time you reach the first or last page, and the number
+   under the cursor moves out from under it. */
+.pager .is-off { opacity: 0.35; cursor: default; }
+.pager-gap {
+  font-family: var(--mono); font-size: 9.5px; color: var(--faint);
+  padding: 0 3px;
+}
+
 /* A sortable heading. Inherits the heading's own type so the table head does
    not gain a second style — the only thing that marks it as a control is the
    cursor and the arrow on the one in force. */

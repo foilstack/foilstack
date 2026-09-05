@@ -22,7 +22,9 @@ src/foilstack/
   db.py           the schema. One row in `inventory` is one physical card
   search.py       nearest-neighbour over card_embeddings (cosine, HNSW)
   importing.py    archive → scans → candidates. Also `scan_path`
-  inventory.py    pricing rules, stock lines, totals, export shaping
+  inventory.py    pricing rules, stock lines, totals, export shaping.
+                  `items` is the wide read, `index` the thin one the
+                  inventory screen pages over, `position` the aggregate
   prices.py       price history, and the inline SVG that draws it
   enrich.py       backfilled days into history, without overwriting one
   images.py       display-sized copies of scans
@@ -72,6 +74,7 @@ wrapping at 1280 but not 1440.
 ```bash
 uv run python scripts/preview.py                 # serve at :8099 until Ctrl-C
 uv run python scripts/preview.py --shots ./shots # screenshot and exit
+uv run python scripts/preview.py --bulk 30000    # ...as a shop would see it
 ```
 
 Either way it is a disposable database, an account already signed in, and a
@@ -294,6 +297,42 @@ Two habits worth keeping:
   rows on the stated grounds that an in-stock row is recoverable "because its
   scan is on disk", and that promise has to stay true. `foilstack purge` is
   where an operator asks for those.
+* **A page that reads all of something has a size it stops working at.** The
+  inventory screen built every row the account owned — three times, through
+  `items()`, which is the wide dictionary a card page needs — and `_chrome`
+  built it a fourth time on *every* screen in the application to draw two
+  numbers in the topbar. At 150,000 rows that was fifteen seconds and 1.5 GB
+  for one page, and four seconds on screens that never mention inventory.
+
+  It did not degrade into that, either. `_prices_for` fetched with
+  `card_id.in_(...)`, which renders one bind parameter per id against a
+  protocol that carries 65,535 — so an account holding more distinct cards
+  than that got a 500, on every page at once, with nothing on the way there
+  getting slower to warn anyone. A seller buying collections reaches 65k.
+
+  Three things answer it, and the order matters. `position()` is the topbar as
+  one aggregate query. `index()` is the thin per-copy read the screen folds
+  over — same key names as `items()`, minus what only a card page uses.
+  Paging is last and is worth least on its own: lazy-loading rows into a table
+  fixes nothing while the server still folds the whole inventory before
+  rendering the first one.
+
+  `position()` and the sort keys need a market price per row, which is
+  `resolve_printing` and `pick_printing` — so `priced_printing()` is those
+  rules a second time, in SQL. That duplication is the real cost here and it
+  is the quiet kind: a topbar disagreeing with the table beneath it by a few
+  dollars reads as rounding. `tests/test_inventory_scale.py` drives both
+  against the same rows, printing by printing, and `index` against `items` on
+  every key they share.
+
+  Look at it with `--bulk`. A pager cannot be reviewed on one page of results,
+  and the bugs paging introduces — a facet click that keeps the page number, a
+  select-all that silently means "this page", a row count reporting the window
+  as the answer — are all invisible until there is a second page. `--bulk`
+  widens the catalogue before padding inventory for that reason: the screen
+  groups by card, so padding rows alone against the seeded 152 cards buys 152
+  lines however many rows go in.
+
 * **Route declaration order survives into the route table.** FastAPI matches
   routes in the order they are declared and routers in the order they are
   included, so a same-shape pair still depends on which came first. Declare

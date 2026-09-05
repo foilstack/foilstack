@@ -167,15 +167,22 @@ def _ago(then: dt.datetime | None) -> str:
 def _chrome(session, request: Request, user: db.User, settings: Settings) -> dict:
     """The values every page's shell needs, for this account only."""
     # One row is one card, and only cards still in stock count as "held".
-    mine = (db.InventoryItem.user_id == user.id, db.InventoryItem.status == "stock")
-    held = session.scalar(select(func.count(db.InventoryItem.id)).where(*mine)) or 0
+    #
     # Priced the same way the inventory screen prices it — per printing, with
     # any printing the seller named taking precedence. Summing `cards.market`
     # here was cheaper and wrong: that column is the plain printing's price, so
     # the topbar quoted one total while the table below it showed another.
-    rows = inventory.items(session, user.id, status="stock")
-    value = sum(r["market"] or 0 for r in rows)
-    needs_printing = sum(1 for r in rows if r["printing_guessed"])
+    #
+    # Answered in SQL rather than by summing `items()`. This function runs on
+    # every screen in the application, so building the seller's whole inventory
+    # in Python here made the review queue and the import page cost what the
+    # inventory page costs — and past 65k distinct cards it did not cost, it
+    # 500'd, because the price fetch bound one parameter per card.
+    mine = (db.InventoryItem.user_id == user.id, db.InventoryItem.status == "stock")
+    stock = inventory.position(session, user.id)
+    held = stock["count"]
+    value = stock["market"]
+    needs_printing = stock["needs_printing"]
     # When the sync last *ran*, not when a price last moved.
     #
     # This read `max(cards.updated_at)`, which only advances when a number

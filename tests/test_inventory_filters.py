@@ -168,3 +168,65 @@ def test_an_unknown_sort_key_falls_back_rather_than_raising():
     """It arrives from the querystring, so it is not this function's to trust."""
     rows = [line("Zed"), line("Ana")]
     assert [r["name"] for r in sort_groups(rows, "nonsense", "asc")] == ["Ana", "Zed"]
+
+
+# --- The paging control ------------------------------------------------------
+#
+# The screen is a window on the result now, and every number it prints about
+# itself is a chance to report the window as the answer. These are about the
+# control, not the query: which page numbers get painted, and whether the ends
+# of the run stay reachable.
+
+
+def test_one_page_offers_only_itself():
+    from foilstack.web.routes.inventory import _pages
+
+    assert _pages(1, 1) == [1]
+
+
+def test_a_short_run_is_painted_whole():
+    """No gaps until there is something worth eliding."""
+    from foilstack.web.routes.inventory import _pages
+
+    assert _pages(3, 5) == [1, 2, 3, 4, 5]
+
+
+def test_both_ends_stay_reachable_from_the_middle():
+    """The first and last page are always offered.
+
+    Without them, getting back to the start of a large inventory is three
+    hundred clicks on `Prev` or a hand-edited URL, and the seller who paged
+    too far has no way back to their own cards.
+    """
+    from foilstack.web.routes.inventory import _pages
+
+    assert _pages(12, 40) == [1, None, 10, 11, 12, 13, 14, None, 40]
+
+
+def test_a_gap_is_only_marked_where_something_is_missing():
+    """`1 … 2` would be a lie about an elision that did not happen.
+
+    Page 5 of six really is missing from the run below, so the gap belongs
+    there — the rule is that the mark tracks the omission, not that a long
+    result always gets one.
+    """
+    from foilstack.web.routes.inventory import _pages
+
+    assert _pages(2, 6) == [1, 2, 3, 4, None, 6]
+    assert _pages(1, 40) == [1, 2, 3, None, 40]
+    assert _pages(40, 40) == [1, None, 38, 39, 40]
+
+
+def test_the_current_page_is_always_in_the_run():
+    """Including at the ends, where the window is clipped on one side.
+
+    Only pages that exist: the route clamps to the last page before it gets
+    here, precisely so that a stale bookmark cannot ask for a page the control
+    would then have to leave unmarked.
+    """
+    from foilstack.web.routes.inventory import _pages
+
+    for last in (1, 2, 7, 40, 641):
+        for page in {1, 2, last // 2, last - 1, last}:
+            if 1 <= page <= last:
+                assert page in _pages(page, last), (page, last)

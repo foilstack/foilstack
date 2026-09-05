@@ -20,7 +20,15 @@
     <a class="chip chip-filter {{ 'on' if c.on }}" href="{{ c.href }}">{{ c.label }} {{ c.count }}</a>
     {% endfor %}
   </div>
-  <span class="bar-note" id="rowlabel">{{ rows|length }}{% if narrowed %} of {{ total_lines }}{% endif %} lines</span>
+  {# Three numbers answering three questions: where this page sits, how many
+     lines the filters matched, and how many there are in all. Collapsed to one
+     they contradict each other — "100 lines" above a filter chip reading 4,231
+     reads as the filter having lost most of the inventory.
+
+     The window is a separate clause rather than another "of". Written
+     "1–100 of 138 of 152 lines" the sentence has two of them, and the middle
+     number stops being readable as either bound. #}
+  <span class="bar-note" id="rowlabel">{% if last_page > 1 %}showing {{ row_from }}–{{ row_to }} · {% endif %}{{ matched_lines }}{% if narrowed %} of {{ total_lines }}{% endif %} lines</span>
   <div class="spacer"></div>
   <button class="btn btn-danger" type="button" id="delbtn" hidden>Delete</button>
   {# Disabled rather than hidden, unlike the Delete button beside it. That one
@@ -61,7 +69,12 @@
     <table class="dtable">
       <thead>
         <tr>
-          <th class="cbcol"><input type="checkbox" id="all"></th>
+          {# Says which rows it means, because the table is a page of a larger
+             result and the box cannot reach past it. A select-all that silently
+             covers a hundred of four thousand lines is the whole hazard of
+             paging a screen that feeds a listing run. #}
+          <th class="cbcol"><input type="checkbox" id="all"
+              title="{% if last_page > 1 %}Select every line on this page{% else %}Select every line{% endif %}"></th>
           {# A sortable heading is a link, not a script: the order is in the
              URL, so a sorted view is one a seller can bookmark and send. #}
           <th>{{ sorts.name|sortlink('CARD') }}</th>
@@ -126,6 +139,22 @@
     </div>
     {% endif %}
   </form>
+
+  {# Inside the scroller and after the table, so it sits at the end of the rows
+     rather than floating in the chrome. Absent entirely on a single page: a
+     paging control that cannot page is furniture. #}
+  {% if last_page > 1 %}
+  <nav class="pager" aria-label="Inventory pages">
+    {% if prev_href %}<a class="chip chip-sm" href="{{ prev_href }}" rel="prev">← Prev</a>
+    {% else %}<span class="chip chip-sm is-off">← Prev</span>{% endif %}
+    {% for p in page_links %}
+      {% if p.gap %}<span class="pager-gap">…</span>
+      {% else %}<a class="chip chip-sm {{ 'on' if p.on }}" href="{{ p.href }}"{% if p.on %} aria-current="page"{% endif %}>{{ p.n }}</a>{% endif %}
+    {% endfor %}
+    {% if next_href %}<a class="chip chip-sm" href="{{ next_href }}" rel="next">Next →</a>
+    {% else %}<span class="chip chip-sm is-off">Next →</span>{% endif %}
+  </nav>
+  {% endif %}
 </div>
 {% endblock %}
 
