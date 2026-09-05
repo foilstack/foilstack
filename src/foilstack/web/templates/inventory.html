@@ -20,7 +20,23 @@
     <a class="chip chip-filter {{ 'on' if c.on }}" href="{{ c.href }}">{{ c.label }} {{ c.count }}</a>
     {% endfor %}
   </div>
-  <span class="bar-note" id="rowlabel">{{ rows|length }}{% if narrowed %} of {{ total_lines }}{% endif %} lines</span>
+  {# Three numbers answering three questions: where this page sits, how many
+     lines the filters matched, and how many there are in all. Collapsed to one
+     they contradict each other — "100 lines" above a filter chip reading 4,231
+     reads as the filter having lost most of the inventory.
+
+     The window is a separate clause rather than another "of". Written
+     "1–100 of 138 of 152 lines" the sentence has two of them, and the middle
+     number stops being readable as either bound. #}
+  {# `data-plain` is the same label without the window, for when a selection
+     is active. The bar is `bar-nowrap` and its only give is the search box,
+     which by this point has already shrunk to its minimum — so all three
+     clauses at once truncate to "740 cards …" and the number the seller most
+     needs is the one that gets cut. The window is on the pager and in the
+     selection bar by then, and the selection is not anywhere else. #}
+  <span class="bar-note" id="rowlabel"
+        data-plain="{{ matched_lines }}{% if narrowed %} of {{ total_lines }}{% endif %} lines"
+  >{% if last_page > 1 %}showing {{ row_from }}–{{ row_to }} · {% endif %}{{ matched_lines }}{% if narrowed %} of {{ total_lines }}{% endif %} lines</span>
   <div class="spacer"></div>
   <button class="btn btn-danger" type="button" id="delbtn" hidden>Delete</button>
   {# Disabled rather than hidden, unlike the Delete button beside it. That one
@@ -57,11 +73,44 @@
 <div class="screen-scroll">
   <form id="sel" method="get" action="/listings">
     <input type="hidden" name="rule" value="{{ rule }}">
-    <input type="hidden" name="show" value="{{ show }}">
+    {# The filter this screen is showing, carried onto the run.
+
+       A selection is not always a list of ids any more. One page of a hundred
+       lines is around 740 copies, which is a 6.4 KB querystring — already
+       inside what a proxy will commonly accept, before a shop with twenty
+       copies of a staple is considered — and "everything matching" would be a
+       quarter of a megabyte. So the filter travels instead and `/listings`
+       resolves it through the same `inventory.narrow` this screen used.
+
+       `sel` is what says which reading applies, and it is empty at rest. An
+       absent mode selects the ids and nothing else: `/listings` once read "no
+       ids" as "everything the account owns", with the filter nowhere on the
+       form, so a screen reading `Not listed 75` handed off a run priced over
+       the whole inventory. Breadth has to be something asked for. #}
+    <input type="hidden" name="sel" id="selmode" value="">
+    <input type="hidden" name="page" value="{{ page }}">
+    <input type="hidden" name="sort" value="{{ sort }}">
+    <input type="hidden" name="dir" value="{{ dir }}">
+    {% for name, value in sel_fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+    {% if last_page > 1 %}
+    {# Only where there is more to select than is on screen. On a single page
+       "select all matching" and the header checkbox are the same act, and
+       offering both invites the seller to look for a difference. #}
+    <div class="selbar" id="selbar" hidden>
+      <span id="selbar-text"></span>
+      <button type="button" class="linkish" id="selall">Select all {{ matched_label }} lines matching these filters</button>
+      <button type="button" class="linkish" id="selpage" hidden>Select just this page instead</button>
+    </div>
+    {% endif %}
     <table class="dtable">
       <thead>
         <tr>
-          <th class="cbcol"><input type="checkbox" id="all"></th>
+          {# Says which rows it means, because the table is a page of a larger
+             result and the box cannot reach past it. A select-all that silently
+             covers a hundred of four thousand lines is the whole hazard of
+             paging a screen that feeds a listing run. #}
+          <th class="cbcol"><input type="checkbox" id="all"
+              title="{% if last_page > 1 %}Select every line on this page{% else %}Select every line{% endif %}"></th>
           {# A sortable heading is a link, not a script: the order is in the
              URL, so a sorted view is one a seller can bookmark and send. #}
           <th>{{ sorts.name|sortlink('CARD') }}</th>
@@ -126,6 +175,22 @@
     </div>
     {% endif %}
   </form>
+
+  {# Inside the scroller and after the table, so it sits at the end of the rows
+     rather than floating in the chrome. Absent entirely on a single page: a
+     paging control that cannot page is furniture. #}
+  {% if last_page > 1 %}
+  <nav class="pager" aria-label="Inventory pages">
+    {% if prev_href %}<a class="chip chip-sm" href="{{ prev_href }}" rel="prev">← Prev</a>
+    {% else %}<span class="chip chip-sm is-off">← Prev</span>{% endif %}
+    {% for p in page_links %}
+      {% if p.gap %}<span class="pager-gap">…</span>
+      {% else %}<a class="chip chip-sm {{ 'on' if p.on }}" href="{{ p.href }}"{% if p.on %} aria-current="page"{% endif %}>{{ p.n }}</a>{% endif %}
+    {% endfor %}
+    {% if next_href %}<a class="chip chip-sm" href="{{ next_href }}" rel="next">Next →</a>
+    {% else %}<span class="chip chip-sm is-off">Next →</span>{% endif %}
+  </nav>
+  {% endif %}
 </div>
 {% endblock %}
 
@@ -138,20 +203,46 @@ const listbtn = $('#listbtn');
 const delbtn = $('#delbtn');
 const label = $('#rowlabel');
 const baseLabel = label.textContent;
+const plainLabel = label.dataset.plain;
+const selmode = $('#selmode');
+const selbar = $('#selbar');
+const selallbtn = $('#selall');
+const selpagebtn = $('#selpage');
+const selbarText = $('#selbar-text');
+const matchedLines = {{ matched_lines }};
+const matchedLabel = '{{ matched_label }}';
+const pageLines = rows.length;
+
+/* Whether the run being described is "every line the filter matches" rather
+   than the rows ticked on this page. It is a mode and not a count, because at
+   this size a selection cannot be carried as ids — see the hidden `sel` field
+   above for the arithmetic. */
+let allMatching = false;
 
 /* A checked line submits one hidden input per copy it holds. Disabled inputs
    are not submitted, so enabling them is the whole of "select this line" — and
    the server keeps receiving a flat list of inventory ids however the UI
-   chooses to group them. */
+   chooses to group them.
+
+   Except when the whole page or the whole filter is selected, where the ids
+   are turned off entirely and the filter carries the meaning instead. A full
+   page is around 740 of them, which is a 6.4 KB URL. */
 function syncHidden(row, on) {
   row.querySelectorAll('input[type=hidden][name=id]').forEach(h => { h.disabled = !on; });
 }
 
 function sync() {
   const n = boxes.filter(b => b.checked).length;
+  const wholePage = pageLines > 0 && n === pageLines;
+
+  // Three modes, and the ids are only submitted in the narrowest of them.
+  // `sel` is what the server reads; leaving it empty while also submitting no
+  // ids would select nothing, which is the safe end of the mistake.
+  selmode.value = allMatching ? 'all' : (wholePage ? 'page' : '');
+
   rows.forEach((r, i) => {
-    r.classList.toggle('sel', boxes[i].checked);
-    syncHidden(r, boxes[i].checked);
+    r.classList.toggle('sel', boxes[i].checked || allMatching);
+    syncHidden(r, boxes[i].checked && !selmode.value);
   });
   all.checked = n > 0 && n === boxes.length;
   all.indeterminate = n > 0 && n < boxes.length;
@@ -164,17 +255,45 @@ function sync() {
   // above a `List 123` button is two right answers to two different questions
   // and reads as one of them being wrong. Only the button knows it is talking
   // about physical cards, so only the button can say so.
-  listbtn.textContent = cards
-    ? 'List ' + cards + ' card' + (cards === 1 ? '' : 's') + ' →'
-    : 'List selected →';
-  listbtn.disabled = cards === 0;
-  listbtn.title = cards ? '' : 'Select rows to list';
-  label.textContent = baseLabel + (cards ? ' · ' + cards + ' cards selected' : '');
+  // Selecting by filter cannot count cards without asking the server, and a
+  // guess would be a number about somebody's stock. The button says lines
+  // instead, which is what was actually chosen, and `/listings` answers with
+  // the card count once it has resolved it.
+  if (allMatching) {
+    listbtn.textContent = 'List ' + matchedLabel + ' lines →';
+  } else {
+    listbtn.textContent = cards
+      ? 'List ' + cards + ' card' + (cards === 1 ? '' : 's') + ' →'
+      : 'List selected →';
+  }
+  listbtn.disabled = !allMatching && cards === 0;
+  listbtn.title = (allMatching || cards) ? '' : 'Select rows to list';
+  // Nothing added when the whole filter is selected: the bar above the table
+  // already says so in a full sentence. The page-mode suffix stays because it
+  // is not a repeat — that bar counts lines and this counts cards, which is
+  // the number that reaches a marketplace.
+  label.textContent = (cards || allMatching ? plainLabel : baseLabel)
+    + (!allMatching && cards ? ' · ' + cards + ' cards selected' : '');
 
   // Destructive, so it is absent rather than merely disabled until there is
-  // something to destroy — nothing to mis-click at rest.
-  delbtn.hidden = cards === 0;
+  // something to destroy — nothing to mis-click at rest. Deliberately not
+  // offered for "all matching": bulk delete takes a list of ids, so a filter
+  // selection has no meaning there, and inventing one would make the widest
+  // possible selection one click from the most destructive button.
+  delbtn.hidden = cards === 0 || allMatching;
   delbtn.textContent = 'Delete ' + cards;
+
+  if (selbar) {
+    // The offer only appears once the page itself is fully selected, which is
+    // the moment the seller has expressed interest in "everything" and the
+    // moment the page's own answer is visibly not all of it.
+    selbar.hidden = !wholePage;
+    selallbtn.hidden = allMatching;
+    selpagebtn.hidden = !allMatching;
+    selbarText.textContent = allMatching
+      ? 'All ' + matchedLabel + ' lines matching these filters are selected.'
+      : 'All ' + pageLines + ' lines on this page are selected.';
+  }
 }
 
 function selectedIds() {
@@ -209,13 +328,30 @@ delbtn.addEventListener('click', async () => {
   }
 });
 
-boxes.forEach(b => b.addEventListener('change', sync));
-all.addEventListener('change', () => { boxes.forEach(b => { b.checked = all.checked; }); sync(); });
+/* Any change to what is ticked drops back to the narrow reading. Widening is
+   always a deliberate click on the offer, never a state a row edit leaves you
+   in — untick one line out of four thousand and "all matching" would otherwise
+   still be in force, listing the line you just removed. */
+function narrow() {
+  allMatching = false;
+  sync();
+}
+
+boxes.forEach(b => b.addEventListener('change', narrow));
+all.addEventListener('change', () => {
+  allMatching = false;
+  boxes.forEach(b => { b.checked = all.checked; });
+  sync();
+});
 rows.forEach((r, i) => r.addEventListener('click', ev => {
   if (ev.target.closest('input, a, button')) return;
   boxes[i].checked = !boxes[i].checked;
-  sync();
+  narrow();
 }));
+if (selbar) {
+  selallbtn.addEventListener('click', () => { allMatching = true; sync(); });
+  selpagebtn.addEventListener('click', narrow);
+}
 sync();
 </script>
 {% endblock %}

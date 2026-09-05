@@ -66,6 +66,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--only", default=None, help="shoot just this screen by name")
     ap.add_argument("--scale", type=int, default=None, help="device pixel ratio for --demo")
     ap.add_argument("--keep-frames", action="store_true", help="leave --demo frames on disk")
+    ap.add_argument(
+        "--bulk",
+        type=int,
+        default=0,
+        metavar="N",
+        help="pad inventory to N rows, to see the screens a large seller sees",
+    )
     args = ap.parse_args(argv)
 
     source_url = _admin_url()
@@ -84,6 +91,8 @@ def main(argv: list[str] | None = None) -> int:
             ["alembic", "upgrade", "head"], check=True, env=env, stdout=subprocess.DEVNULL
         )
         _seed(source_url, preview_url)
+        if args.bulk:
+            _bulk(source_url, preview_url, args.bulk)
 
         proc = subprocess.Popen(
             [
@@ -668,6 +677,147 @@ def _seed(source_url: str, preview_url: str) -> None:
             )
     session.commit()
     session.close()
+
+
+def _bulk(source_url: str, preview_url: str, target: int) -> None:
+    """Pad inventory out to `target` rows, over a catalogue widened to match.
+
+    The seeded preview holds a couple of dozen cards, which is the right size
+    for a screenshot of the review queue and useless for looking at anything
+    that only appears at scale. The inventory screen is paged now, and a pager
+    cannot be looked at on one page of results — the whole class of bug it
+    introduces (a filter that keeps the page number, a select-all that quietly
+    means "this page", a row count that reports the window as the answer) is
+    invisible until there is a second page.
+
+    It widens the catalogue *first*, and that is the part worth keeping. The
+    screen groups by card, so padding inventory alone against the seeded slice
+    of 152 cards buys 152 lines however many rows are inserted — a hundred
+    thousand cards would render as two pages of enormous quantities and prove
+    nothing about paging. Roughly eight copies per card is what a shop's shelf
+    looks like and what makes the line count move.
+
+    Deliberately crude beyond that. The cards are real, so names, sets and
+    prices are real and the facet chips have something true to count, but this
+    is not trying to be a plausible inventory — it exists so a person can see
+    the screen a shop sees. `--bulk 100000` takes a while and is the point.
+    """
+    import random
+
+    from sqlalchemy import func, select
+
+    from foilstack import db
+
+    db.init(preview_url)
+    session = db.session()
+    try:
+        user_id = session.scalar(select(db.User.id).order_by(db.User.id))
+        held = session.scalar(
+            select(func.count(db.InventoryItem.id)).where(db.InventoryItem.user_id == user_id)
+        )
+        wanted = target - (held or 0)
+        if wanted <= 0:
+            return
+
+        have = set(session.scalars(select(db.Card.source_id)).all())
+        _widen_catalogue(source_url, session, have, target // 8)
+
+        # Sampled with replacement, so lines carry quantities — a screen where
+        # every row reads "1" hides the consolidation this table exists to do.
+        pool = session.scalars(select(db.Card.id)).all()
+        if not pool:
+            print("no catalogue to draw from; skipping --bulk")
+            return
+
+        rng = random.Random(20260904)
+        conditions = ["NM", "NM", "NM", "LP", "MP", "HP"]
+        rows = [
+            {
+                "user_id": user_id,
+                "card_id": rng.choice(pool),
+                "condition": rng.choice(conditions),
+                "finish": "foil" if rng.random() < 0.22 else "nonfoil",
+                "status": "sold" if rng.random() < 0.06 else "stock",
+                "cost": round(rng.uniform(0.1, 40.0), 2),
+                "listed": 1 if rng.random() < 0.3 else 0,
+            }
+            for _ in range(wanted)
+        ]
+        for start in range(0, len(rows), 5000):
+            session.execute(db.InventoryItem.__table__.insert(), rows[start : start + 5000])
+            session.commit()
+        print(f"padded inventory to {target} rows over {len(pool)} cards")
+    finally:
+        session.close()
+
+
+def _widen_catalogue(source_url: str, session, have: set[str], wanted: int) -> None:
+    """Copy more real cards, and their prices, out of the source catalogue.
+
+    Prices come across too rather than being invented. `cards.market` alone
+    would render a market column and nothing else true: the printing label, the
+    `?` on a guessed printing and the warning on a finish the catalogue does not
+    price are all read off `card_prices`, so a preview without it shows a
+    version of the screen that cannot go wrong in any of the ways it actually
+    goes wrong.
+    """
+    if wanted <= len(have):
+        return
+    engine = create_engine(source_url, future=True)
+    with engine.connect() as conn:
+        rows = (
+            conn.execute(
+                text(
+                    "SELECT id, source, source_id, name, source_name, game, set_name,"
+                    "       number, variant, image_url, market, currency"
+                    "  FROM cards"
+                    " WHERE image_url IS NOT NULL AND market IS NOT NULL"
+                    " ORDER BY id"
+                    " LIMIT :n"
+                ),
+                {"n": wanted * 2},
+            )
+            .mappings()
+            .all()
+        )
+        fresh = [r for r in rows if r["source_id"] not in have][:wanted]
+        if not fresh:
+            return
+        prices = (
+            conn.execute(
+                text(
+                    "SELECT card_id, sub_type, market, low, mid, high"
+                    "  FROM card_prices WHERE card_id = ANY(:ids)"
+                ),
+                {"ids": [r["id"] for r in fresh]},
+            )
+            .mappings()
+            .all()
+        )
+
+    from foilstack import db
+
+    # Keyed by the source id, because the row ids in the two databases are
+    # unrelated — the rule the whole codebase keeps about never carrying one
+    # across an install applies just as much to a throwaway one.
+    for start in range(0, len(fresh), 2000):
+        session.execute(
+            db.Card.__table__.insert(),
+            [{k: v for k, v in r.items() if k != "id"} for r in fresh[start : start + 2000]],
+        )
+        session.commit()
+    here = dict(
+        session.execute(
+            select(db.Card.source_id, db.Card.id).where(
+                db.Card.source_id.in_([r["source_id"] for r in fresh])
+            )
+        ).all()
+    )
+    by_old = {r["id"]: here[r["source_id"]] for r in fresh}
+    remapped = [{**p, "card_id": by_old[p["card_id"]]} for p in prices if p["card_id"] in by_old]
+    for start in range(0, len(remapped), 2000):
+        session.execute(db.CardPrice.__table__.insert(), remapped[start : start + 2000])
+        session.commit()
 
 
 def _first_card(preview_url: str) -> int | None:

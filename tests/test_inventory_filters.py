@@ -168,3 +168,158 @@ def test_an_unknown_sort_key_falls_back_rather_than_raising():
     """It arrives from the querystring, so it is not this function's to trust."""
     rows = [line("Zed"), line("Ana")]
     assert [r["name"] for r in sort_groups(rows, "nonsense", "asc")] == ["Ana", "Zed"]
+
+
+# --- The paging control ------------------------------------------------------
+#
+# The screen is a window on the result now, and every number it prints about
+# itself is a chance to report the window as the answer. These are about the
+# control, not the query: which page numbers get painted, and whether the ends
+# of the run stay reachable.
+
+
+def test_one_page_offers_only_itself():
+    from foilstack.web.routes.inventory import _pages
+
+    assert _pages(1, 1) == [1]
+
+
+def test_a_short_run_is_painted_whole():
+    """No gaps until there is something worth eliding."""
+    from foilstack.web.routes.inventory import _pages
+
+    assert _pages(3, 5) == [1, 2, 3, 4, 5]
+
+
+def test_both_ends_stay_reachable_from_the_middle():
+    """The first and last page are always offered.
+
+    Without them, getting back to the start of a large inventory is three
+    hundred clicks on `Prev` or a hand-edited URL, and the seller who paged
+    too far has no way back to their own cards.
+    """
+    from foilstack.web.routes.inventory import _pages
+
+    assert _pages(12, 40) == [1, None, 10, 11, 12, 13, 14, None, 40]
+
+
+def test_a_gap_is_only_marked_where_something_is_missing():
+    """`1 … 2` would be a lie about an elision that did not happen.
+
+    Page 5 of six really is missing from the run below, so the gap belongs
+    there — the rule is that the mark tracks the omission, not that a long
+    result always gets one.
+    """
+    from foilstack.web.routes.inventory import _pages
+
+    assert _pages(2, 6) == [1, 2, 3, 4, None, 6]
+    assert _pages(1, 40) == [1, 2, 3, None, 40]
+    assert _pages(40, 40) == [1, None, 38, 39, 40]
+
+
+def test_the_current_page_is_always_in_the_run():
+    """Including at the ends, where the window is clipped on one side.
+
+    Only pages that exist: the route clamps to the last page before it gets
+    here, precisely so that a stale bookmark cannot ask for a page the control
+    would then have to leave unmarked.
+    """
+    from foilstack.web.routes.inventory import _pages
+
+    for last in (1, 2, 7, 40, 641):
+        for page in {1, 2, last // 2, last - 1, last}:
+            if 1 <= page <= last:
+                assert page in _pages(page, last), (page, last)
+
+
+# --- The selection a listing run is over -------------------------------------
+#
+# A selection stopped being "a list of ids" when the screen was paged: one page
+# of a hundred lines is around 740 copies, which is a 6.4 KB querystring — and
+# "all matching" would be a quarter of a megabyte. So the filter travels and is
+# resolved at the far end, and what these pin is that the mode is always stated
+# rather than inferred.
+
+
+def selection(**over):
+    from foilstack.web.deps import Selection
+
+    base = {
+        "ids": frozenset(),
+        "sel": "",
+        "show": "stock",
+        "q": "",
+        "picks": dict.fromkeys(("game", "set", "condition", "printing", "listed"), ()),
+        "sort": "name",
+        "dir": "asc",
+        "page": 1,
+    }
+    return Selection(**{**base, **over})
+
+
+def test_an_unknown_mode_selects_the_ids_and_nothing_more():
+    """It arrives from a querystring, so it is not this code's to trust.
+
+    Reading an unrecognised word as "everything you own" is the exact failure
+    the parameter exists to have made impossible.
+    """
+    from foilstack.web.deps import build_selection
+
+    assert build_selection(sel="everything").sel == ""
+    assert build_selection(sel="ALL").sel == ""
+    assert build_selection(sel="all").sel == "all"
+    assert build_selection(sel="page").sel == "page"
+
+
+def test_an_empty_selection_is_empty_rather_than_everything():
+    """`/listings` once read "no ids" as the whole inventory."""
+    from foilstack.web.deps import build_selection
+
+    empty = build_selection()
+    assert empty.ids == frozenset()
+    assert empty.by_filter is False
+    assert empty.query_items() == []
+
+
+def test_a_hand_picked_selection_travels_as_its_ids():
+    assert selection(ids=frozenset({3, 1, 2})).query_items() == [
+        ("id", "1"),
+        ("id", "2"),
+        ("id", "3"),
+    ]
+
+
+def test_a_filter_selection_never_names_an_id():
+    """Re-encoding a filter run as its resolved ids would put the length
+    ceiling straight back on the export link, which is the longest URL in the
+    run and the one a browser follows after it is already priced."""
+    sel = selection(sel="all", ids=frozenset(range(5000)), picks={"game": ("magic",)})
+    encoded = sel.query_items()
+    assert not any(k == "id" for k, _ in encoded)
+    assert ("sel", "all") in encoded
+    assert ("game", "magic") in encoded
+
+
+def test_page_mode_carries_the_order_it_is_a_page_of():
+    """A page is a window on an ordering and means nothing without it.
+
+    Left off, a run started from page 2 of a market-descending sort resolves
+    page 2 of the default name-ascending one — a hundred lines the seller never
+    saw, listed without a word about it.
+    """
+    encoded = selection(sel="page", sort="market", dir="desc", page=7).query_items()
+    assert ("sort", "market") in encoded
+    assert ("dir", "desc") in encoded
+    assert ("page", "7") in encoded
+
+
+def test_all_mode_leaves_out_what_cannot_change_it():
+    """An order and a place in it say nothing about "every matching line"."""
+    encoded = selection(sel="all", sort="market", dir="desc", page=7).query_items()
+    assert not any(k in ("sort", "dir", "page") for k, _ in encoded)
+
+
+def test_defaults_are_left_out_of_the_url():
+    """So an untouched run has a clean URL, like every other link here."""
+    encoded = selection(sel="page").query_items()
+    assert encoded == [("sel", "page")]

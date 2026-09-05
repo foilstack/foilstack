@@ -33,6 +33,38 @@ router = APIRouter()
 # fat finger on the keyboard as well as a hostile client.
 MAX_MONEY = 100_000_000.0
 
+# Lines to a page.
+#
+# The screen used to draw every line the account owned. That is fine for the
+# few hundred a hobby seller has and absurd for the tens of thousands a shop
+# does: sixty thousand rows of this table is somewhere north of fifty megabytes
+# of HTML, which the browser has to parse before it paints anything and which
+# the row script then walks four times to wire up selection.
+#
+# Chosen to fill more than a screen without being a scroll marathon — a page
+# you can skim in one go, with the paging control reachable by End rather than
+# by a minute of wheel.
+PAGE_SIZE = 100
+
+
+def _pages(page: int, last: int) -> list[int | None]:
+    """The page numbers to paint, with `None` where a gap is elided.
+
+    First and last are always offered, plus a window around where you are, so
+    a seller on page 300 of 640 can still reach either end in one click. A bare
+    prev/next pair cannot: getting back to the start of a large inventory
+    becomes three hundred clicks, and the only other way is to edit the URL.
+    """
+    around = {1, last, *range(max(1, page - 2), min(last, page + 2) + 1)}
+    out: list[int | None] = []
+    previous = 0
+    for n in sorted(around):
+        if n > previous + 1:
+            out.append(None)
+        out.append(n)
+        previous = n
+    return out
+
 
 def _href(params: dict[str, Any]) -> str:
     """One inventory URL, carrying everything still in force.
@@ -60,6 +92,7 @@ def page_inventory(
     show: str = "stock",
     sort: str = inventory.DEFAULT_SORT,
     dir: str = inventory.DEFAULT_DIR,
+    page: int = 1,
     game: list[str] | None = Query(None),
     # Aliased rather than named `set`, which would shadow the builtin in a
     # function that goes on to build sets.
@@ -82,7 +115,12 @@ def page_inventory(
     rule = rule if rule in inventory.RULE_IDS else inventory.DEFAULT_RULE
     sort = sort if sort in inventory.SORT_VALUES else inventory.DEFAULT_SORT
     dir = "desc" if dir == "desc" else "asc"
-    copies = inventory.items(session, user.id, rule)
+    # Read once, through the thin index. It used to be `items()` for the
+    # counts, then `groups()` for the rows, then `groups()` again for the
+    # printing pass — three full reads of the seller's inventory, each building
+    # the wide dictionary a card page needs and this table does not use a third
+    # of.
+    copies = inventory.index(session, user.id, rule)
     counts = {
         "all": len(copies),
         "stock": sum(1 for r in copies if not r["sold"]),
@@ -90,52 +128,43 @@ def page_inventory(
     counts["sold"] = counts["all"] - counts["stock"]
     counts["printing"] = sum(1 for r in copies if r["printing_guessed"] and not r["sold"])
 
-    wanted = show if show in ("stock", "sold") else None
-    rows = inventory.groups(session, user.id, rule, status=wanted)
-    if show == "printing":
-        # The pass to make after an import: every line still priced on a guess
-        # between printings, in one place, instead of hunting for the `?`.
-        rows = [r for r in inventory.groups(session, user.id, rule, status="stock") if r["guessed"]]
-    total_lines = len(rows)
-    needle = q.strip().lower()
-    if needle:
-        rows = [
-            r
-            for r in rows
-            if needle
-            in " ".join(
-                str(x)
-                for x in (
-                    r["name"],
-                    r["game"],
-                    r["set_name"] or "",
-                    r["conditions"],
-                    r["finishes"],
-                    r["number"] or "",
-                )
-            ).lower()
-        ]
+    # The narrowing itself lives in `inventory`, because this screen is no
+    # longer its only caller: "select all matching these filters" hands the
+    # filter to `/listings`, which has to resolve it to the very lines the
+    # seller was looking at. One implementation is the only way that holds.
+    found = inventory.narrow(
+        copies,
+        show=show,
+        q=q,
+        wire={
+            "game": game,
+            "set": card_set,
+            "condition": condition,
+            "printing": printing,
+            "listed": listed,
+        },
+        sort=sort,
+        dir=dir,
+    )
+    rows, total_lines, groups_facets, picks = (
+        found.rows,
+        found.total_lines,
+        found.facets,
+        found.picks,
+    )
 
-    # Narrowed to what the rows can actually offer before anything is filtered.
-    # A value from a stale bookmark or a hand-edited URL is dropped rather than
-    # honoured: honoured it empties the screen, which reads as lost inventory
-    # rather than as a filter that matched nothing.
-    wire = {
-        "game": game,
-        "set": card_set,
-        "condition": condition,
-        "printing": printing,
-        "listed": listed,
-    }
-    picks = {
-        key: set(wire[key] or []) & inventory.present_values(copies, key)
-        for key in inventory.FACET_KEYS
-    }
-
-    # Built before the rows are narrowed, so each chip can count against what
-    # the *other* facets allow rather than against the final result.
-    groups_facets = inventory.facet_options(rows, picks)
-    rows = inventory.sort_groups(inventory.filter_groups(rows, picks), sort, dir)
+    # Paged last, after the filters and the sort, so a page number names a
+    # place in the result the seller is looking at rather than in the table.
+    # Clamped rather than 404'd: page 90 of a result that just shrank to four
+    # is a stale bookmark or a filter applied since, and answering it with the
+    # last page is what the seller meant. A page they cannot reach is one the
+    # paging control below the table would have to omit, and then there is no
+    # way back to their own inventory except editing the URL.
+    matched_lines = len(rows)
+    last_page = max(1, math.ceil(matched_lines / PAGE_SIZE))
+    page = min(max(page, 1), last_page)
+    first_row = (page - 1) * PAGE_SIZE
+    rows = rows[first_row : first_row + PAGE_SIZE]
 
     def state(**over: Any) -> dict[str, Any]:
         base: dict[str, Any] = {
@@ -148,6 +177,14 @@ def page_inventory(
         }
         base.update(over)
         return base
+
+    # `page` is deliberately absent from `state`, so every other control resets
+    # it. A facet click that kept the page number lands the seller on page 40
+    # of a result that now has three, and the clamp above then quietly sends
+    # them to the end of it — a filter that appears to have found nothing but
+    # the last few rows. Only the paging links set it.
+    def page_href(n: int) -> str:
+        return _href(state(page=n if n > 1 else ""))
 
     for facet in groups_facets:
         for opt in facet["options"]:
@@ -164,11 +201,53 @@ def page_inventory(
             "q": q,
             "rule": rule,
             "show": show,
+            # The order in force, for the selection form to carry. A page is a
+            # window on an ordering, so "this page" means nothing without it:
+            # left off, a run started from page 2 of a market-descending sort
+            # resolved page 2 of the default name-ascending one, and listed a
+            # hundred lines the seller had never seen. Jinja renders an unknown
+            # name as the empty string, so the omission was silent on both
+            # sides — the form posted `sort=`, and the far end read that as
+            # "unrecognised" and fell back.
+            "sort": sort,
+            "dir": dir,
             "counts": counts,
             "facets": groups_facets,
             "filtered": sum(len(picks[key]) for key in inventory.FACET_KEYS),
-            "narrowed": len(rows) != total_lines,
+            # Against the lines the filters matched, not against the page. The
+            # page is a window on the answer and never the answer itself, so a
+            # row note reading "100 of 4,231" when 4,231 lines matched a filter
+            # over 60,000 would be reporting the window as the result.
+            "narrowed": matched_lines != total_lines,
             "total_lines": total_lines,
+            "matched_lines": matched_lines,
+            "matched_label": f"{matched_lines:,}",
+            # Exactly the fields `deps.selection_dep` reads, so a run started
+            # from this form resolves the filter that produced this screen.
+            # The sort, the direction and the page go on separately because
+            # only one of the two filter modes needs them.
+            "sel_fields": [
+                (key, v)
+                for key, value in (
+                    {"show": show if show != inventory.DEFAULT_SHOW else "", "q": q}
+                    | {key: sorted(picks[key]) for key in inventory.FACET_KEYS}
+                ).items()
+                for v in (value if isinstance(value, list) else [value])
+                if v not in ("", None)
+            ],
+            "page": page,
+            "last_page": last_page,
+            # 1-based and inclusive, because the label reads "showing 1 to 100"
+            # and an off-by-one there is the kind a person notices immediately
+            # and cannot unsee.
+            "row_from": first_row + 1 if rows else 0,
+            "row_to": first_row + len(rows),
+            "page_links": [
+                {"gap": True} if n is None else {"n": n, "on": n == page, "href": page_href(n)}
+                for n in _pages(page, last_page)
+            ],
+            "prev_href": page_href(page - 1) if page > 1 else None,
+            "next_href": page_href(page + 1) if page < last_page else None,
             "clear_href": _href(state(**{key: [] for key in inventory.FACET_KEYS})),
             "status_chips": [
                 {

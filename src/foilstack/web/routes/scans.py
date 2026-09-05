@@ -855,9 +855,11 @@ async def api_commit(
             finish,
         )
     session.commit()
-    guessed = sum(
-        1 for r in inventory.items(session, user.id, status="stock") if r["printing_guessed"]
-    )
+    # Counted in SQL. This is the tail of confirming a batch, so it ran right
+    # after the import that made inventory as large as it has ever been, and
+    # building every row of it in Python to count a subset made the last
+    # request of an import the slowest one in it.
+    guessed = inventory.position(session, user.id)["needs_printing"]
     joblog.add(user.id, f"committed {committed} scans to inventory")
     # Told, not buried. A card priced on a guess between printings looks
     # exactly like a card priced on a decision.
