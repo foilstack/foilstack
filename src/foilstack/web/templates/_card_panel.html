@@ -79,7 +79,7 @@
        other finish's. #}
     {% if r.finish_unpriced %}
     <span class="field-hint warn">
-      No {{ r.finish_label|lower }} printing is catalogued for this card, so it is
+      The catalogue has no {{ r.finish_label|lower }} price for this card, so it is
       priced as “{{ r.sub_type }}”.{% if not r.printing_declared %} Pick the printing you hold if that is wrong.{% endif %}
     </span>
     {% elif r.printing_guessed %}

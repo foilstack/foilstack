@@ -152,10 +152,17 @@
           <td class="{{ 'muted' if not r.mixed }}">{{ r.conditions }}</td>
           <td class="{{ 'foil-yes' if r.any_foil else 'muted' }}">
             {{ r.printing_label }}
-            {# Ahead of the "guessed" mark: a finish with no printing behind it
+            {# Ahead of the "guessed" mark: a finish with no price behind it
                is the worse of the two and stays quiet on a single-printing
-               card, which is most of the cards it happens to. #}
-            {% if r.finish_unpriced %}<span class="pill warn" title="{{ r.finish_unpriced }} of {{ r.quantity }} copies are marked with a finish the catalogue has no printing for, so they are priced off the other finish">!</span>
+               card, which is most of the cards it happens to.
+
+               "No price", not "no printing". The catalogue names printings it
+               has no market figure for, and a foil printing nobody will pay
+               for leaves this row priced off the non-foil just as surely as no
+               foil printing at all would. Reading those two as the same fact
+               is what this pill was doing, and it went quiet on the cards it
+               was written for. #}
+            {% if r.finish_unpriced %}<span class="pill warn" title="{{ r.finish_unpriced }} of {{ r.quantity }} copies are marked with a finish the catalogue has no price for, so they are priced off the other finish">!</span>
             {% elif r.guessed %}<span class="pill warn" title="printing not chosen, so it is priced as the dearest match">?</span>{% endif %}
           </td>
           <td class="r muted">{{ r.cost|money if r.cost is not none else '—' }}</td>

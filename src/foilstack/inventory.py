@@ -9,7 +9,7 @@ inventing its own arithmetic.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from itertools import takewhile
 from typing import Any
@@ -233,18 +233,44 @@ def finish_of(sub_type: str) -> str:
     return "foil" if "foil" in sub_type.lower() else "nonfoil"
 
 
-def priced_finishes(names: list[str]) -> set[str]:
+def priced_printings(by_sub: Mapping[str, Any]) -> list[str]:
+    """The printings of this card the catalogue gives a market price for.
+
+    The one place "the catalogue has this printing" and "the catalogue prices
+    this printing" are told apart, because they are not the same fact and
+    conflating them cost a real bug. `ingest` deliberately keeps a printing
+    whose `marketPrice` is null — it still names the sub-type, and an unpriced
+    card is worth recording — so around one price row in seventy here has no
+    money attached, and 2,700 cards have a printing on one side of the foil
+    line that nothing will pay for.
+
+    Every caller used to decide this for itself by choosing which dict to pass:
+    `importing._accept` handed `resolve_finish` the raw price map and the
+    review queue handed it a map with the nulls stripped, so the same scan of
+    the same card became a foil under auto-accept and a non-foil through the
+    queue. Nothing raised, and both answers looked like answers. Take the map,
+    not a list of names, so there is no longer a place for a caller to make
+    that choice.
+    """
+    return [name for name, row in by_sub.items() if row.market is not None]
+
+
+def priced_finishes(by_sub: Mapping[str, Any]) -> set[str]:
     """The finishes the catalogue actually prices this card in.
 
     Frequently one of the two. Better than a third of the cards here have no
     foil printing and a fifth have nothing but foil printings, so a finish
     control offering both without saying which is real is offering a choice
     the catalogue cannot answer.
+
+    Priced, as the name says: a foil printing listed at no price answers the
+    question "does this card come in foil" and not the question this asks,
+    which is "can this row be given a number".
     """
-    return {finish_of(n) for n in names}
+    return {finish_of(n) for n in priced_printings(by_sub)}
 
 
-def resolve_finish(default: str, names: list[str]) -> str:
+def resolve_finish(default: str, by_sub: Mapping[str, Any]) -> str:
     """The finish to start a card at, given the printings it is priced in.
 
     The seller answers "foil or not" once for a whole batch, and a batch is
@@ -263,7 +289,7 @@ def resolve_finish(default: str, names: list[str]) -> str:
     So only where the catalogue is unambiguous. With no printings at all, or
     with both finishes priced, the default stands and the seller decides.
     """
-    available = priced_finishes(names)
+    available = priced_finishes(by_sub)
     if not available or default in available:
         return default
     return available.pop()
@@ -303,8 +329,21 @@ def pick_printing(finish: str, by_sub: dict[str, Any]) -> str | None:
     A guess is still a guess, which is why `InventoryItem.sub_type` exists —
     once the seller names the printing this function is not consulted, and the
     card page marks any row where it still is.
+
+    A price outranks the foil line. The seller's side is only worth honouring
+    where something on it can be sold for a number: an unpriced Holofoil beside
+    a priced Normal used to win on being the foil, price at nothing, and send
+    the row to `cards.market` — the card-level figure, which is one printing's
+    price standing in for all of them. Then `finish_unpriced` would fire and
+    tell the seller the row was "priced off the other finish", which was not
+    what had happened. Now it is. Only when nothing at all is priced does the
+    whole list come back into play, so a card the catalogue has no money for
+    still names the printing it holds rather than none.
     """
-    candidates = matching_printings(finish, sorted(by_sub))
+    priced = priced_printings(by_sub)
+    candidates = matching_printings(finish, sorted(priced)) or matching_printings(
+        finish, sorted(by_sub)
+    )
     if not candidates:
         return None
     return max(candidates, key=lambda n: (by_sub[n].market or 0.0, n))
@@ -431,14 +470,21 @@ def priced_printing(holder: Any = None) -> Any:
     # it; the numbers it returns look plausible, which is worse.
     item = db.InventoryItem if holder is None else holder
     is_foil_printing = func.lower(cp.sub_type).like("%foil%")
+    # Priced, not merely catalogued. `has_foil` and `has_plain` are what
+    # `finish_unpriced` is read off, and the whole point of that warning is
+    # that the row could not be given a number on the side the seller named —
+    # a foil printing sitting at a null market is exactly that case, not an
+    # exemption from it. `items()` says the same thing with
+    # `priced_finishes`, and `tests/test_inventory_scale.py` holds them to it.
+    is_priced = cp.market.is_not(None)
     return (
         select(
             cp.sub_type.label("sub_type"),
             cp.market.label("market"),
             cp.low.label("low"),
             func.count().over().label("n_printings"),
-            func.bool_or(is_foil_printing).over().label("has_foil"),
-            func.bool_or(~is_foil_printing).over().label("has_plain"),
+            func.bool_or(is_foil_printing & is_priced).over().label("has_foil"),
+            func.bool_or(~is_foil_printing & is_priced).over().label("has_plain"),
         )
         .where(cp.card_id == item.card_id)
         .order_by(
@@ -450,6 +496,10 @@ def priced_printing(holder: Any = None) -> Any:
             # NULL sort key under DESC sorts first, which would hand every
             # undeclared row to whichever printing happened to be there.
             cp.sub_type.is_not_distinct_from(item.sub_type).desc(),
+            # Then a price, ahead of the foil line — `pick_printing` says why.
+            # A declared printing still outranks this, because that one is the
+            # seller speaking and the rest of the ordering is only guessing.
+            is_priced.desc(),
             # Then the seller's side of the foil line, falling back to the
             # other side rather than to nothing: a card with a single printing
             # serves both answers, and pricing it at zero because the seller
@@ -685,7 +735,7 @@ def items(
         # by a multiple, and always wrong in the direction that loses money.
         by_sub = prices.get(card.id, {})
         sub, declared = resolve_printing(item.sub_type, item.finish, by_sub)
-        available = priced_finishes(list(by_sub))
+        available = priced_finishes(by_sub)
         row = by_sub.get(sub) if sub else None
         market = row.market if row and row.market is not None else card.market
         low = row.low if row else None
