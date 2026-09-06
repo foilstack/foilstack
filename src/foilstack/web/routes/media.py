@@ -9,6 +9,7 @@ dependency and filter by it before they touch the filesystem.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 
 import httpx
@@ -90,6 +91,36 @@ def _reference_urls(url: str) -> list[str]:
     return list(dict.fromkeys(candidates))
 
 
+def _cache_key(url: str) -> str:
+    """Name the cached file after the image, not after the row that points at it.
+
+    This is `images.display_path`'s rule, arrived at the same way and for the
+    second time. A card id is a row number, unique inside one database and
+    meaningless outside it — and `refs/` is explicitly *not* scoped to one
+    database, because `scripts/preview.py` symlinks a throwaway install's
+    `refs/` at the real one to avoid re-downloading the whole catalogue on
+    every screenshot run.
+
+    Keyed by `card_id` that sharing was only safe while every preview copied
+    catalogue rows with their ids intact. `_widen_catalogue` does not: it
+    strips `id` so Postgres reassigns from 1, which is correct for its own
+    remapping and silently fatal here. Prod card 582 is Triumphant Chomp; the
+    582nd row of a widened preview was Anim Pakal, and browsing it wrote Anim
+    Pakal's art to `refs/582-lg.img` on the *shared* directory. Prod then hit
+    the cache and never re-fetched. 264 of 1177 cached images were serving
+    another card under the right name, which is the worst way for a cache to
+    be wrong: nothing errors, and the picture is the one thing a reviewer has
+    to check the match against.
+
+    The URL is what is being cached, so the URL is what identifies it. Two
+    databases now agree by construction rather than by discipline, and a
+    re-ingest that repoints a product's `image_url` gets a new key instead of
+    staying pinned to art upstream has replaced. Files written under the old
+    scheme are simply orphaned.
+    """
+    return hashlib.sha256(url.encode()).hexdigest()
+
+
 @router.get("/card/{card_id}/image")
 async def card_image(
     request: Request,
@@ -134,15 +165,19 @@ async def card_image(
     if not url:
         raise HTTPException(404, "no reference image")
 
-    # `-lg` rather than the old bare `{card_id}.img`: the cache key has to change
-    # when the thing being cached does, or every card viewed before this stays
-    # pinned at 200px forever. Old files are simply orphaned and can be deleted.
-    cache = settings.refs_dir / f"{card_id}-lg.img"
+    # Keyed by the image, not by the card — see `_cache_key`. The `-ref` suffix
+    # carries the size the way the old `-lg` did: the key has to change when the
+    # thing being cached does, or every card viewed under an earlier variant
+    # stays pinned to it forever. Old files are simply orphaned.
+    key = _cache_key(url)
+    cache = settings.refs_dir / f"{key}-ref.img"
 
     # A card whose image upstream refuses is not a transient failure, and a
     # page full of them must not re-ask on every load. The miss is remembered
-    # the same way a hit is, as a file, so it survives a restart.
-    missing = settings.refs_dir / f"{card_id}-lg.missing"
+    # the same way a hit is, as a file, so it survives a restart. Per URL
+    # rather than per card for the same reason the hit is: two rows pointing
+    # at one image get one answer, and it is the right one for both.
+    missing = settings.refs_dir / f"{key}-ref.missing"
     if missing.exists():
         raise HTTPException(404, "no reference image")
 
