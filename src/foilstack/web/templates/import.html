@@ -265,6 +265,13 @@
            data-cond="{{ r.condition }}" data-finish="{{ r.finish }}"
            data-finish-default="{{ r.default_finish }}"
            data-review="{{ 1 if r.needs_review else 0 }}"
+           {# The card's market price, which is what the bar above totals into
+              "market value" — so `Discard all` can caption itself with the
+              figure the seller is looking at rather than a second opinion.
+              Deliberately not the per-finish price in `.qprice`: that one is
+              blank wherever the price table has no rows for the card, which
+              would quote a fraction of the bar over the very same scans. #}
+           data-market="{{ r.market }}"
            data-prices='{{ r.prices|tojson }}'>
         <div class="thumb">
           <img src="/scan/{{ r.scan_id }}/image" alt="" loading="lazy">
@@ -859,6 +866,19 @@ async function confirmRow(row) {
   if (saved) fade(row);
 }
 async function discardRow(row) {
+  // Asked for because this button sits against Confirm, and the two do
+  // opposite things: one puts the card in inventory, the other deletes the
+  // photograph off the disk and cannot be undone from anywhere in the
+  // application. The card is named so a misclick is caught by reading the
+  // question rather than by remembering which row was under the cursor.
+  const name = $('.qname', row).textContent.trim();
+  const file = $('.qfile', row).textContent.trim();
+  const ok = confirm(
+    'Discard this scan?\n\n' + name + (file ? ' \u00b7 ' + file : '') +
+    '\n\nThe photograph is deleted and the card is not added to inventory. ' +
+    'Re-importing the archive is the only way back.'
+  );
+  if (!ok) return;
   const gone = await postForm('/api/scans/' + row.dataset.scan + '/discard', null,
     { error: 'could not discard that scan' });
   if (gone) fade(row);
@@ -892,8 +912,37 @@ $('#commit').addEventListener('click', async () => {
 });
 
 $('#discard-all').addEventListener('click', async () => {
-  const ids = $$('.qrow').filter(r => r.dataset.review === '1').map(r => +r.dataset.scan);
+  const rows = $$('.qrow').filter(r => r.dataset.review === '1');
+  const ids = rows.map(r => +r.dataset.scan);
   if (!ids.length) return;
+
+  // Both figures come off the rows on screen, which is what this button
+  // sends. Captioned with the queue tile's count instead it would name the
+  // whole backlog over a payload that is one page of it — and the money is
+  // here for the reason the inventory delete carries it: the mistake being
+  // guarded against is a reflex, and a bare row count does not make that land.
+  // It sums the same per-row figure the bar's "market value" does, because a
+  // dialog quoting less than the number six inches above it reads as the
+  // dialog being about something smaller than what the button clears.
+  const value = rows.reduce((a, r) => a + (parseFloat(r.dataset.market) || 0), 0);
+  // Named because an upload is what the seller recognises — and because
+  // seeing only the batches on screen is what says the held-back ones stay.
+  const uploads = [...new Set(rows.map(r => {
+    const head = $('.qgroup-file', r.closest('.qgroup') || r);
+    return head ? head.textContent.trim() : '';
+  }).filter(Boolean))];
+  const shown = uploads.slice(0, 3);
+  const rest = uploads.length - shown.length;
+
+  const ok = confirm(
+    'Discard ' + ids.length + ' scan' + (ids.length === 1 ? '' : 's') +
+    ' worth $' + value.toFixed(2) + ' at market?\n\n' +
+    shown.join(', ') + (rest > 0 ? ' and ' + rest + ' more' : '') +
+    '\n\nEvery photograph is deleted and none of these cards reach ' +
+    'inventory. Re-importing the archive is the only way back.'
+  );
+  if (!ok) return;
+
   if (await postJSON('/api/scans/discard-all', { scan_ids: ids },
       { error: 'could not discard those scans' })) location.reload();
 });
