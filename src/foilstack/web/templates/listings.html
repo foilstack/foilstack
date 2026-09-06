@@ -103,6 +103,14 @@
     <form class="match" method="post" action="{{ c.match_href }}" enctype="multipart/form-data">
       <input type="file" name="file" accept=".csv,text/csv" required>
       <button class="btn" type="submit">{{ c.exporter.label }} CSV</button>
+      {# A pricing export is large and the upload is the whole wait, so this
+         form is the one on the site that needs to say it is working. No
+         `display` is set on it in CSS, so `[hidden]` is left to the user agent
+         rather than being overridden by a class of equal specificity. #}
+      <div class="match-progress" hidden>
+        <div class="match-bar"><i></i></div>
+        <div class="match-stat"></div>
+      </div>
       <div class="s">
         Needs your own <b>Export Filtered CSV</b> from TCGplayer&rsquo;s pricing
         screen: their ids name a card <i>and</i> a condition, so only their file
@@ -110,6 +118,27 @@
         what you own <i>beyond</i> what you already have listed there, and takes
         any surplus back down.
       </div>
+      {% if run_sets %}
+      {# Named so the export can be filtered before it is downloaded. An
+         unfiltered Magic product line is ~800,000 rows and over 100 MB, sent
+         to match a few dozen cards, and that transfer is the whole wait. #}
+      <div class="s match-sets">
+        Filter that export before you download it — this run only needs:
+        {% for g in run_sets %}
+        <div class="match-line">
+          <b>{{ g.line }}</b>
+          {% for name in g.sets %}<span class="pill">{{ name }}</span>{% endfor %}
+          {% if g.more %}<span class="pill">+{{ g.more }} more</span>{% endif %}
+        </div>
+        {% endfor %}
+        {% if run_sets|length > 1 %}
+        <div class="match-warn">
+          One upload is one product line, so this run needs an export and a run
+          per line. Filter inventory by game first.
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
     </form>
     {% else %}
     <a class="btn" style="width: 100%; margin-bottom: 4px" href="{{ c.csv_href }}">{{ c.exporter.label }} CSV</a>
@@ -183,5 +212,128 @@ const wireMark = (sel, url, ids) => $(sel)?.addEventListener('click', async ev =
 
 wireMark('#mark', '/api/listings/mark', {{ mark_ids | tojson }});
 wireMark('#unmark', '/api/listings/unmark', {{ unmark_ids | tojson }});
+
+// The TCGplayer round trip, with the upload reported as it happens.
+//
+// XHR rather than `fetch` for one reason: `fetch` cannot report upload
+// progress, and the upload is the entire wait here. A TCGplayer pricing
+// export runs to tens of megabytes, which is minutes on a domestic
+// connection, and as a native form post this said nothing at all — no
+// progress, a button that stayed live and could send the whole file a second
+// time, and a response that is a download rather than a navigation, so the
+// page did not change even on success. A seller could not tell it working
+// from it hung.
+const matchForm = $('form.match');
+if (matchForm) {
+  const button = $('button', matchForm);
+  const picker = $('input[type=file]', matchForm);
+  const panel = $('.match-progress', matchForm);
+  const bar = $('.match-bar', matchForm);
+  const fill = $('.match-bar i', matchForm);
+  const stat = $('.match-stat', matchForm);
+  const label = button.textContent;
+
+  const say = (text, bad) => {
+    panel.hidden = false;
+    stat.textContent = text;
+    stat.classList.toggle('bad', !!bad);
+    // A full green bar over a red message reads as success — the bar is about
+    // the transfer, but nobody reads it that finely. On a failure the message
+    // is the whole content, so the bar goes.
+    bar.hidden = !!bad;
+  };
+  const done = () => {
+    button.disabled = false;
+    button.textContent = label;
+  };
+
+  const mb = bytes => (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+
+  matchForm.addEventListener('submit', ev => {
+    ev.preventDefault();
+    const file = picker.files[0];
+    if (!file) return;
+
+    button.disabled = true;
+    button.textContent = 'working…';
+    fill.style.width = '0';
+    bar.hidden = false;
+    say('starting…');
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', matchForm.action);
+    // So a failure can be read as the JSON it is; the success case is a file.
+    xhr.responseType = 'blob';
+
+    xhr.upload.addEventListener('progress', e => {
+      if (!e.lengthComputable) return;
+      const pct = (e.loaded / e.total) * 100;
+      fill.style.width = pct + '%';
+      // Named in megabytes as well as percent because a percentage alone on a
+      // very large file moves too slowly to read as movement.
+      say('uploading ' + mb(e.loaded) + ' of ' + mb(e.total) + ' · ' + Math.floor(pct) + '%');
+    });
+
+    // Everything is sent; from here the wait is the server's, and it is short.
+    xhr.upload.addEventListener('load', () => {
+      fill.style.width = '100%';
+      say('matching against your inventory…');
+    });
+
+    xhr.addEventListener('load', async () => {
+      done();
+      if (xhr.status !== 200) {
+        say(await matchError(xhr), true);
+        return;
+      }
+      // The report, so a download is not the only thing that happens. The
+      // header is the same summary the job log gets.
+      say(xhr.getResponseHeader('X-Match-Report') || 'done');
+      const url = URL.createObjectURL(xhr.response);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'tcgplayer-listings.csv';
+      link.click();
+      // Revoked on a later turn of the loop: revoking it in the same tick can
+      // beat the browser to starting the download.
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    });
+
+    xhr.addEventListener('error', () => {
+      done();
+      // No status at all, which for an upload this size is usually a proxy
+      // closing the connection rather than the network going away.
+      say('the upload did not complete — it may be larger than this site accepts', true);
+    });
+    xhr.addEventListener('abort', () => {
+      done();
+      say('upload cancelled', true);
+    });
+
+    const data = new FormData();
+    data.append('file', file);
+    xhr.send(data);
+  });
+}
+
+/* What went wrong, from a response that may not be ours.
+ *
+ * A 400 here is FastAPI's `{detail}` — the file was not a pricing export, or
+ * nothing was in stock. A 413 is almost never ours: the request never reached
+ * the application, and the body is whichever proxy rejected it saying so in
+ * HTML. Parsing that as JSON and showing the failure of the parse is how a
+ * seller ends up with no idea why a ten-minute upload produced nothing.
+ */
+async function matchError(xhr) {
+  if (xhr.status === 413) {
+    return 'that file is too large for this site to accept. Filter the export '
+      + 'to the sets listed above and try again.';
+  }
+  try {
+    return JSON.parse(await xhr.response.text()).detail || 'that did not work';
+  } catch (e) {
+    return 'that did not work (HTTP ' + xhr.status + ')';
+  }
+}
 </script>
 {% endblock %}

@@ -15,6 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import math
 from collections.abc import Iterator
+from typing import Any
 from urllib.parse import quote_plus
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
@@ -48,6 +49,51 @@ router = APIRouter()
 # one GET into a fold over everything they own, repeatedly, from a URL short
 # enough to be shared around.
 MAX_SELECTED_LINES = 50_000
+
+# How many set names the match form spells out before it stops naming them.
+# The list exists so the seller can filter their TCGplayer export down to it;
+# past a couple of dozen sets a filtered export is not meaningfully smaller
+# than the whole product line, and the list has stopped being advice.
+MATCH_SETS_SHOWN = 12
+
+
+def _run_sets(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The product lines and sets this run covers, for the seller to filter
+    their TCGplayer export down to.
+
+    `Export Filtered CSV` exports whatever the pricing screen is filtered to,
+    and a seller with no reason to filter exports the whole product line. For
+    Magic that is around 800,000 rows and 100 MB, uploaded so that a few dozen
+    of those rows can be kept — and the transfer is the entire cost of the
+    round trip, since the matching itself is under two seconds. A 100 MB
+    upload is also over the request body ceiling a proxy in front of this will
+    commonly impose, so it is not only slow but a size at which the run starts
+    failing outright.
+
+    Named in `tcg_product_line` and `set_name` because those are the export's
+    own spellings, which is the vocabulary the pricing screen filters in. A
+    set named here that the seller cannot find in their filter would be worse
+    than naming none.
+
+    Listing the product lines is the other half, and it is why they are
+    grouped rather than flattened: one upload is one product line, so a run
+    spanning two of them cannot be matched from a single file however it is
+    filtered, and the screen should say so by showing both.
+    """
+    lines: dict[str, set[str]] = {}
+    for row in rows:
+        line = str(row.get("tcg_product_line") or "")
+        name = str(row.get("set_name") or "")
+        if line and name:
+            lines.setdefault(line, set()).add(name)
+    return [
+        {
+            "line": line,
+            "sets": sorted(lines[line])[:MATCH_SETS_SHOWN],
+            "more": max(0, len(lines[line]) - MATCH_SETS_SHOWN),
+        }
+        for line in sorted(lines)
+    ]
 
 
 def _resolve(session, user_id: int, rule: str, sel: Selection) -> tuple[set[int], str]:
@@ -206,6 +252,10 @@ def page_listings(
                 for c in CHANNELS
             ],
             "picked": sorted(picked),
+            # What to filter a TCGplayer export down to. Only the match
+            # form uses it, but it is a fact about the run rather than
+            # about one channel.
+            "run_sets": _run_sets(rows),
             "picked_label": picked_label,
             "card_count": card_count,
             "mark_ids": mark_ids,
@@ -428,7 +478,17 @@ async def export_tcgplayer_match(
     return Response(
         content=body,
         media_type="text/csv",
-        headers={"Content-Disposition": 'attachment; filename="tcgplayer-listings.csv"'},
+        headers={
+            "Content-Disposition": 'attachment; filename="tcgplayer-listings.csv"',
+            # The same summary the job log gets, for the page that posted this
+            # to state without reloading. A CSV response is a download rather
+            # than a navigation, so nothing on the screen changes when this
+            # succeeds — the seller got a file and no report, and the counts
+            # naming what was skipped sat in a log they had no reason to
+            # re-read. Counts and ASCII words only; the card names that would
+            # not survive a header stay in the log.
+            "X-Match-Report": report.ascii_summary(),
+        },
     )
 
 

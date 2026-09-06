@@ -1111,6 +1111,35 @@ tr.is-sold .rowname { color: var(--faint); }
   line-height: 1.6; margin-top: 6px;
 }
 
+/* The sets to filter that export to. Set names run long — "Strixhaven:
+   Mystical Archive" is 28 characters in a 250px sidebar — so the pills wrap
+   and are allowed to break rather than being truncated: a half-shown set name
+   is one the seller cannot find in TCGplayer's filter, which is the only
+   thing this list is for. */
+.match-sets { border-top: 1px solid var(--rule); padding-top: 6px; }
+.match-line { margin-top: 6px; }
+.match-line b { display: block; color: var(--ink); font-weight: 400; }
+.match-line .pill {
+  display: inline-block; margin: 3px 3px 0 0;
+  max-width: 100%; white-space: normal; overflow-wrap: anywhere;
+}
+.match-warn { margin-top: 6px; color: var(--warn); }
+
+/* The upload's own progress. `.match-progress` deliberately sets no `display`
+   — `[hidden]` is an attribute selector of the same specificity as a class, so
+   a `display` here would beat it and the tiles would show before a file was
+   picked, which is the bug the import screen already shipped once. */
+.match-bar {
+  height: 3px; border-radius: 2px; overflow: hidden;
+  background: var(--rule); margin-top: 8px;
+}
+.match-bar i { display: block; height: 100%; width: 0; background: var(--green); }
+.match-stat {
+  font-family: var(--mono); font-size: 10px; color: var(--muted);
+  line-height: 1.6; margin-top: 4px; overflow-wrap: anywhere;
+}
+.match-stat.bad { color: var(--warn); }
+
 .run-summary b { color: var(--ink); font-weight: 400; }
 .joblog {
   flex: 0 0 132px; border-top: 1px solid var(--rule);
