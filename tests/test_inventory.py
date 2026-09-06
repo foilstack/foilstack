@@ -160,17 +160,45 @@ def test_a_single_printing_serves_both_finishes():
     assert matching_printings("nonfoil", ["Foil"]) == ["Foil"]
 
 
+def _priced(**markets):
+    """A price map, as `_prices_for` returns one. `None` is an unpriced printing."""
+    from types import SimpleNamespace
+
+    return {
+        name.replace("_", " "): SimpleNamespace(market=market, low=None)
+        for name, market in markets.items()
+    }
+
+
 def test_priced_finishes_reports_what_the_catalogue_actually_has():
     """More than a third of the catalogue has no foil printing at all, so
     "which finishes are real for this card" is a question the screens have to
     be able to ask before they offer both."""
     from foilstack.inventory import priced_finishes
 
-    assert priced_finishes(["Normal"]) == {"nonfoil"}
-    assert priced_finishes(["Holofoil", "Reverse Holofoil"]) == {"foil"}
-    assert priced_finishes(["Normal", "Foil"]) == {"nonfoil", "foil"}
+    assert priced_finishes(_priced(Normal=2.0)) == {"nonfoil"}
+    assert priced_finishes(_priced(Holofoil=9.0, Reverse_Holofoil=4.0)) == {"foil"}
+    assert priced_finishes(_priced(Normal=2.0, Foil=9.0)) == {"nonfoil", "foil"}
     # Nothing known is not the same as nothing available.
-    assert priced_finishes([]) == set()
+    assert priced_finishes({}) == set()
+
+
+def test_a_printing_with_no_price_is_not_a_finish_the_catalogue_prices():
+    """The distinction this whole pair of functions exists to make.
+
+    `ingest` keeps a printing whose market price is null on purpose — it still
+    names the sub-type — so "the catalogue has a foil printing" and "the
+    catalogue will pay for a foil" are different facts about 2,700 cards here.
+    Reading the first as the second is what let one scan of one card become a
+    foil down the auto-accept path and a non-foil down the review queue.
+    """
+    from foilstack.inventory import priced_finishes, priced_printings
+
+    both_catalogued = _priced(Normal=2.10, Holofoil=None)
+    assert priced_printings(both_catalogued) == ["Normal"]
+    assert priced_finishes(both_catalogued) == {"nonfoil"}
+    # And a card with nothing priced offers nothing, rather than offering both.
+    assert priced_finishes(_priced(Normal=None, Holofoil=None)) == set()
 
 
 def test_a_default_finish_gives_way_to_the_card_that_matched():
@@ -181,8 +209,12 @@ def test_a_default_finish_gives_way_to_the_card_that_matched():
     something they had no other answer to."""
     from foilstack.inventory import resolve_finish
 
-    assert resolve_finish("nonfoil", ["Holofoil"]) == "foil"
-    assert resolve_finish("foil", ["Normal"]) == "nonfoil"
+    assert resolve_finish("nonfoil", _priced(Holofoil=9.0)) == "foil"
+    assert resolve_finish("foil", _priced(Normal=2.0)) == "nonfoil"
+    # And an unpriced printing does not hold the default in place. This is the
+    # divergence itself: the batch says foil, the card has a foil printing, and
+    # nobody will pay for it — so the row is a non-foil, whichever path asks.
+    assert resolve_finish("foil", _priced(Normal=2.10, Holofoil=None)) == "nonfoil"
 
 
 def test_a_default_finish_stands_wherever_the_catalogue_is_ambiguous():
@@ -191,11 +223,14 @@ def test_a_default_finish_stands_wherever_the_catalogue_is_ambiguous():
     there would be guessing rather than deferring."""
     from foilstack.inventory import resolve_finish
 
-    assert resolve_finish("nonfoil", ["Normal", "Holofoil"]) == "nonfoil"
-    assert resolve_finish("foil", ["Normal", "Holofoil"]) == "foil"
-    # No prices at all is not evidence of anything.
-    assert resolve_finish("foil", []) == "foil"
-    assert resolve_finish("nonfoil", []) == "nonfoil"
+    assert resolve_finish("nonfoil", _priced(Normal=2.0, Holofoil=9.0)) == "nonfoil"
+    assert resolve_finish("foil", _priced(Normal=2.0, Holofoil=9.0)) == "foil"
+    # No prices at all is not evidence of anything, and a catalogue that names
+    # two printings while pricing neither is no more evidence than an empty one.
+    assert resolve_finish("foil", {}) == "foil"
+    assert resolve_finish("nonfoil", {}) == "nonfoil"
+    assert resolve_finish("foil", _priced(Normal=None)) == "foil"
+    assert resolve_finish("nonfoil", _priced(Holofoil=None)) == "nonfoil"
 
 
 def test_a_resolved_finish_is_never_the_one_that_falls_back():
@@ -204,10 +239,20 @@ def test_a_resolved_finish_is_never_the_one_that_falls_back():
     and then mark it as priced off the other one."""
     from foilstack.inventory import priced_finishes, resolve_finish
 
-    for names in [["Normal"], ["Holofoil"], ["Normal", "Foil"], []]:
+    maps = [
+        _priced(Normal=2.0),
+        _priced(Holofoil=9.0),
+        _priced(Normal=2.0, Foil=9.0),
+        _priced(Normal=2.10, Holofoil=None),
+        _priced(Normal=None, Holofoil=9.0),
+        _priced(Normal=None),
+        {},
+    ]
+    for by_sub in maps:
         for default in ("foil", "nonfoil"):
-            picked = resolve_finish(default, names)
-            assert not names or picked in priced_finishes(names)
+            picked = resolve_finish(default, by_sub)
+            available = priced_finishes(by_sub)
+            assert not available or picked in available
 
 
 def test_the_fallback_is_reported_not_just_taken():
@@ -217,9 +262,12 @@ def test_the_fallback_is_reported_not_just_taken():
     wrong rows."""
     from foilstack.inventory import matching_printings, priced_finishes
 
-    for finish, names in [("foil", ["Normal"]), ("nonfoil", ["Holofoil"])]:
+    for finish, markets in [("foil", {"Normal": 2.0}), ("nonfoil", {"Holofoil": 9.0})]:
+        names = list(markets)
         picked = matching_printings(finish, names)
-        crossed = finish not in priced_finishes(names)
+        crossed = finish not in priced_finishes(
+            _priced(**{n.replace(" ", "_"): m for n, m in markets.items()})
+        )
         assert crossed and picked == names
 
 
@@ -243,13 +291,21 @@ def test_ambiguous_foil_printings_price_high():
     assert pick_printing("nonfoil", by_sub) == "Normal"
 
 
-def test_printing_choice_survives_a_missing_price():
-    from types import SimpleNamespace
+def test_a_price_outranks_the_seller_s_side_of_the_foil_line():
+    """An unpriced printing on the right side is not an answer.
 
+    Picking it prices the row off `cards.market` — one printing's figure
+    standing in for all of them — while `finish_unpriced` tells the seller it
+    was "priced off the other finish". Taking the priced printing instead makes
+    that sentence true, and puts a real number on the row.
+    """
     from foilstack.inventory import pick_printing
 
-    by_sub = {"Foil": SimpleNamespace(market=None), "Normal": SimpleNamespace(market=2.0)}
-    assert pick_printing("foil", by_sub) == "Foil"
+    assert pick_printing("foil", _priced(Foil=None, Normal=2.0)) == "Normal"
+    assert pick_printing("nonfoil", _priced(Normal=None, Foil=9.0)) == "Foil"
+    # Only where something is priced. With nothing to prefer, the foil line
+    # decides again and the row still names the printing it holds.
+    assert pick_printing("foil", _priced(Foil=None, Normal=None)) == "Foil"
     assert pick_printing("nonfoil", {}) is None
 
 

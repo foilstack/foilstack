@@ -511,8 +511,15 @@ def _accept(session, scan, card_id: int, job: db.ImportJob) -> None:
     # The batch default, unless this card is only priced on the other side
     # of the foil line — see `inventory.resolve_finish`. Nobody sees this
     # row before it becomes inventory, so committing a finish the
-    # catalogue has no printing for would be a warning on the card page
-    # about a decision that was never made.
+    # catalogue cannot price would be a warning on the card page about a
+    # decision that was never made.
+    #
+    # The whole price map goes across, not a list of its keys. Passing
+    # `list(...)` here is what put this path and the review queue on
+    # different readings of "priced": the queue strips unpriced printings
+    # before it renders and this did not, so a foil batch containing a card
+    # whose only foil printing has no market price auto-accepted as foil and
+    # was confirmed by hand as non-foil. Same scan, same card, two answers.
     priced = inventory._prices_for(session, {card_id})
     _add_to_inventory(
         session,
@@ -520,7 +527,7 @@ def _accept(session, scan, card_id: int, job: db.ImportJob) -> None:
         card_id,
         job.default_condition or "NM",
         job.user_id,
-        inventory.resolve_finish(job.default_finish or "nonfoil", list(priced.get(card_id, {}))),
+        inventory.resolve_finish(job.default_finish or "nonfoil", priced.get(card_id, {})),
     )
 
 

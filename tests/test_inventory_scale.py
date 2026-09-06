@@ -95,6 +95,16 @@ def priced_inventory():
         # zero rather than dropping it, and `items()` then falls back to
         # `cards.market`. The two have to agree about which of those happens.
         ("Null Market", 6.00, [("Normal", None, None)]),
+        # Catalogued on both sides of the foil line, priced on one. Around
+        # 2,700 cards in a real catalogue look like this, and they are what
+        # separates "has a printing" from "has a price": the foil row is a
+        # real printing that nothing will pay for, so a foil copy of this card
+        # is priced off the Normal and `finish_unpriced` says so. Both
+        # decisions are made twice here — `priced_finishes` against the
+        # lateral's `has_foil`, `pick_printing` against its ORDER BY — which
+        # is precisely the drift this module exists to catch.
+        ("Foil Unpriced", 3.00, [("Normal", 3.00, 2.75), ("Holofoil", None, None)]),
+        ("Plain Unpriced", 40.00, [("Normal", None, None), ("Holofoil", 40.00, 36.00)]),
     ]
 
     cards = {}
@@ -132,6 +142,16 @@ def priced_inventory():
         ("Three Foils", "nonfoil", None, "HP", "stock"),
         ("Unpriced", "nonfoil", None, "NM", "stock"),
         ("Null Market", "nonfoil", None, "NM", "stock"),
+        # A seller who says foil on a card whose foil printing has no price.
+        # The row prices off the Normal and carries the warning; the two reads
+        # must agree about both, since one paints the pill and the other the
+        # card page it links to.
+        ("Foil Unpriced", "foil", None, "NM", "stock"),
+        ("Foil Unpriced", "nonfoil", None, "LP", "stock"),
+        # And the one that names the unpriced printing outright: a declared
+        # sub_type is the seller speaking, so it still wins over a price.
+        ("Foil Unpriced", "foil", "Holofoil", "NM", "stock"),
+        ("Plain Unpriced", "nonfoil", None, "NM", "stock"),
         # Sold rows must not reach the topbar's figures at all.
         ("Three Foils", "foil", None, "NM", "sold"),
         ("Both Sides", "nonfoil", None, "NM", "sold"),

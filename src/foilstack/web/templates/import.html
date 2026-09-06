@@ -657,6 +657,13 @@ $$('.qrow').forEach(row => {
   // The server's `inventory.resolve_finish`, for the rows this screen
   // re-points after load. Both have to agree, or correcting a match would
   // move a row somewhere a reload puts back.
+  //
+  // They agree by construction rather than by both being careful: `names`
+  // comes from `data-prices`, which `_price_map` builds through
+  // `inventory.priced_printings`, so the printings this sees are the
+  // printings the server resolved over. That was not always true — the
+  // server side of this pair once read the raw price map, unpriced printings
+  // and all, and answered "foil" where this answered "non-foil".
   function resolveFinish(want, names) {
     if (!names.length) return want;
     return names.some(n => /foil/i.test(n) === (want === 'foil'))
@@ -722,8 +729,8 @@ $$('.qrow').forEach(row => {
         (fellBack ? ' as ' + use : '') + ' · ';
       priceEl.classList.toggle('warn', fellBack);
       priceEl.title = fellBack
-        ? 'No ' + (v === 'foil' ? 'foil' : 'non-foil') +
-          ' printing is catalogued for this card, so this is the ' + use + ' price'
+        ? 'The catalogue has no ' + (v === 'foil' ? 'foil' : 'non-foil') +
+          ' price for this card, so this is the ' + use + ' price'
         : '';
     }
     foil.classList.toggle('unpriced', fellBack);

@@ -563,6 +563,38 @@ Two habits worth keeping:
   reason to say nothing about it. Three states, and they have to stay
   distinguishable — filled dark is the default, white is a deviation that is
   priced, warning colour is a finish with no printing behind it at all.
+
+* **"Has a printing" and "has a price" are different facts.** `ingest` keeps a
+  printing whose `marketPrice` is null on purpose — it still names the
+  sub-type, and an unpriced card is worth recording — so about one price row
+  in seventy carries no money, and 2,700 cards in a real catalogue have a
+  printing on one side of the foil line that nothing will pay for.
+
+  `resolve_finish` used to take a bare list of names, which left every caller
+  to decide for itself which list that was. They split: `importing._accept`
+  passed the raw price map and the review queue passed one with the nulls
+  stripped for the browser. So a foil batch containing one of those cards
+  auto-accepted as a foil and was confirmed by hand as a non-foil — same
+  photograph, same match, same batch default, two rows, two prices, two
+  `Condition` columns in the upload file. Nothing raised, both answers looked
+  like answers, and it was 2,736 of 142,202 cards. It is the `Pricing`/floor
+  shape again: an argument a caller can get quietly wrong.
+
+  So they take the price map, not a list of names, and `priced_printings` is
+  the single place the two facts are told apart. `_price_map` — what the queue
+  ships to the browser as `data-prices`, and what `import.html` re-resolves a
+  corrected row against — is *derived* from it rather than filtering again
+  beside it, so the third copy of the rule agrees by construction.
+
+  A price also outranks the foil line in `pick_printing`. An unpriced Holofoil
+  beside a priced Normal used to win on being the foil and then price off
+  `cards.market`, while `finish_unpriced` told the seller the row was "priced
+  off the other finish" — which was not what had happened. Only where nothing
+  at all is priced does the whole list come back, so a card with no money
+  behind it still names the printing it holds. Both decisions are made twice,
+  in Python and in the `priced_printing()` lateral, and
+  `tests/test_inventory_scale.py` is what stops them drifting.
+
 * **A scan has three answers, and they are three columns.** `candidates` is
   what the encoder saw in one image. `cohort_card_id` is what the rest of the
   batch implies about it, when the seller ticked "batch is all one game/set" on

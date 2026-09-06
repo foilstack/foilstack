@@ -43,8 +43,15 @@ router = APIRouter()
 
 
 def _price_map(printings: dict) -> dict[str, float]:
-    """Per-printing market prices keyed by sub-type, with the unpriced dropped."""
-    return {name: row.market for name, row in printings.items() if row.market is not None}
+    """Per-printing market prices keyed by sub-type, with the unpriced dropped.
+
+    Which printings count as priced is `inventory.priced_printings` and not a
+    condition written again here. This map is what the queue's finish toggle
+    reads in the browser, and it re-derives the finish for a re-pointed row —
+    so a printing this drops and the server keeps is a row the two disagree
+    about, silently, in the one place a correction is being made.
+    """
+    return {name: printings[name].market for name in inventory.priced_printings(printings)}
 
 
 def _card_meta(card) -> str:
@@ -264,7 +271,8 @@ def _queue_rows(session, user_id: int, job_ids: list[int]) -> list[dict]:
             if top is not None and top.card_id != cohort.id:
                 alt += f" · encoder said: {top.card.name} {top.score * 100:.0f}%"
         shown = next((c for c in scan.candidates if card and c.card_id == card.id), None)
-        prices = _price_map(priced.get(card.id, {})) if card else {}
+        printings = priced.get(card.id, {}) if card else {}
+        prices = _price_map(printings)
         default_finish = scan.job.default_finish or "nonfoil"
         rows.append(
             {
@@ -309,8 +317,16 @@ def _queue_rows(session, user_id: int, job_ids: list[int]) -> list[dict]:
                 # by search rather than one the encoder proposed.
                 "score": shown.score if shown else (top.score if top else 0.0),
                 "pct": f"{(shown.score if shown else (top.score if top else 0)) * 100:.0f}%",
+                # "Several foil printings at different prices", which is a
+                # choice only the seller can make. Counted over the priced
+                # printings for the same reason `resolve_finish` reads those:
+                # a foil printing with no market price is not a second price
+                # to choose between, and `pick_printing` now sorts it below
+                # every printing that has one. Asking about it put a warning
+                # pill on a row with nothing to decide.
                 "ambiguous": card is not None
-                and len([n for n in priced.get(card.id, {}) if "foil" in n.lower()]) > 1,
+                and len([n for n in inventory.priced_printings(printings) if "foil" in n.lower()])
+                > 1,
                 # Every runner-up, not just the first. The encoder stores five
                 # and the queue used to offer one, so a scan whose right answer
                 # sat at rank three was indistinguishable from one with no
@@ -361,7 +377,7 @@ def _queue_rows(session, user_id: int, job_ids: list[int]) -> list[dict]:
                 # card corrected from a foil-only match to an ordinary one
                 # should go back to what the batch asked for.
                 "default_finish": default_finish,
-                "finish": inventory.resolve_finish(default_finish, list(prices)),
+                "finish": inventory.resolve_finish(default_finish, printings),
             }
         )
 

@@ -93,7 +93,7 @@
       {{ line.finish_unpriced }} of {{ line.quantity }}
       cop{{ 'y' if line.quantity == 1 else 'ies' }}
       {{ 'is' if line.finish_unpriced == 1 else 'are' }} marked with a finish
-      the catalogue has no printing for, so
+      the catalogue has no price for, so
       {{ 'it is' if line.finish_unpriced == 1 else 'they are' }} priced off the other
       finish. The printing each fell back to is in the FINISH column.
     </p>
@@ -164,7 +164,7 @@
               <td>{{ c.condition }}</td>
               <td class="{{ 'foil-yes' if c.is_foil else 'muted' }}">
                 {{ c.sub_type or c.finish_label }}
-                {% if c.finish_unpriced %}<span class="pill warn" title="No {{ c.finish_label|lower }} printing is catalogued for this card, so it is priced as “{{ c.sub_type }}”">no {{ c.finish_label|lower }} price</span>
+                {% if c.finish_unpriced %}<span class="pill warn" title="The catalogue has no {{ c.finish_label|lower }} price for this card, so it is priced as “{{ c.sub_type }}”">no {{ c.finish_label|lower }} price</span>
                 {% elif c.printing_guessed %}<span class="pill warn" title="No printing chosen, so it is priced as the dearest match">guessed</span>{% endif %}
               </td>
               <td class="r muted">{{ c.cost|money if c.cost is not none else '—' }}</td>
