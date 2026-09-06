@@ -892,7 +892,9 @@ def test_naming_a_printing_prices_the_card_at_it(app_and_data):
     from foilstack import inventory
 
     session = db.session()
-    row = next(r for r in inventory.items(session, owner.id) if r["id"] == item_id)
+    row = next(
+        r for r in inventory.items(session, owner.id, inventory.Pricing()) if r["id"] == item_id
+    )
     assert row["sub_type"] == "Holofoil"
     assert row["market"] == 855.0
     assert row["printing_declared"] is True
@@ -1078,7 +1080,7 @@ def test_the_topbar_total_agrees_with_the_inventory_table(app_and_data):
 
     session = db.session()
     owner = session.scalars(sa_select(db.User).where(db.User.email == "owner@example.com")).one()
-    rows = inventory.items(session, owner.id, status="stock")
+    rows = inventory.items(session, owner.id, inventory.Pricing(), status="stock")
     expected = sum(r["market"] or 0 for r in rows)
     session.close()
 
@@ -2810,3 +2812,201 @@ def test_both_buttons_name_the_channels_they_act_on(app_and_data):
     page = _run(client, line, channel=["tcgplayer", "ebay"])
     assert "Mark 1 on TCGplayer, eBay" in page, "still to do on eBay"
     assert "Unmark 1 on TCGplayer, eBay" in page, "already on TCGplayer"
+
+
+# --- the price floor, which is one seller's policy and not the install's ------
+
+
+def _owner_row(session):
+    from sqlalchemy import select as sa_select
+
+    from foilstack import db
+
+    return session.scalars(sa_select(db.User).where(db.User.email == "owner@example.com")).one()
+
+
+def _set_floor(session, value):
+
+    owner = _owner_row(session)
+    owner.price_floor = value
+    session.commit()
+    return owner.id
+
+
+def test_a_saved_floor_prices_every_screen_that_quotes_a_list_price(app_and_data):
+    """Not just the listing run. The floor is the account's, so the card panel
+    and the export have to quote the same one — a panel saying $0.35 beside a
+    file writing $2.00 is the topbar-versus-table bug again, in money the
+    seller acts on.
+
+    The inventory table is deliberately not asserted on: it quotes market and
+    never a list price, so it has nothing to disagree about."""
+    from foilstack import db, inventory
+
+    app, _ = app_and_data
+    client = _signed_in(app)
+    session = db.session()
+    owner_id = _set_floor(session, 2.00)
+    try:
+        rows = inventory.items(session, owner_id, inventory.Pricing.for_user(_owner_row(session)))
+        assert rows, "the owner should hold something to price"
+        assert min(r["list_price"] for r in rows if r["list_price"] is not None) >= 2.00
+        assert "2.00" in client.get("/listings?sel=all&show=all").text
+
+        # The edit panel is the other screen a list price is quoted on, and it
+        # takes no `floor` of its own — so it is the account's or it is wrong.
+        panel = client.get(f"/api/inventory/{rows[0]['id']}")
+        assert panel.status_code == 200
+        shown = re.search(r"Suggested list</span><b>\$([\d,.]+)</b>", panel.text)
+        assert shown, panel.text[:400]
+        assert float(shown.group(1).replace(",", "")) >= 2.00
+    finally:
+        _set_floor(session, inventory.DEFAULT_FLOOR)
+        session.close()
+
+
+def test_saving_a_floor_is_scoped_to_the_account(app_and_data, stranger):
+    """One seller's bulk policy must not become another's."""
+    from foilstack import db
+
+    app, _ = app_and_data
+    owner_client = _signed_in(app)
+    assert owner_client.post("/api/account/floor", data={"floor": "3.50"}).json()["floor"] == 3.50
+    assert stranger.post("/api/account/floor", data={"floor": "0.05"}).json()["floor"] == 0.05
+
+    session = db.session()
+    try:
+        assert _owner_row(session).price_floor == 3.50
+        session.expire_all()
+        from sqlalchemy import select as sa_select
+
+        other = session.scalars(
+            sa_select(db.User).where(db.User.email == "stranger@example.com")
+        ).one()
+        assert other.price_floor == 0.05
+    finally:
+        from foilstack import inventory
+
+        _set_floor(session, inventory.DEFAULT_FLOOR)
+        session.close()
+
+
+def test_saving_a_floor_needs_an_account(app_and_data):
+    """The write is `api_owner`, so a stranger gets 401 rather than a redirect
+    to the login page that a fetch() would report as success."""
+    from fastapi.testclient import TestClient
+
+    app, _ = app_and_data
+    assert TestClient(app).post("/api/account/floor", data={"floor": "9.99"}).status_code == 401
+
+
+def test_an_unusable_floor_is_refused_rather_than_defaulted(app_and_data):
+    """Storing the shipped 35c in place of what was typed would change a
+    seller's prices to a number they never chose and never saw."""
+    from foilstack import db, inventory
+
+    app, _ = app_and_data
+    client = _signed_in(app)
+    session = db.session()
+    before = _set_floor(session, 1.25) and _owner_row(session).price_floor
+    try:
+        for bad in ("abc", "", "-1", "1000000"):
+            assert client.post("/api/account/floor", data={"floor": bad}).status_code == 400
+        session.expire_all()
+        assert _owner_row(session).price_floor == before
+    finally:
+        _set_floor(session, inventory.DEFAULT_FLOOR)
+        session.close()
+
+
+def test_a_run_floor_does_not_become_the_account_floor(app_and_data):
+    """`?floor=` prices one run. A number typed to see what a shelf of bulk
+    would come to must not silently become what every screen quotes."""
+    from foilstack import db, inventory
+
+    app, _ = app_and_data
+    client = _signed_in(app)
+    session = db.session()
+    try:
+        page = client.get("/listings?sel=all&show=all&floor=5.00").text
+        assert "This run only" in page
+        session.expire_all()
+        assert _owner_row(session).price_floor == inventory.DEFAULT_FLOOR
+    finally:
+        session.close()
+
+
+def test_the_save_control_is_present_whether_or_not_there_is_anything_to_save(app_and_data):
+    """Findable before the seller has changed anything.
+
+    It used to appear only once a floor had been applied, styled as a link —
+    so the screen gave no sign that a floor could be saved at all, and the
+    first person to use it concluded a floor was per-export. Present and
+    disabled is the same answer the bar above gives with "All 21 listed on
+    TCGplayer": naming what the button would do, greyed, is what makes the
+    capability discoverable.
+    """
+    from foilstack import db, inventory
+
+    app, _ = app_and_data
+    client = _signed_in(app)
+    session = db.session()
+    try:
+        # Nothing to save: the control is there, says what the floor is, and
+        # cannot be pressed.
+        resting = client.get("/listings?sel=all&show=all").text
+        assert "is your floor" in resting
+        assert "floor-save" in resting
+        assert 'id="save-floor"' not in resting
+
+        # Something to save: the same control, live, naming the number.
+        run = client.get("/listings?sel=all&show=all&floor=2.00").text
+        assert 'id="save-floor"' in run
+        assert "Save $2.00 as my floor" in run
+    finally:
+        session.expire_all()
+        assert _owner_row(session).price_floor == inventory.DEFAULT_FLOOR
+        session.close()
+
+
+def test_a_nonsense_run_floor_prices_at_the_saved_one(app_and_data):
+    """A mangled URL prices the run the way the seller set it up, rather than
+    404ing at somebody who came here for a file — or repricing at 35c."""
+    from foilstack import db, inventory
+
+    app, _ = app_and_data
+    client = _signed_in(app)
+    session = db.session()
+    _set_floor(session, 4.00)
+    try:
+        page = client.get("/listings?sel=all&show=all&floor=not-a-number")
+        assert page.status_code == 200
+        # The saved floor is in force, so the screen does not claim an override.
+        assert "This run only" not in page.text
+        assert "4.00" in page.text
+    finally:
+        _set_floor(session, inventory.DEFAULT_FLOOR)
+        session.close()
+
+
+def test_the_export_is_priced_at_the_run_floor(app_and_data):
+    """The floor has to survive the hop from the screen to the file. The link
+    the screen draws carries it; a CSV priced at a different floor from the
+    page that produced it is the failure this whole selection design exists to
+    prevent."""
+    app, _ = app_and_data
+    client = _signed_in(app)
+    import csv
+    import io
+
+    body = client.get("/export/ebay?sel=all&show=all&floor=12.00").text
+    prices = [
+        float(row["StartPrice"])
+        for row in csv.DictReader(io.StringIO(body))
+        if row.get("StartPrice")
+    ]
+    assert prices, body
+    assert min(prices) >= 12.00
+    # And something was actually lifted, or the assertion above would hold for
+    # a file the floor never touched.
+    assert 12.00 in prices

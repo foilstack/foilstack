@@ -14,14 +14,14 @@ from __future__ import annotations
 
 from hmac import compare_digest
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from foilstack import __version__
+from foilstack import __version__, db, inventory
 from foilstack.config import Settings, get_settings
 from foilstack.web import auth, joblog, ratelimit
 from foilstack.web.chrome import _asset_version, templates
-from foilstack.web.deps import db_session, settings_dep
+from foilstack.web.deps import api_owner, db_session, settings_dep
 
 router = APIRouter()
 
@@ -213,6 +213,45 @@ def do_logout(
     response = RedirectResponse("/", status_code=303)
     auth.clear(response)
     return response
+
+
+@router.post("/api/account/floor")
+def api_set_floor(
+    # Defaulted to empty rather than required, so a missing or blank field
+    # lands in `parse_floor` and comes back as one 400 with a reason. Declared
+    # required it is a 422 from the framework instead, whose body names a
+    # pydantic location and not anything a seller can act on.
+    floor: str = Form(""),
+    session=Depends(db_session),
+    user: db.User = Depends(api_owner),
+):
+    """Save this account's floor: the lowest it will ever list anything for.
+
+    A write and not a querystring, because this is the number every screen
+    prices against from here on. `/listings?floor=` is the other half and is
+    deliberately *not* a write — a figure typed to see what a shelf of bulk
+    would come to must not become the seller's policy because they pressed
+    Enter in a field. Saving it is a separate button that says so.
+
+    Here rather than on the listing screen's router because the thing it acts
+    on is the account, and the listing screen is only where the control
+    happens to be drawn. A settings screen, when there is one, changes nothing
+    about this route.
+    """
+    # The same parser the querystring goes through, so a run's floor and a
+    # saved one cannot become two different ideas of what a floor may be — but
+    # the opposite answer to a bad value. `Pricing.of` falls back, which is
+    # right for a URL nobody typed on purpose and wrong here: a seller who
+    # meant to set a dollar and got the shipped 35c, silently, would find out
+    # from a payout.
+    try:
+        saved = inventory.parse_floor(floor)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    user.price_floor = saved
+    session.commit()
+    joblog.add(user.id, f"floor set to ${saved:.2f}")
+    return {"ok": True, "floor": saved}
 
 
 def _safe_next(target: str) -> str:

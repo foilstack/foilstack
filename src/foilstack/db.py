@@ -50,6 +50,20 @@ def _now() -> dt.datetime:
     return dt.datetime.now(dt.UTC)
 
 
+# The floor a brand-new account starts with: never list anything below this,
+# whatever the pricing rule and the condition discount work out to.
+#
+# Here rather than in `inventory`, which is whose job pricing is, because
+# `inventory` imports this module and the reverse would be a cycle. One number
+# either way — `inventory.Pricing` reads it from here rather than repeating it,
+# so the column default and the price the application computes cannot drift.
+#
+# 0.35 is roughly what a bulk common sells for once a shipping envelope is
+# paid for. It is a starting point and not a policy: a seller who will not
+# post anything under a dollar changes it on the listing screen.
+DEFAULT_PRICE_FLOOR = 0.35
+
+
 class User(Base):
     """One account.
 
@@ -73,6 +87,17 @@ class User(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     last_login_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    # The lowest this seller will list anything for. A per-account number and
+    # not a per-install one: a hosted server holds sellers whose bulk policies
+    # genuinely differ, and one environment variable would make the busiest of
+    # them answer for all the rest.
+    #
+    # `NOT NULL` with a default rather than nullable-means-follow-the-shipped
+    # value, because those two are indistinguishable to everyone except a
+    # future change of the shipped value — and that change silently moving the
+    # floor under accounts that never asked for it is the failure worth
+    # preventing. Zero is a real answer here and means no floor at all.
+    price_floor: Mapped[float] = mapped_column(Float, nullable=False, default=DEFAULT_PRICE_FLOOR)
 
 
 class Card(Base):

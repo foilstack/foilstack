@@ -87,7 +87,54 @@
     </div>
 
     <div class="run-summary">
-      <div>floor &nbsp; {{ floor|money }}</div>
+      {# The floor is a control and not a caption. It used to print
+         `inventory.FLOOR`, which was one number for every seller on the
+         install — right for a bulk dealer clearing commons at pennies and
+         wrong for a shop that will not put a card in an envelope under a
+         dollar. A GET back to this same run, so applying one re-prices what
+         is on screen rather than starting a new selection. #}
+      <form class="floor-set" method="get" action="/listings">
+        {% for k, v in floor_form %}
+        <input type="hidden" name="{{ k }}" value="{{ v }}">
+        {% endfor %}
+        <label for="floor">floor</label>
+        <input id="floor" name="floor" type="number" inputmode="decimal"
+               min="0" max="{{ max_floor }}" step="0.01"
+               value="{{ '%.2f'|format(floor) }}"
+               title="Nothing in this run lists below this, whatever the rule and the condition work out to.">
+        <button class="btn" type="submit">Apply</button>
+      </form>
+      {# Which floor is in force, and whether it is the saved one. A run priced
+         under a number the seller never saved must never be able to pass for
+         their settings — and the same rule backwards, a saved floor must not
+         look like a one-off. #}
+      <div class="floor-note">
+        {% if floor_override %}
+        This run only. Your floor is {{ account_floor|money }}.
+        {% else %}
+        Your floor, on every screen. Nothing lists below it.
+        {% endif %}
+      </div>
+      {# A real button, and present in both states rather than appearing only
+         once the floor has been changed. It was a `linkish` span that showed
+         up after Apply, which read as a sentence rather than an action — the
+         first person to use this concluded the control could not save at all
+         and that a floor was per-export. The disabled twin is the same answer
+         the bar above gives with "All 21 listed on TCGplayer": saying what the
+         button would do, greyed, is what makes it findable before there is
+         anything to press it for. #}
+      {% if floor_override %}
+      <button class="btn floor-save" type="button" id="save-floor"
+              data-floor="{{ '%.2f'|format(floor) }}"
+              title="Make this the floor every screen prices against, not just this run.">
+        Save {{ floor|money }} as my floor
+      </button>
+      {% else %}
+      <button class="btn floor-save" type="button" disabled
+              title="Change the floor above and Apply to save a different one.">
+        {{ floor|money }} is your floor
+      </button>
+      {% endif %}
       {# "at list", not "listed value": on this screen "listed" now means a
          row marked as being on a marketplace, and the same word for the run's
          total at list price made the summary read as the value of the marked
@@ -212,6 +259,25 @@ const wireMark = (sel, url, ids) => $(sel)?.addEventListener('click', async ev =
 
 wireMark('#mark', '/api/listings/mark', {{ mark_ids | tojson }});
 wireMark('#unmark', '/api/listings/unmark', {{ unmark_ids | tojson }});
+
+// Saving the floor is a separate press from applying it. Typing a number and
+// hitting Enter re-prices this run and nothing else; this is the one that
+// changes what every other screen quotes, so it has to be asked for.
+$('#save-floor')?.addEventListener('click', async ev => {
+  const btn = ev.currentTarget;
+  btn.disabled = true;
+  // Not `quiet`: a rejected floor has a reason worth reading, and unlike the
+  // mark buttons there is no count on screen that visibly fails to move.
+  const out = await postForm('/api/account/floor', { floor: btn.dataset.floor },
+                             { error: 'that floor was not saved' });
+  // Reloaded rather than patched in place: saving turns a run-only floor into
+  // the account's, which changes the note, the button and every link on the
+  // page that was carrying the override.
+  if (!out) { btn.disabled = false; return; }
+  const url = new URL(location.href);
+  url.searchParams.delete('floor');
+  location.href = url;
+});
 
 // The TCGplayer round trip, with the upload reported as it happens.
 //

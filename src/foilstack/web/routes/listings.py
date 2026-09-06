@@ -33,6 +33,7 @@ from foilstack.web.deps import (
     api_owner,
     db_session,
     owner,
+    pricing_dep,
     selection_dep,
     settings_dep,
 )
@@ -96,7 +97,20 @@ def _run_sets(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _resolve(session, user_id: int, rule: str, sel: Selection) -> tuple[set[int], str]:
+def _policy_label(pricing: inventory.Pricing) -> str:
+    """What a run was priced under, for the job log to record.
+
+    The floor is named as well as the rule because it is now a number the
+    seller can change per run. A log line saying only `market` cannot answer
+    the question the seller actually comes back with — why the bulk in this
+    file went out at a different price from the bulk in the last one.
+    """
+    return f"{pricing.rule} · floor ${pricing.floor:.2f}"
+
+
+def _resolve(
+    session, user_id: int, pricing: inventory.Pricing, sel: Selection
+) -> tuple[set[int], str]:
     """The inventory ids this run covers, and a phrase describing where from.
 
     Hand-picked ids pass straight through. A filter is resolved through
@@ -112,7 +126,7 @@ def _resolve(session, user_id: int, rule: str, sel: Selection) -> tuple[set[int]
     if not sel.by_filter:
         return set(sel.ids), ""
 
-    copies = inventory.index(session, user_id, rule)
+    copies = inventory.index(session, user_id, pricing)
     found = inventory.narrow(
         copies, show=sel.show, q=sel.q, wire=sel.wire(), sort=sel.sort, dir=sel.dir
     )
@@ -164,8 +178,8 @@ def _describe(sel: Selection, lines: int) -> str:
 @router.get("/listings", response_class=HTMLResponse)
 def page_listings(
     request: Request,
-    rule: str = inventory.DEFAULT_RULE,
     channel: list[str] | None = Query(None),
+    pricing: inventory.Pricing = Depends(pricing_dep),
     sel: Selection = Depends(selection_dep),
     session=Depends(db_session),
     user: db.User = Depends(owner),
@@ -173,10 +187,9 @@ def page_listings(
 ):
     """A listing run: the selected rows, priced by one rule, for one or more
     marketplaces. It ends in a CSV — nothing here posts to a marketplace."""
-    rule = rule if rule in inventory.RULE_IDS else inventory.DEFAULT_RULE
-    chosen, described = _resolve(session, user.id, rule, sel)
+    chosen, described = _resolve(session, user.id, pricing, sel)
     picked = set(channel or ["tcgplayer"])
-    rows = inventory.export_rows(session, user.id, rule, ids=chosen or None)
+    rows = inventory.export_rows(session, user.id, pricing, ids=chosen or None)
     run_value = sum((r["list_price"] or 0) * r["quantity"] for r in rows)
     market_value = sum((r["market"] or 0) * r["quantity"] for r in rows)
 
@@ -212,6 +225,12 @@ def page_listings(
     # longest one, because an export link carries the whole selection too.
     ids = "".join(f"&{k}={quote_plus(v)}" for k, v in sel.query_items())
     chans = "".join(f"&channel={c}" for c in sorted(picked))
+    # And so does the floor, but only when it is not the seller's own. Carried
+    # unconditionally it would pin every link on the page to a number that
+    # happened to be current, so a seller who saved a new floor in another tab
+    # would keep exporting under the old one from links drawn before the save.
+    override = pricing.floor != user.price_floor
+    fq = f"&floor={pricing.floor:.2f}" if override else ""
     exporters = export_plugins()
     return templates.TemplateResponse(
         request,
@@ -219,34 +238,39 @@ def page_listings(
         {
             "nav": "listings",
             "rows": rows,
-            "rule": rule,
+            "rule": pricing.rule,
             "rules": [
-                {**r, "on": r["id"] == rule, "href": f"/listings?rule={r['id']}{chans}{ids}"}
+                {
+                    **r,
+                    "on": r["id"] == pricing.rule,
+                    "href": f"/listings?rule={r['id']}{chans}{fq}{ids}",
+                }
                 for r in inventory.RULES
             ],
-            "rule_obj": inventory.rule_by_id(rule),
+            "rule_obj": inventory.rule_by_id(pricing.rule),
             "channels": [
                 {
                     **c,
                     "on": c["key"] in picked,
                     "exporter": exporters.get(c["key"]),
-                    "csv_href": f"/export/{c['key']}?rule={rule}{ids}",
+                    "csv_href": f"/export/{c['key']}?rule={pricing.rule}{fq}{ids}",
                     # Only TCGplayer needs a file to start from, and only
                     # because its ids are SKU ids nobody outside their own
                     # export can know. eBay's sheet is composed from nothing.
                     "match_href": (
-                        f"/export/tcgplayer/match?rule={rule}{ids}"
+                        f"/export/tcgplayer/match?rule={pricing.rule}{fq}{ids}"
                         if c["key"] == "tcgplayer"
                         else None
                     ),
                     "href": "/listings?rule="
-                    + rule
+                    + pricing.rule
                     + "".join(
                         f"&channel={k}"
                         for k in sorted(
                             picked - {c["key"]} if c["key"] in picked else picked | {c["key"]}
                         )
                     )
+                    + fq
                     + ids,
                 }
                 for c in CHANNELS
@@ -268,7 +292,23 @@ def page_listings(
             "run_value": run_value,
             "market_value": market_value,
             "delta": run_value - market_value,
-            "floor": inventory.FLOOR,
+            # Three separate facts, and the screen says all three. The floor
+            # in force, the seller's own, and whether those are the same —
+            # a run priced under a number the seller never saved is exactly
+            # the thing that must not be able to pass for their settings.
+            "floor": pricing.floor,
+            "account_floor": user.price_floor,
+            "floor_override": override,
+            "max_floor": inventory.MAX_FLOOR,
+            # The rest of the run, as fields, so the floor control can
+            # re-ask for this same run with one number changed. Built from
+            # what was resolved rather than from the URL, for the reason
+            # `_describe` exists.
+            "floor_form": (
+                [("rule", pricing.rule)]
+                + [("channel", c) for c in sorted(picked)]
+                + list(sel.query_items())
+            ),
             "log": joblog.entries(user.id),
             **_chrome(session, request, user, settings),
         },
@@ -278,6 +318,7 @@ def page_listings(
 @router.get("/analytics", response_class=HTMLResponse)
 def page_analytics(
     request: Request,
+    pricing: inventory.Pricing = Depends(pricing_dep),
     session=Depends(db_session),
     user: db.User = Depends(owner),
     settings: Settings = Depends(settings_dep),
@@ -290,7 +331,7 @@ def page_analytics(
     happens on a marketplace. Those panels are marked as the demo figures they
     are rather than dressed up as measurements.
     """
-    rows = inventory.items(session, user.id)
+    rows = inventory.items(session, user.id, pricing)
     totals = inventory.totals(rows)
     by_game: dict[str, float] = {}
     for r in rows:
@@ -438,7 +479,7 @@ async def api_unmark_listed(
 @router.post("/export/tcgplayer/match")
 async def export_tcgplayer_match(
     file: UploadFile = File(...),
-    rule: str = inventory.DEFAULT_RULE,
+    pricing: inventory.Pricing = Depends(pricing_dep),
     sel: Selection = Depends(selection_dep),
     session=Depends(db_session),
     user: db.User = Depends(owner),
@@ -452,9 +493,8 @@ async def export_tcgplayer_match(
     necessary at all: TCGplayer identifies a listing by a SKU id this
     catalogue has no way to know.
     """
-    rule = rule if rule in inventory.RULE_IDS else inventory.DEFAULT_RULE
-    chosen, _ = _resolve(session, user.id, rule, sel)
-    rows = inventory.export_rows(session, user.id, rule, ids=chosen or None)
+    chosen, _ = _resolve(session, user.id, pricing, sel)
+    rows = inventory.export_rows(session, user.id, pricing, ids=chosen or None)
     if not rows:
         raise HTTPException(400, "nothing in stock to list")
 
@@ -464,7 +504,7 @@ async def export_tcgplayer_match(
         joblog.add(user.id, f"tcgplayer match rejected · {exc}")
         raise HTTPException(400, str(exc)) from exc
 
-    joblog.add(user.id, f"tcgplayer match · {report.summary()} · {rule}")
+    joblog.add(user.id, f"tcgplayer match · {report.summary()} · {_policy_label(pricing)}")
     # Named individually rather than counted, because "12 not in the export"
     # is a number a seller can do nothing with and a list of twelve cards is
     # twelve things they can go and check.
@@ -512,7 +552,7 @@ def _chunks(file: UploadFile) -> Iterator[bytes]:
 @router.get("/export/{name}")
 def export_csv(
     name: str,
-    rule: str = inventory.DEFAULT_RULE,
+    pricing: inventory.Pricing = Depends(pricing_dep),
     sel: Selection = Depends(selection_dep),
     session=Depends(db_session),
     user: db.User = Depends(owner),
@@ -520,11 +560,10 @@ def export_csv(
     spec = export_plugins().get(name)
     if spec is None:
         raise HTTPException(404, "no such exporter")
-    rule = rule if rule in inventory.RULE_IDS else inventory.DEFAULT_RULE
-    chosen, _ = _resolve(session, user.id, rule, sel)
-    rows = inventory.export_rows(session, user.id, rule, ids=chosen or None)
+    chosen, _ = _resolve(session, user.id, pricing, sel)
+    rows = inventory.export_rows(session, user.id, pricing, ids=chosen or None)
     body = spec.render(rows)
-    joblog.add(user.id, f"wrote {spec.filename} · {len(rows)} rows · {rule}")
+    joblog.add(user.id, f"wrote {spec.filename} · {len(rows)} rows · {_policy_label(pricing)}")
     return Response(
         content=body,
         media_type="text/csv",

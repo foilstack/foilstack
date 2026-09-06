@@ -74,6 +74,32 @@ def api_owner(request: Request, session=Depends(db_session)) -> db.User:
     return user
 
 
+def pricing_dep(
+    rule: str = inventory.DEFAULT_RULE,
+    # A string rather than a float, deliberately. Declared as a number, FastAPI
+    # answers 422 for `?floor=abc` before anything here runs — and a stale
+    # bookmark or a truncated URL would then take the whole listing screen down
+    # rather than pricing it the ordinary way. `Pricing.of` decides what an
+    # unusable value means, in the one place that also decides it for the rule.
+    floor: str | None = Query(None),
+    user: db.User = Depends(owner),
+) -> inventory.Pricing:
+    """The pricing policy this request runs under.
+
+    One dependency, so the inventory table, the card page, the listing run and
+    the CSV that comes out of it cannot come to different conclusions about
+    what a card should be listed at. They are one loop, and a seller who
+    exports what they were shown is relying on exactly that — the same reason
+    `selection_dep` exists.
+
+    The floor is the account's unless the request names one. Only `/listings`
+    offers a control for it, and only for that run: a number typed to see what
+    a batch of bulk would come to must not quietly become the price of
+    everything the seller owns from then on.
+    """
+    return inventory.Pricing.for_user(user, rule, floor)
+
+
 @dataclass(frozen=True)
 class Selection:
     """What a listing run is over: hand-picked rows, or a filter.

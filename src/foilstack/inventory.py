@@ -10,7 +10,7 @@ inventing its own arithmetic.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import takewhile
 from typing import Any
 
@@ -32,7 +32,23 @@ FINISH_LABEL = {"nonfoil": "Non-foil", "foil": "Foil"}
 STATUSES = ["stock", "sold"]
 CONDITION_MULTIPLIER = {"NM": 1.00, "LP": 0.85, "MP": 0.70, "HP": 0.55, "DMG": 0.35}
 
-FLOOR = 0.35
+# The lowest a list price may come out at, and where that number comes from.
+#
+# `db.DEFAULT_PRICE_FLOOR` is the shipped starting point; the number actually
+# applied is `users.price_floor`, because a floor is a statement about what a
+# seller is willing to pack and post rather than a fact about the software. A
+# shop that will not put a card in an envelope for less than a dollar and a
+# bulk dealer clearing commons at pennies are both right, and one install-wide
+# setting would make the first of them answer for the second.
+DEFAULT_FLOOR = db.DEFAULT_PRICE_FLOOR
+
+# A ceiling on the floor. Not a policy about what a seller may charge — the
+# rules and the market price decide that, and this only ever raises a price
+# that came out *below* it. It exists because the floor arrives in a
+# querystring: without a bound, one hand-edited `?floor=` prices a whole
+# listing run at an arbitrary number, and the CSV that comes out of it looks
+# exactly like a real one.
+MAX_FLOOR = 100.0
 
 # Pricing rules, applied on top of the condition discount. Two separate
 # adjustments because they answer different questions: the condition
@@ -60,13 +76,121 @@ def rule_by_id(rule: str | None) -> dict:
     return RULES[0]
 
 
+def parse_floor(value: float | str) -> float:
+    """A floor from something a browser sent, or `ValueError` saying why not.
+
+    The parsing is here and the *policy about a bad value* is at the two call
+    sites, because they want opposite things. A floor arriving in a
+    querystring falls back — a stale bookmark should price the run the
+    ordinary way rather than take the screen down. A floor arriving in the save
+    form does not: a seller who typed something unusable and pressed the button
+    must be told, and quietly storing the shipped default in its place would
+    change their prices to a number they never chose and never saw.
+
+    Range is a `ValueError` too rather than a clamp, for the same reason. The
+    field states its bounds and nothing reasonable reaches them, so a value
+    outside is a client that is not the form and deserves an answer rather
+    than a silent correction.
+    """
+    try:
+        floor = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("that is not a number") from None
+    # NaN fails every comparison, so it would pass a naive range check and
+    # then make `max(price, floor)` return the price unchanged — a floor that
+    # is quietly no floor at all.
+    if floor != floor or floor in (float("inf"), float("-inf")):
+        raise ValueError("that is not a number")
+    if floor < 0 or floor > MAX_FLOOR:
+        raise ValueError(f"a floor has to be between $0.00 and ${MAX_FLOOR:,.2f}")
+    # Money, so two places. A floor of 0.999 that prints as "$1.00" and prices
+    # as 0.999 is a screen disagreeing with itself by a cent on every bulk
+    # line in the run.
+    return round(floor, 2)
+
+
+@dataclass(frozen=True)
+class Pricing:
+    """Everything a list price needs that is not the card: the rule, and the floor.
+
+    One object rather than two arguments, and it travels together everywhere,
+    because the two are one policy and the way they come apart is quiet. A
+    caller that remembers the rule and forgets the floor does not raise
+    anything — it prices a seller's cards against 35c when they said a dollar,
+    and every number it produces looks like a price. That is the shape of the
+    bug this codebase keeps re-learning: a topbar disagreeing with the table
+    under it reads as rounding, not as a fault.
+
+    So `for_user` is the only place that knows where a seller's floor lives,
+    and the reads that produce prices — `index`, `items`, `groups`,
+    `export_rows` — take one of these positionally, with no default. A pricing
+    argument with a default is one a caller can omit, for the same reason
+    `items()` takes `user_id` positionally.
+
+    Constructing one directly is still allowed and is what tests do; what is
+    not allowed is a read that quietly makes one up.
+    """
+
+    rule: str = DEFAULT_RULE
+    floor: float = DEFAULT_FLOOR
+
+    @classmethod
+    def of(cls, rule: str | None = None, floor: float | str | None = None) -> Pricing:
+        """A policy from values that came off the wire, falling back where they fail.
+
+        Both halves fall back rather than reject. An unknown rule is already
+        treated that way by `rule_by_id`, and the floor is the same argument: a
+        stale bookmark or a truncated URL should price the run the ordinary way
+        rather than 400 at a seller who came here for a file.
+
+        `None` and unusable are the same answer here, and the fallback is the
+        shipped default rather than the account's — the caller that has a user
+        in hand is `for_user`, and it passes their floor in as this argument.
+        """
+        picked = rule if rule is not None and rule in RULE_IDS else DEFAULT_RULE
+        if floor is None:
+            return cls(rule=picked)
+        try:
+            return cls(rule=picked, floor=parse_floor(floor))
+        except ValueError:
+            return cls(rule=picked)
+
+    @classmethod
+    def for_user(
+        cls, user: db.User, rule: str | None = None, floor: float | str | None = None
+    ) -> Pricing:
+        """This account's policy, with anything the request asked for on top.
+
+        `floor` is the run's own override and is normally absent — the seller's
+        saved floor is what every screen prices against, and the listing screen
+        is the one place that offers to depart from it for a single run.
+
+        An override that will not parse falls back to *the account's* floor and
+        not to the shipped one. `of` cannot make that distinction, because it
+        has no user; making it here is the difference between a mangled URL
+        pricing a run the way the seller set it up and pricing it at 35c.
+        """
+        # The stored floor goes through the same narrowing as one off the wire,
+        # so a row hand-edited outside the bounds reads as the shipped default
+        # rather than pricing an inventory at whatever is in the column. The
+        # write path is what keeps that from happening — `/api/account/floor`
+        # refuses a value this would then have to reinterpret.
+        picked = cls.of(rule, user.price_floor)
+        if floor is None:
+            return picked
+        try:
+            return replace(picked, floor=parse_floor(floor))
+        except ValueError:
+            return picked
+
+
 def list_price(
     market: float | None,
     condition: str,
-    rule: str = DEFAULT_RULE,
+    pricing: Pricing,
     low: float | None = None,
 ) -> float | None:
-    """What to ask for one card, in this condition, under this rule.
+    """What to ask for one card, in this condition, under this policy.
 
     `low` is the current lowest listing where the catalogue has one. Only the
     `lowplus` rule uses it, and only that rule ever should: undercutting the
@@ -75,14 +199,14 @@ def list_price(
     """
     if market is None:
         return None
-    spec = rule_by_id(rule)
+    spec = rule_by_id(pricing.rule)
 
     if spec["id"] == "lowplus" and low is not None:
         # The real rule, at last. Condition still discounts it — undercutting
         # a near-mint listing by a cent with a played card is not undercutting,
         # it is overcharging.
         price = low * CONDITION_MULTIPLIER.get(condition, 1.0) + 0.01
-        return round(max(price, FLOOR), 2)
+        return round(max(price, pricing.floor), 2)
 
     price = market * CONDITION_MULTIPLIER.get(condition, 1.0)
     if spec["id"] == "premium":
@@ -93,7 +217,7 @@ def list_price(
         price *= spec["mult"]
     if spec["id"] == "lowplus":
         price += 0.01
-    return round(max(price, FLOOR), 2)
+    return round(max(price, pricing.floor), 2)
 
 
 # TCGplayer names printings, not finishes. "Foil" covers Foil, Holofoil and
@@ -398,7 +522,7 @@ def position(session, user_id: int) -> dict[str, Any]:
 
 
 def index(
-    session, user_id: int, rule: str = DEFAULT_RULE, status: str | None = None
+    session, user_id: int, pricing: Pricing, status: str | None = None
 ) -> list[dict[str, Any]]:
     """One thin dict per copy: enough to count, filter, sort, total and group.
 
@@ -520,7 +644,7 @@ def index(
                 "printing_guessed": bool(sub) and not declared and (n_printings or 0) > 1,
                 "finishes_priced": sorted(available),
                 "finish_unpriced": bool(n_printings) and finish not in available,
-                "list_price": list_price(market, condition, rule, low),
+                "list_price": list_price(market, condition, pricing, low),
                 "scan_id": scan_id,
                 "listed": bool(listed),
                 "listed_channels": listed_channels or "",
@@ -531,7 +655,7 @@ def index(
 
 
 def items(
-    session, user_id: int, rule: str = DEFAULT_RULE, status: str | None = None
+    session, user_id: int, pricing: Pricing, status: str | None = None
 ) -> list[dict[str, Any]]:
     """Every row this account owns, optionally only those in one state.
 
@@ -565,7 +689,7 @@ def items(
         row = by_sub.get(sub) if sub else None
         market = row.market if row and row.market is not None else card.market
         low = row.low if row else None
-        price = list_price(market, item.condition, rule, low)
+        price = list_price(market, item.condition, pricing, low)
         cost = item.cost
         margin = None
         if price is not None and cost is not None:
@@ -688,7 +812,7 @@ def _summarise(values: list[str], labels: dict[str, str] | None = None) -> str:
 
 
 def groups(
-    session, user_id: int, rule: str = DEFAULT_RULE, status: str | None = None
+    session, user_id: int, pricing: Pricing, status: str | None = None
 ) -> list[dict[str, Any]]:
     """Inventory as one line per card, holding every copy of it.
 
@@ -706,7 +830,7 @@ def groups(
     card, which is what a scan is evidence of and what carries its own cost,
     notes and sale.
     """
-    return fold(items(session, user_id, rule, status))
+    return fold(items(session, user_id, pricing, status))
 
 
 def fold(copies: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1134,7 +1258,7 @@ def totals(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def export_rows(
-    session, user_id: int, rule: str = DEFAULT_RULE, ids: set[int] | None = None
+    session, user_id: int, pricing: Pricing, ids: set[int] | None = None
 ) -> list[dict[str, Any]]:
     """Rows for a marketplace upload — stock only, one line per sellable thing.
 
@@ -1153,7 +1277,7 @@ def export_rows(
     something you cannot ship.
     """
     lines: dict[tuple, dict[str, Any]] = {}
-    for row in items(session, user_id, rule, status="stock"):
+    for row in items(session, user_id, pricing, status="stock"):
         if ids is not None and row["id"] not in ids:
             continue
         key = (row["card_id"], row["condition"], row["finish"])

@@ -1088,6 +1088,38 @@ tr.is-sold .rowname { color: var(--faint); }
   font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.6;
 }
 
+/* The floor, which is a control rather than a caption. One row, because the
+   two summary figures below it are one line each and a stacked label would
+   read as a different kind of thing from them.
+
+   The input is the flexible item and everything else is `flex: 0 0 auto`:
+   this lives in a 250px sidebar, and a number field allowed to keep its
+   default intrinsic width pushes the button out of the column entirely. */
+.floor-set { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.floor-set label { flex: 0 0 auto; }
+.floor-set input {
+  flex: 1 1 auto; min-width: 0;
+  height: 22px; padding: 0 5px;
+  border: 1px solid var(--rule); border-radius: 3px;
+  background: var(--surface); color: var(--ink);
+  font-family: var(--mono); font-size: 11px;
+}
+.floor-set input:focus { outline: none; border-color: var(--green); }
+.floor-set .btn { flex: 0 0 auto; height: 22px; padding: 0 8px; font-size: 11px; }
+/* Whether the floor on screen is the saved one. Wraps and is allowed to run
+   to two lines — the alternative in this width is truncating the sentence
+   that says a run is priced under a number the account did not set. */
+.floor-note { margin-bottom: 6px; color: var(--faint); }
+/* Full width and on its own line, like the TCGplayer download below it. This
+   was a `linkish` span sitting inline after the sentence naming the saved
+   floor, and the two ran together — "your floor is $0.35 Save $2.00 as my
+   floor" reads as one confused sentence rather than a statement and an
+   action. Nobody found it. */
+.floor-save {
+  width: 100%; height: 24px; margin-bottom: 10px;
+  font-family: var(--mono); font-size: 11px;
+}
+
 /* The TCGplayer download, which is a round trip rather than a download: their
    own pricing export goes up so that the SKU ids in it can come back down. The
    file input is full width because a 250px sidebar truncates a filename
