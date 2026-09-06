@@ -259,15 +259,23 @@ def _stage_data_dir(data_dir: Path) -> None:
     the application rebuilds. Both have to be private, because they are the two
     directories `importing.purge_scans` unlinks from.
 
-    `refs` is deliberately shared, as a symlink to the real one. It is a cache
-    of reference images keyed by card id, the preview copies catalogue rows
-    *with their ids*, and nothing in the application ever deletes from it — so
-    a preview and its source ask the same question and can honestly share the
-    answer. Not sharing it means re-fetching every reference image on every
-    screenshot run, off somebody else's CDN, which is the exact cost the cache
-    exists to avoid. What crosses back is a `.missing` marker for an image
-    upstream refused, which is a true answer the source would have cached for
-    itself the next time anybody looked at that card.
+    `refs` is deliberately shared, as a symlink to the real one. Not sharing it
+    means re-fetching every reference image on every screenshot run, off
+    somebody else's CDN, which is the exact cost the cache exists to avoid.
+
+    What makes that safe is that the cache is keyed by the image URL — see
+    `media._cache_key`. This paragraph used to say the preview "copies
+    catalogue rows *with their ids*", and share the directory on that basis.
+    It was half true: the seeded path does, `_widen_catalogue` deliberately
+    does not, and under `--bulk` the preview therefore wrote 264 reference
+    images into the real cache under this install's card ids. Nothing failed
+    and nothing said a word — the queue simply showed other cards' art beside
+    the right names. A shared cache may not depend on two databases agreeing
+    about row numbers, because that is a promise no future insert path knows
+    it is keeping.
+
+    What crosses back is a `.missing` marker for an image upstream refused,
+    which is a true answer about that URL and so is true on both sides.
     """
     from foilstack.config import get_settings
 
