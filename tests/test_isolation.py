@@ -2549,6 +2549,13 @@ def test_the_tcgplayer_round_trip_returns_the_sellers_own_sku_ids(app_and_data):
     body = response.text
     assert '"4591"' in body, f"the SKU id is the point of the round trip: {body!r}"
     assert body.count("\r\n") == 2, "one header and one matched row"
+    # A CSV response is a download, not a navigation, so this header is the
+    # only way the screen that posted the file can say what became of it.
+    report = response.headers["X-Match-Report"]
+    assert report.startswith("1 matched")
+    # A header is not UTF-8, and the `·` the job log uses is U+00B7 — which
+    # takes the whole response down rather than degrading.
+    assert report.isascii(), report
 
 
 def test_a_stranger_gets_no_rows_from_the_tcgplayer_round_trip(stranger, app_and_data):

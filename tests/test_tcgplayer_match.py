@@ -13,6 +13,7 @@ import io
 import pytest
 
 from foilstack import tcgplayer
+from foilstack.web.routes import listings
 
 HEADER = ",".join(tcgplayer.HEADER)
 
@@ -267,3 +268,48 @@ def test_the_file_is_shaped_like_the_one_it_came_from():
     assert lines[0] == HEADER, "the header is unquoted, as theirs is"
     assert lines[1].startswith('"4519","Magic"'), "data rows are fully quoted, as theirs are"
     assert "\n" not in body.replace("\r\n", "")
+
+
+# What the seller is told to filter their export down to, which is the whole
+# defence against uploading an entire product line to match a few dozen cards.
+
+
+def _line(product_line: str, set_name: str) -> dict:
+    return {"tcg_product_line": product_line, "set_name": set_name}
+
+
+def test_the_sets_to_filter_to_are_grouped_by_product_line():
+    """One upload is one product line, so the grouping is the advice."""
+    groups = listings._run_sets(
+        [
+            _line("Magic", "The Lost Caverns of Ixalan"),
+            _line("Magic", "Strixhaven: Mystical Archive"),
+            _line("Magic", "The Lost Caverns of Ixalan"),
+            _line("Dragon Ball Super Fusion World", "Raging Roar"),
+        ]
+    )
+    assert [g["line"] for g in groups] == ["Dragon Ball Super Fusion World", "Magic"]
+    assert groups[1]["sets"] == [
+        "Strixhaven: Mystical Archive",
+        "The Lost Caverns of Ixalan",
+    ], "each set named once, in an order the seller can scan"
+
+
+def test_a_long_run_names_some_sets_and_counts_the_rest():
+    """Past a couple of dozen sets a filtered export is not meaningfully
+    smaller, and an unbounded list stops being advice."""
+    rows = [_line("Magic", f"Set {i:02d}") for i in range(30)]
+    (group,) = listings._run_sets(rows)
+    assert len(group["sets"]) == listings.MATCH_SETS_SHOWN
+    assert group["more"] == 30 - listings.MATCH_SETS_SHOWN
+
+
+def test_a_run_that_fits_counts_no_extras():
+    (group,) = listings._run_sets([_line("Magic", "Foundations")])
+    assert group["sets"] == ["Foundations"] and group["more"] == 0
+
+
+def test_a_row_with_no_set_is_left_out_rather_than_named_as_blank():
+    """A blank pill is a filter the seller cannot apply."""
+    groups = listings._run_sets([_line("Magic", ""), _line("", "Foundations")])
+    assert groups == []

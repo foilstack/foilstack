@@ -109,7 +109,7 @@ class MatchReport:
     def skipped(self) -> int:
         return len(self.unpriced) + len(self.unmatched) + len(self.ambiguous) + len(self.unreadable)
 
-    def summary(self) -> str:
+    def _parts(self) -> list[str]:
         parts = [f"{self.matched} matched"]
         if self.reduced:
             parts.append(f"{len(self.reduced)} reduced")
@@ -121,7 +121,22 @@ class MatchReport:
             parts.append(f"{len(self.ambiguous)} ambiguous")
         if self.unreadable:
             parts.append(f"{len(self.unreadable)} with an unreadable quantity")
-        return " · ".join(parts)
+        return parts
+
+    def summary(self) -> str:
+        return " · ".join(self._parts())
+
+    def ascii_summary(self) -> str:
+        """The same counts, with nothing in them but ASCII.
+
+        This one goes out as an HTTP response header, and a header is not
+        UTF-8: the interchange encoding is latin-1 and a good deal of what sits
+        between here and the browser assumes ASCII outright. The `·` that reads
+        well in the job log is U+00B7, which survives none of that — it arrives
+        as mojibake, or takes the whole response down with a decode error,
+        depending on which hop decides first.
+        """
+        return ", ".join(self._parts())
 
 
 def key_for(row: dict[str, Any]) -> Key:
