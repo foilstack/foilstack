@@ -97,3 +97,44 @@ list, which shows each printing's current price beside it.
 Until you do, the dearest matching printing is used and the row is marked
 `guessed`. That direction is deliberate — an overpriced card sits unsold and you
 notice, an underpriced one sells immediately and you find out from the payout.
+
+## Your floor
+
+Every list price this produces is raised to a **floor** before it leaves —
+whatever the pricing rule and the condition discount work out to, nothing is
+offered below it. A bulk common priced at three cents in a catalogue is not
+worth a sleeve, a toploader and a stamp, and a listing that loses money on
+every sale is worse than no listing.
+
+The floor belongs to the account, not to the install. It ships at \$0.35,
+which is roughly a bulk common once postage is paid for, and it is a starting
+point rather than a policy — a shop that will not put a card in an envelope
+for less than a dollar and a dealer clearing boxes at pennies are both right,
+and there is no number that serves them both. There is deliberately no
+environment variable: a hosted server holds sellers whose answers genuinely
+differ, and one setting in `.env` would make the busiest of them answer for
+everyone else.
+
+Set it on **Listings**, in the sidebar under the pricing rules:
+
+* Type a number and press **Apply**. That re-prices the run on screen and
+  nothing else. The note underneath says so, and names the floor you have
+  saved, so a run priced under a figure you were only trying out can never
+  pass for your settings.
+* Press **Save … as my floor** to make it the account's. From then on it is
+  what every screen quotes — the listing run, the card panel's suggested
+  list, and every CSV — until you change it again.
+
+Those are two presses on purpose. A number typed to see what a shelf of bulk
+would come to must not become the price of everything you own because you hit
+Enter in a field.
+
+Zero is a real answer and means no floor at all. The upper bound is \$100,
+which is a guard on a value that arrives in a URL rather than an opinion about
+what you may charge — the floor only ever raises a price that came out under
+it, so a large one is a way to accidentally list a run at a flat rate.
+
+A run priced under a one-off floor carries it into the export links, so the
+CSV matches the screen that produced it. The job log records both, as
+`market · floor $1.00`, because "why did the bulk in this file go out at a
+different price from the last one" is the question a seller comes back with.

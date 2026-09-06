@@ -22,7 +22,8 @@ src/foilstack/
   db.py           the schema. One row in `inventory` is one physical card
   search.py       nearest-neighbour over card_embeddings (cosine, HNSW)
   importing.py    archive → scans → candidates. Also `scan_path`
-  inventory.py    pricing rules, stock lines, totals, export shaping.
+  inventory.py    pricing rules and the floor, stock lines, totals, export
+                  shaping. `Pricing` is the rule and the floor together.
                   `items` is the wide read, `index` the thin one the
                   inventory screen pages over, `position` the aggregate
   prices.py       price history, and the inline SVG that draws it
@@ -261,6 +262,38 @@ Two habits worth keeping:
   hung the page and one killed during the cohort pass vanished from it in
   silence. Two different wrong answers to the same event, from one list
   written twice.
+
+* **A floor is the seller's number, not the software's.** `list_price` used to
+  clamp at a module constant, which is one answer for every account on the
+  install — right for a dealer clearing boxes at pennies and wrong for a shop
+  that will not put a card in an envelope under a dollar. It is
+  `users.price_floor` now, and deliberately *not* an environment variable: a
+  hosted server holds sellers whose bulk policies genuinely differ, and one
+  setting in `.env` makes the busiest of them answer for the rest.
+
+  The rule and the floor travel as one `inventory.Pricing`, positionally and
+  with no default, for the same reason `items()` takes `user_id` that way. A
+  caller that remembers the rule and forgets the floor raises nothing — it
+  prices a seller's cards at 35c when they said a dollar, and every number it
+  produces looks like a price. `deps.pricing_dep` is the one place a route
+  gets one and `Pricing.for_user` the one place that knows where a floor
+  lives.
+
+  Applying a floor and saving one are two presses, and that is the whole
+  design. `/listings?floor=` prices one run; `POST /api/account/floor` is what
+  changes every screen. A figure typed to see what a shelf of bulk would come
+  to must not become the seller's policy because they hit Enter in a field —
+  so the screen always states which of the two is in force, and offers to save
+  it only when they differ.
+
+  The two ends also disagree about a bad value on purpose. `parse_floor`
+  raises; `Pricing.of` turns that into a fallback, because a stale bookmark
+  should price the run the ordinary way rather than 400 at somebody holding a
+  file they need. The save route does not fall back — a seller who meant to
+  set a dollar and silently got the shipped 35c would find out from a payout.
+  And an unusable `?floor=` falls back to *the account's* floor, not the
+  shipped one, which is a distinction `Pricing.of` cannot make because it has
+  no user; `for_user` makes it.
 
 * **Inventory browses; listings lists.** The inventory bar used to carry an
   `eBay CSV` and a `TCGplayer CSV` button, and the second of them handed the

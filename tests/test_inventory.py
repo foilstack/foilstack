@@ -1,42 +1,52 @@
-from foilstack.inventory import FLOOR, list_price
+import pytest
+
+from foilstack.inventory import (
+    DEFAULT_FLOOR,
+    MAX_FLOOR,
+    Pricing,
+    list_price,
+    parse_floor,
+)
 
 
 def test_condition_discounts_apply():
-    assert list_price(10.0, "NM") == 10.0
-    assert list_price(10.0, "LP") == 8.5
-    assert list_price(10.0, "DMG") == 3.5
+    assert list_price(10.0, "NM", Pricing()) == 10.0
+    assert list_price(10.0, "LP", Pricing()) == 8.5
+    assert list_price(10.0, "DMG", Pricing()) == 3.5
 
 
 def test_floor_is_enforced():
     """Below the floor a listing costs more in fees and postage than it returns."""
-    assert list_price(0.01, "NM") == FLOOR
+    assert list_price(0.01, "NM", Pricing()) == DEFAULT_FLOOR
 
 
 def test_unpriced_card_has_no_list_price():
     """Never invent a number for a card the catalogue has no price for."""
-    assert list_price(None, "NM") is None
+    assert list_price(None, "NM", Pricing()) is None
 
 
 def test_rules_apply_on_top_of_condition():
     """The two adjustments answer different questions and both must land."""
-    assert list_price(10.0, "NM", "market") == 10.0
-    assert list_price(10.0, "NM", "under") == 9.5
+    assert list_price(10.0, "NM", Pricing("market")) == 10.0
+    assert list_price(10.0, "NM", Pricing("under")) == 9.5
     # LP is worth 85% of market before the rule takes its 5% off.
-    assert list_price(10.0, "LP", "under") == 8.07
+    assert list_price(10.0, "LP", Pricing("under")) == 8.07
 
 
 def test_premium_only_applies_to_near_mint():
     """A premium on a played card is just an overpriced played card."""
-    assert list_price(10.0, "NM", "premium") == 10.8
-    assert list_price(10.0, "MP", "premium") == 7.0
+    assert list_price(10.0, "NM", Pricing("premium")) == 10.8
+    assert list_price(10.0, "MP", Pricing("premium")) == 7.0
 
 
 def test_unknown_rule_falls_back_to_market():
-    assert list_price(10.0, "NM", "nonsense") == list_price(10.0, "NM", "market")
+    assert list_price(10.0, "NM", Pricing.of("nonsense")) == list_price(
+        10.0, "NM", Pricing("market")
+    )
 
 
 def test_floor_survives_the_rules():
-    assert list_price(0.10, "DMG", "lowplus") == FLOOR
+    assert list_price(0.10, "DMG", Pricing("lowplus")) == DEFAULT_FLOOR
 
 
 def test_sku_is_stable_and_distinct_per_row():
@@ -102,33 +112,25 @@ def test_lowplus_undercuts_the_real_lowest_listing():
     taking 18% off market and hoping — which is a different number, in an
     unpredictable direction, on every card.
     """
-    from foilstack.inventory import list_price
-
-    assert list_price(10.0, "NM", "lowplus", low=6.40) == 6.41
+    assert list_price(10.0, "NM", Pricing("lowplus"), low=6.40) == 6.41
 
 
 def test_lowplus_still_discounts_for_condition():
     """Undercutting a near-mint listing by a cent with a played card is not
     undercutting, it is overcharging."""
-    from foilstack.inventory import list_price
-
-    assert list_price(10.0, "LP", "lowplus", low=6.40) == round(6.40 * 0.85 + 0.01, 2)
+    assert list_price(10.0, "LP", Pricing("lowplus"), low=6.40) == round(6.40 * 0.85 + 0.01, 2)
 
 
 def test_lowplus_falls_back_when_nothing_is_listed():
     """A printing nobody is selling has no lowest listing to undercut."""
-    from foilstack.inventory import list_price
-
-    assert list_price(10.0, "NM", "lowplus", low=None) == 8.21
+    assert list_price(10.0, "NM", Pricing("lowplus"), low=None) == 8.21
 
 
 def test_other_rules_ignore_the_lowest_listing():
     """What a card is worth and what the cheapest seller wants are different
     questions; only one rule asks the second one."""
-    from foilstack.inventory import list_price
-
-    assert list_price(10.0, "NM", "market", low=1.00) == 10.0
-    assert list_price(10.0, "NM", "under", low=1.00) == 9.5
+    assert list_price(10.0, "NM", Pricing("market"), low=1.00) == 10.0
+    assert list_price(10.0, "NM", Pricing("under"), low=1.00) == 9.5
 
 
 def test_finish_picks_the_matching_printing():
@@ -304,3 +306,60 @@ def test_a_delta_is_not_quoted_beyond_the_history_we_have():
     out = summarise([_pt(5, 10.0), _pt(0, 12.0)])
     assert out["d30"] is None
     assert out["d7"] is None
+
+
+# --- the floor, which is now the seller's number rather than the software's ---
+
+
+class _Seller:
+    """Just the one field `Pricing.for_user` reads."""
+
+    def __init__(self, price_floor: float) -> None:
+        self.price_floor = price_floor
+
+
+def test_the_account_floor_is_what_prices_a_card():
+    """The whole point of the column: two sellers, same card, two answers."""
+    bulk = Pricing.for_user(_Seller(0.10))
+    shop = Pricing.for_user(_Seller(1.00))
+    assert list_price(0.05, "NM", bulk) == 0.10
+    assert list_price(0.05, "NM", shop) == 1.00
+
+
+def test_a_floor_never_lowers_a_price():
+    """It raises what came out under it and touches nothing else."""
+    assert list_price(10.0, "NM", Pricing(floor=1.00)) == 10.0
+
+
+def test_zero_is_a_floor_and_not_an_absent_one():
+    """A seller who wants no floor gets no floor, not the shipped default."""
+    assert Pricing.of(floor="0").floor == 0.0
+    assert list_price(0.01, "NM", Pricing(floor=0.0)) == 0.01
+
+
+def test_a_run_floor_overrides_the_account_one():
+    assert Pricing.for_user(_Seller(1.00), "market", "0.25").floor == 0.25
+
+
+def test_an_unusable_run_floor_falls_back_to_the_account_floor():
+    """Not to the shipped one. A mangled URL must not reprice a run at 35c."""
+    for bad in ("", "  ", "abc", "nan", "1e9", "-1"):
+        assert Pricing.for_user(_Seller(1.00), "market", bad).floor == 1.00
+
+
+def test_floor_is_rounded_to_money():
+    """A floor that prints as $1.00 and prices as 0.999 disagrees with itself."""
+    assert parse_floor("0.999") == 1.00
+    assert parse_floor(0.994) == 0.99
+
+
+def test_parse_floor_rejects_rather_than_correcting():
+    """The save path needs a refusal; `Pricing.of` is what turns one into a fallback."""
+    for bad in ("abc", "", "nan", "inf", "-0.01", str(MAX_FLOOR + 1)):
+        with pytest.raises(ValueError):
+            parse_floor(bad)
+
+
+def test_a_bad_rule_does_not_discard_a_good_floor():
+    """The two halves of a policy fail independently, or one guard cancels the other."""
+    assert Pricing.of("nonsense", "2.00") == Pricing(rule="market", floor=2.00)

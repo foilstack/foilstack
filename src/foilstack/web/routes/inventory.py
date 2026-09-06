@@ -23,7 +23,7 @@ from foilstack import db, inventory, prices, search
 from foilstack.config import Settings
 from foilstack.web import joblog
 from foilstack.web.chrome import _chrome, templates
-from foilstack.web.deps import api_owner, db_session, owner, settings_dep
+from foilstack.web.deps import api_owner, db_session, owner, pricing_dep, settings_dep
 
 router = APIRouter()
 
@@ -88,7 +88,6 @@ def _href(params: dict[str, Any]) -> str:
 def page_inventory(
     request: Request,
     q: str = "",
-    rule: str = inventory.DEFAULT_RULE,
     show: str = "stock",
     sort: str = inventory.DEFAULT_SORT,
     dir: str = inventory.DEFAULT_DIR,
@@ -100,6 +99,7 @@ def page_inventory(
     condition: list[str] | None = Query(None),
     printing: list[str] | None = Query(None),
     listed: list[str] | None = Query(None),
+    pricing: inventory.Pricing = Depends(pricing_dep),
     session=Depends(db_session),
     user: db.User = Depends(owner),
     settings: Settings = Depends(settings_dep),
@@ -112,7 +112,6 @@ def page_inventory(
     are all decisions that screen makes visible, and a one-click CSV here made
     them silently for you.
     """
-    rule = rule if rule in inventory.RULE_IDS else inventory.DEFAULT_RULE
     sort = sort if sort in inventory.SORT_VALUES else inventory.DEFAULT_SORT
     dir = "desc" if dir == "desc" else "asc"
     # Read once, through the thin index. It used to be `items()` for the
@@ -120,7 +119,7 @@ def page_inventory(
     # printing pass — three full reads of the seller's inventory, each building
     # the wide dictionary a card page needs and this table does not use a third
     # of.
-    copies = inventory.index(session, user.id, rule)
+    copies = inventory.index(session, user.id, pricing)
     counts = {
         "all": len(copies),
         "stock": sum(1 for r in copies if not r["sold"]),
@@ -170,7 +169,7 @@ def page_inventory(
         base: dict[str, Any] = {
             "q": q,
             "show": show if show != "stock" else "",
-            "rule": rule if rule != inventory.DEFAULT_RULE else "",
+            "rule": pricing.rule if pricing.rule != inventory.DEFAULT_RULE else "",
             "sort": sort if sort != inventory.DEFAULT_SORT else "",
             "dir": dir if dir != inventory.DEFAULT_DIR else "",
             **{key: sorted(picks[key]) for key in inventory.FACET_KEYS},
@@ -199,7 +198,7 @@ def page_inventory(
             "nav": "inventory",
             "rows": rows,
             "q": q,
-            "rule": rule,
+            "rule": pricing.rule,
             "show": show,
             # The order in force, for the selection form to carry. A page is a
             # window on an ordering, so "this page" means nothing without it:
@@ -306,7 +305,7 @@ def page_inventory(
 def page_card(
     card_id: int,
     request: Request,
-    rule: str = inventory.DEFAULT_RULE,
+    pricing: inventory.Pricing = Depends(pricing_dep),
     session=Depends(db_session),
     user: db.User = Depends(owner),
     settings: Settings = Depends(settings_dep),
@@ -317,9 +316,8 @@ def page_card(
     scans make it up, which archive each arrived in, what each cost and whether
     it has sold. Consolidated on the list, itemised here.
     """
-    rule = rule if rule in inventory.RULE_IDS else inventory.DEFAULT_RULE
     line = next(
-        (g for g in inventory.groups(session, user.id, rule) if g["card_id"] == card_id),
+        (g for g in inventory.groups(session, user.id, pricing) if g["card_id"] == card_id),
         None,
     )
     if line is None:
@@ -377,7 +375,7 @@ def page_card(
             "nav": "inventory",
             "line": line,
             "batches": ordered,
-            "rule": rule,
+            "rule": pricing.rule,
             "charts": charts,
             # Other printings of this card we hold a price for but the seller has
             # not claimed. Named so the page can say what it did not pick.
@@ -442,6 +440,7 @@ async def api_inventory_bulk_delete(
 def api_inventory_panel(
     item_id: int,
     request: Request,
+    pricing: inventory.Pricing = Depends(pricing_dep),
     session=Depends(db_session),
     user: db.User = Depends(owner),
 ):
@@ -454,7 +453,7 @@ def api_inventory_panel(
     item = session.get(db.InventoryItem, item_id)
     if item is None or item.user_id != user.id:
         raise HTTPException(404, "no such row")
-    rows = inventory.items(session, user.id)
+    rows = inventory.items(session, user.id, pricing)
     row = next((r for r in rows if r["id"] == item_id), None)
     if row is None:
         raise HTTPException(404, "no such row")

@@ -194,7 +194,8 @@ def test_sql_picks_the_printing_python_picks(priced_inventory):
             ).all()
         }
         from_python = {
-            r["id"]: (r["sub_type"], r["market"]) for r in inventory.items(session, user_id)
+            r["id"]: (r["sub_type"], r["market"])
+            for r in inventory.items(session, user_id, inventory.Pricing())
         }
 
     assert from_sql == from_python
@@ -214,8 +215,8 @@ def test_index_agrees_with_items_on_every_shared_key(priced_inventory):
 
     _, user_id = priced_inventory
     with db.session() as session:
-        wide = {r["id"]: r for r in inventory.items(session, user_id)}
-        thin = {r["id"]: r for r in inventory.index(session, user_id)}
+        wide = {r["id"]: r for r in inventory.items(session, user_id, inventory.Pricing())}
+        thin = {r["id"]: r for r in inventory.index(session, user_id, inventory.Pricing())}
 
     assert set(thin) == set(wide)
     for item_id, row in thin.items():
@@ -234,7 +235,7 @@ def test_position_matches_summing_items(priced_inventory):
 
     _, user_id = priced_inventory
     with db.session() as session:
-        stock = inventory.items(session, user_id, status="stock")
+        stock = inventory.items(session, user_id, inventory.Pricing(), status="stock")
         expected = {
             "count": len(stock),
             "market": sum(r["market"] or 0 for r in stock),
@@ -290,7 +291,7 @@ def test_a_filter_selection_resolves_to_what_the_screen_showed(priced_inventory,
     _, user_id = priced_inventory
 
     with db.session() as session:
-        copies = inventory.index(session, user_id, "market")
+        copies = inventory.index(session, user_id, inventory.Pricing("market"))
         for show in ("stock", "all"):
             for sort, direction in (("name", "asc"), ("market", "desc"), ("quantity", "desc")):
                 found = inventory.narrow(copies, show=show, sort=sort, dir=direction)
@@ -303,7 +304,7 @@ def test_a_filter_selection_resolves_to_what_the_screen_showed(priced_inventory,
                     got, described = _resolve(
                         session,
                         user_id,
-                        "market",
+                        inventory.Pricing("market"),
                         build_selection(sel="page", show=show, sort=sort, dir=direction, page=page),
                     )
                     assert got == expected, (show, sort, direction, page)
@@ -313,7 +314,7 @@ def test_a_filter_selection_resolves_to_what_the_screen_showed(priced_inventory,
                 got, described = _resolve(
                     session,
                     user_id,
-                    "market",
+                    inventory.Pricing("market"),
                     build_selection(sel="all", show=show, sort=sort, dir=direction),
                 )
                 assert got == everything, (show, sort, direction)
@@ -335,10 +336,15 @@ def test_a_page_run_past_the_end_lists_the_last_page(priced_inventory, monkeypat
     _, user_id = priced_inventory
 
     with db.session() as session:
-        copies = inventory.index(session, user_id, "market")
+        copies = inventory.index(session, user_id, inventory.Pricing("market"))
         rows = inventory.narrow(copies, show="stock").rows
         last = rows[(math.ceil(len(rows) / 2) - 1) * 2 :]
-        got, _ = _resolve(session, user_id, "market", build_selection(sel="page", page=9999))
+        got, _ = _resolve(
+            session,
+            user_id,
+            inventory.Pricing("market"),
+            build_selection(sel="page", page=9999),
+        )
 
     assert got == {i for line in last for i in line["ids"]}
 
@@ -351,7 +357,7 @@ def test_hand_picked_ids_are_not_widened_by_a_filter_riding_along(priced_invento
     empty has to mean the ids even with a full filter beside it — otherwise
     ticking three rows under a facet would list everything under that facet.
     """
-    from foilstack import db
+    from foilstack import db, inventory
     from foilstack.web.deps import build_selection
     from foilstack.web.routes.listings import _resolve
 
@@ -360,7 +366,7 @@ def test_hand_picked_ids_are_not_widened_by_a_filter_riding_along(priced_invento
         got, described = _resolve(
             session,
             user_id,
-            "market",
+            inventory.Pricing("market"),
             build_selection(ids=[3, 4], sel="", show="all", wire={"game": ["mtg"]}),
         )
 
