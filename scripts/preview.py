@@ -1,10 +1,11 @@
 """Spin up a throwaway instance with sample data, for looking at the UI.
 
-A disposable database and a signed-in account, so screenshots never require
-touching a real deployment or anybody's password. Catalogue rows are copied
-from whatever database DATABASE_URL points at, because the reference images are
-what make the screens look like themselves — no inventory, scans or accounts
-come across.
+A disposable database, a disposable data directory and a signed-in account, so
+screenshots never require touching a real deployment or anybody's password.
+Catalogue rows are copied from whatever database DATABASE_URL points at,
+because the reference images are what make the screens look like themselves —
+no inventory or accounts come across, and the scan photographs come across as
+*copies* into the preview's own directory.
 
     uv run python scripts/preview.py --port 8099        # serve until Ctrl-C
     uv run python scripts/preview.py --shots ./shots    # screenshot and exit
@@ -16,8 +17,11 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
+import signal
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -44,6 +48,11 @@ PENDING = 7
 # Same reasoning as seeding runners-up — the fixture has to show what the
 # product does.
 RECENT = 3
+
+
+def _interrupt(signum: int, frame: object) -> None:
+    """Turn a signal into the exception the teardown already handles."""
+    raise KeyboardInterrupt
 
 
 def _admin_url() -> str:
@@ -82,6 +91,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
+    # Ctrl-C already reached the teardown below, as KeyboardInterrupt. A
+    # `kill` did not: the default SIGTERM disposition ends the process without
+    # unwinding, so `finally` never ran and the throwaway database survived —
+    # which is how an install collects preview databases nobody can name. It
+    # matters more now that there is a directory to remove as well as a
+    # database to drop.
+    signal.signal(signal.SIGTERM, _interrupt)
+
     source_url = _admin_url()
     name = f"foilstack_preview_{uuid.uuid4().hex[:8]}"
     base = source_url.rsplit("/", 1)[0]
@@ -92,12 +109,17 @@ def main(argv: list[str] | None = None) -> int:
         conn.execute(text(f'CREATE DATABASE "{name}"'))
     print(f"created {name}")
 
+    data_dir = Path(tempfile.mkdtemp(prefix="foilstack-preview-"))
+    _stage_data_dir(data_dir)
+    print(f"data in {data_dir}")
+
+    proc: subprocess.Popen | None = None
     try:
         env = dict(os.environ, DATABASE_URL=preview_url)
         subprocess.run(
             ["alembic", "upgrade", "head"], check=True, env=env, stdout=subprocess.DEVNULL
         )
-        _seed(source_url, preview_url)
+        _seed(source_url, preview_url, data_dir)
         if args.bulk:
             _bulk(source_url, preview_url, args.bulk)
         if args.backlog:
@@ -118,6 +140,10 @@ def main(argv: list[str] | None = None) -> int:
                 env,
                 FOILSTACK_MULTI_USER="true",
                 FOILSTACK_SECRET_KEY="preview-only-secret",
+                # The half of the isolation that reaches the running server.
+                # Seeding copies the photographs in; without this the server
+                # reading and deleting them is still pointed at `./data`.
+                FOILSTACK_DATA_DIR=str(data_dir),
                 PYTHONPATH="src",
             ),
         )
@@ -193,6 +219,18 @@ def main(argv: list[str] | None = None) -> int:
         else:
             proc.wait()
     finally:
+        # The server first, and unconditionally. It is a child rather than a
+        # process group, so a signal sent to this script alone never reached
+        # it: the script exited, uvicorn kept the port and kept the throwaway
+        # database open, and the drop below then failed with "is being
+        # accessed by other users" — leaving both behind. Ctrl-C hid this,
+        # because a terminal sends it to the whole foreground group.
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
         if not args.keep:
             with admin.connect() as conn:
                 conn.execute(
@@ -203,10 +241,86 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 conn.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
             print(f"dropped {name}")
+            # `refs` is a symlink and `rmtree` unlinks those rather than
+            # following them, which is the difference between clearing the
+            # preview and clearing the reference cache it borrowed.
+            shutil.rmtree(data_dir, ignore_errors=True)
+            print(f"removed {data_dir}")
+        else:
+            print(f"kept {name} and {data_dir}")
     return 0
 
 
-def _seed(source_url: str, preview_url: str) -> None:
+def _stage_data_dir(data_dir: Path) -> None:
+    """Lay out the preview's data directory before anything is written to it.
+
+    `scans` and `display` are the preview's own and start empty — seeding
+    copies the photographs it needs into the first, and the second is a cache
+    the application rebuilds. Both have to be private, because they are the two
+    directories `importing.purge_scans` unlinks from.
+
+    `refs` is deliberately shared, as a symlink to the real one. It is a cache
+    of reference images keyed by card id, the preview copies catalogue rows
+    *with their ids*, and nothing in the application ever deletes from it — so
+    a preview and its source ask the same question and can honestly share the
+    answer. Not sharing it means re-fetching every reference image on every
+    screenshot run, off somebody else's CDN, which is the exact cost the cache
+    exists to avoid. What crosses back is a `.missing` marker for an image
+    upstream refused, which is a true answer the source would have cached for
+    itself the next time anybody looked at that card.
+    """
+    from foilstack.config import get_settings
+
+    (data_dir / "scans").mkdir(parents=True, exist_ok=True)
+    (data_dir / "display").mkdir(parents=True, exist_ok=True)
+
+    refs = get_settings().refs_dir
+    if refs.is_dir():
+        (data_dir / "refs").symlink_to(refs.resolve(), target_is_directory=True)
+
+
+def _stage_scans(pairs: list, source_scans: Path, dest_scans: Path) -> dict[str, str]:
+    """Copy the seeded photographs in. Returns old stored_path → new one.
+
+    The rows carry the source install's `stored_path` verbatim, because the
+    match each one records is a real one and the picture behind it has to be
+    the picture that produced it. Copying rather than pointing at the original
+    is the whole of this function.
+
+    A preview that shares the scans directory is a preview aimed at real data.
+    `purge_scans` unlinks a scan and its display copy whenever one is
+    discarded, so discarding a preview queue row — or Discard all —
+    deletes the seller's photograph. It has only ever missed by accident: the
+    per-scan directories happened to be owned by another user, and `purge_scans`
+    logs an unlink it could not do and carries on, so nothing on screen said a
+    word about it either way.
+
+    The returned path is always relative, which also fixes the second half of
+    the same problem. A row written before stored paths were relative holds an
+    absolute one, `scan_path` hands that straight back when the file is there,
+    and the preview would read and delete the original however private its own
+    directory was.
+    """
+    from foilstack.importing import scan_path
+
+    root = source_scans.resolve()
+    staged: dict[str, str] = {}
+    for row in pairs:
+        stored = row["stored_path"]
+        if stored in staged:
+            continue
+        src = scan_path(stored, source_scans)
+        if src is None:
+            continue
+        rel = src.relative_to(root)
+        dst = dest_scans / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        staged[stored] = str(rel)
+    return staged
+
+
+def _seed(source_url: str, preview_url: str, data_dir: Path) -> None:
     """A user, a slice of the catalogue, some scans and some inventory."""
     import datetime as dt
 
@@ -254,6 +368,16 @@ def _seed(source_url: str, preview_url: str) -> None:
         # the check and the stat is the honest one: a data directory can be
         # shared, moved or restored without the column knowing.
         pairs = [r for r in pairs if scan_path(r["stored_path"], scans_dir)][:60]
+
+        # Into the preview's own directory, and the rows re-pointed at the
+        # copies before a single one is written. Everything below this line
+        # names a file the preview owns and may do what it likes to.
+        staged = _stage_scans(pairs, scans_dir, data_dir / "scans")
+        pairs = [
+            dict(r, stored_path=staged[r["stored_path"]])
+            for r in pairs
+            if r["stored_path"] in staged
+        ]
 
         # The runners-up, from the same matching run.
         #

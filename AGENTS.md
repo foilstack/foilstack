@@ -79,10 +79,14 @@ uv run python scripts/preview.py --bulk 30000    # ...as a shop would see it
 uv run python scripts/preview.py --backlog 9     # ...with a queue too long to render
 ```
 
-Either way it is a disposable database, an account already signed in, and a
-slice of your catalogue so the screens have real cards in them. It drops the
-database on exit and never touches a real deployment. Screenshots land in
-`shots/`, which is gitignored.
+Either way it is a disposable database, a disposable data directory, an account
+already signed in, and a slice of your catalogue so the screens have real cards
+in them. It drops the database and removes the directory on exit — on `kill` as
+well as on Ctrl-C — and never touches a real deployment. The photographs are
+*copied* into it, so discarding a scan in a preview deletes a copy; only
+`refs/` is shared, as a symlink, because it is a cache of upstream images keyed
+by card id and the preview keeps those ids. Screenshots land in `shots/`, which
+is gitignored.
 
 Then actually open the PNGs. A screenshot you did not look at is worth nothing.
 
@@ -219,6 +223,35 @@ Two habits worth keeping:
   every thumbnail 404'd. Same rule for derived files: display copies are keyed
   by the scan's path, not its row id, because a row id is unique in one database
   and a data directory can be shared with another.
+* **A preview is only disposable in the parts that were made disposable.**
+  `scripts/preview.py` built a throwaway database and then seeded it with real
+  `stored_path` values, because the matches it shows have to be real ones. So
+  every preview scan row pointed at a photograph in the live `data/scans`, and
+  `purge_scans` — which unlinks the scan and its display copy whenever one is
+  discarded — was aimed at the seller's own images. Pressing `Discard all` on a
+  seeded queue attempted five hundred unlinks against production data. Every
+  one failed, and only by luck: the per-scan directories happened to be owned
+  by another user, and `purge_scans` logs an unlink it could not do and carries
+  on, so nothing on screen said a word either way. The docs above claimed it
+  "never touches a real deployment", which is the sentence that makes the trap
+  worth naming — it invites exactly the click that springs it.
+
+  The preview owns a `FOILSTACK_DATA_DIR` of its own now and the photographs
+  are copied into it, re-pointed to a **relative** path on the way — an
+  absolute `stored_path` is handed straight back by `scan_path`, so a private
+  directory alone would not have been enough. `refs/` stays shared on purpose:
+  it is a card-id-keyed cache of images fetched from upstream, ids come across
+  with the catalogue rows, and nothing ever deletes from it, so the alternative
+  is re-downloading every reference image on every screenshot run.
+
+  Teardown had the same shape of hole. `finally` dropped the database, but only
+  Ctrl-C ever reached it — a `kill` ends the process without unwinding — and it
+  never stopped the uvicorn child, which a terminal's Ctrl-C was killing for it
+  by hitting the whole foreground group. Sent a signal directly, the script
+  exited while the server kept the port and kept the database open, and the
+  drop then failed with "is being accessed by other users". Both halves are
+  handled now; the symptom was preview databases nobody could name.
+
 * **A card id is a row number, not a name.** `37` is Base Set Charizard in one
   database and something else entirely in the next, so nothing outside a single
   install may hardcode one. `web/proof.py` finds the landing page's two cards by
