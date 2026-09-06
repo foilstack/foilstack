@@ -28,7 +28,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from foilstack import db, importing, inventory, search
@@ -79,8 +79,91 @@ def _cohort_label(job: db.ImportJob) -> str:
     return f"batch is {label}" if label else "moved to match the batch"
 
 
-def _queue_rows(session, user_id: int) -> list[dict]:
-    """The match queue: scans still waiting on a decision.
+# Statuses a scan is in while it is still somebody's decision. Named once
+# because two queries ask about them now — one counting the queue and one
+# reading it — and a count that disagrees with what it counted is the whole
+# of the bug this path had.
+WAITING_STATUSES = ("pending", "unmatched", "error")
+
+# How many rows the queue aims to render before it starts leaving uploads for
+# later. Not a cut: sections are whole, so the upload that crosses this line
+# is either rendered entirely or held back entirely. A heading reading
+# "20 cards" over a batch of fifty is worse than a batch that is honestly
+# absent, and that heading is exactly what this number used to produce.
+QUEUE_ROWS = 400
+
+
+def _waiting_by_job(session, user_id: int) -> list[tuple[int, int]]:
+    """Every upload with something still to decide, oldest first, with its size.
+
+    One aggregate rather than a read of the rows it counts. This is what the
+    topbar states and what decides which uploads are rendered, and both have
+    to be true about the whole queue rather than about the part of it that
+    fitted on the screen.
+    """
+    return [
+        (job_id, n)
+        for job_id, n in session.execute(
+            select(db.Scan.job_id, func.count())
+            .where(
+                db.Scan.user_id == user_id,
+                db.Scan.status.in_(WAITING_STATUSES),
+            )
+            .group_by(db.Scan.job_id)
+            .order_by(db.Scan.job_id)
+        )
+    ]
+
+
+def _queue_jobs(waiting: list[tuple[int, int]]) -> list[int]:
+    """Which uploads the queue renders, given everything that is waiting.
+
+    Whole uploads, oldest first. Both halves of that are the fix for one bug:
+    the queue used to take the newest `QUEUE_ROWS` scans by id while the
+    screen presented them oldest-upload-first, so the cap fell on the front of
+    the backlog — the exact section the seller was being told to work
+    through. Nine batches waiting and a 400-row cap showed twenty cards of the
+    fifty in the oldest one, and every count on the page was computed from the
+    survivors, so the section heading said "20 cards", the tile said 400, and
+    nothing anywhere admitted to the thirty that were missing. Confirming the
+    twenty freed twenty slots and the same section reappeared with the next
+    twenty, which reads as a screen loading a page at a time and is really a
+    screen hiding work.
+
+    A section is therefore either on the page complete or not on it at all,
+    which is what lets its heading state its own size, and what is left out is
+    named rather than dropped.
+
+    The most recent upload is always in, whatever the budget: an import
+    returns the seller here, and answering a finished import with no sign of
+    it reads as an import that failed. That is also the one case that can
+    exceed the budget rather than respect it — a single batch bigger than
+    `QUEUE_ROWS` is rendered whole, because the alternative is the partial
+    section again.
+    """
+    if not waiting:
+        return []
+    newest, size = waiting[-1]
+    chosen = [newest]
+    budget = QUEUE_ROWS - size
+    # Stop at the first upload that does not fit rather than stepping over it
+    # to reach a smaller one behind. The queue is worked front to back, and a
+    # screen that silently skips a batch is one the seller has to keep their
+    # own list against.
+    for job_id, n in waiting[:-1]:
+        if n > budget:
+            break
+        chosen.append(job_id)
+        budget -= n
+    return sorted(chosen)
+
+
+def _queue_rows(session, user_id: int, job_ids: list[int]) -> list[dict]:
+    """The match queue: scans still waiting on a decision, for the given uploads.
+
+    Takes the uploads to read rather than choosing them, so the list that
+    decides what is on screen and the list that counts what is not are one
+    decision made in `_queue_jobs`.
 
     Confirmed scans are deliberately absent. The import screen is where cards
     arrive and where you decide about them; once decided they are inventory,
@@ -93,17 +176,37 @@ def _queue_rows(session, user_id: int) -> list[dict]:
     which is a better place for it anyway — it is visible for the life of the
     card rather than only until the next import.
     """
+    if not job_ids:
+        return []
     scans = session.scalars(
         select(db.Scan)
         # Every row reads its job's import defaults, and four hundred rows
         # asking for them one at a time is four hundred queries.
         .options(selectinload(db.Scan.job))
         .where(
+            # Scoped by the account as well as by the jobs, though the job ids
+            # came from a query that was already scoped. One query shape, no
+            # branch that could forget.
             db.Scan.user_id == user_id,
-            db.Scan.status.in_(("pending", "unmatched", "error")),
+            db.Scan.job_id.in_(job_ids),
+            db.Scan.status.in_(WAITING_STATUSES),
         )
-        .order_by(db.Scan.id.desc())
-        .limit(400)
+        # The order the scans arrived in, which is the order they were in the
+        # archive. `run_import` writes one row per file and commits as it
+        # goes, so within a job the ids are the import order exactly — no
+        # column needed to record what the sequence already says.
+        #
+        # This replaced dearest-first. Ordering by value put the cards worth
+        # getting right at the top, which reads well as an argument and badly
+        # as a tool: a seller confirming a batch has the physical stack in
+        # their hand, in the order they photographed it, and a queue in any
+        # other order makes them hunt for each card instead of working down
+        # the pile. Value ordering optimised the part of the job that gets
+        # abandoned; matching the stack means less of it gets abandoned.
+        #
+        # `_group_rows` splits the result without re-sorting it, so this is
+        # also the order inside each upload's section.
+        .order_by(db.Scan.id)
     ).all()
 
     priced = inventory._prices_for(
@@ -262,29 +365,6 @@ def _queue_rows(session, user_id: int) -> list[dict]:
             }
         )
 
-    # The order the scans arrived in, which is the order they were in the
-    # archive. `run_import` writes one row per file and commits as it goes, so
-    # within a job the ids are the import order exactly — no column needed to
-    # record what the sequence already says.
-    #
-    # This replaced dearest-first. Ordering by value put the cards worth
-    # getting right at the top, which reads well as an argument and badly as a
-    # tool: a seller confirming a batch has the physical stack in their hand,
-    # in the order they photographed it, and a queue in any other order makes
-    # them hunt for each card instead of working down the pile. Value ordering
-    # optimised the part of the job that gets abandoned; matching the stack
-    # means less of it gets abandoned.
-    #
-    # Ascending, so the queue reads the way the pile does — first card
-    # scanned, first card decided.
-    #
-    # Note this reorders the 400 rows the query returned, which are the newest
-    # 400. A queue longer than that was already only partly visible; this does
-    # not change what is on the page, only the order of it.
-    #
-    # `_group_rows` splits this list without re-sorting it, so this is also the
-    # order inside each upload's section.
-    rows.sort(key=lambda r: r["scan_id"])
     return rows
 
 
@@ -435,7 +515,15 @@ def page_import(
     # threshold on offer rather than one already running.
     thresholds = sorted({0.88, 0.92, 0.96, round(settings.auto_accept, 2)})
 
-    everything = _queue_rows(session, user.id)
+    # What is waiting, then what of it fits, then the rows themselves. The
+    # counts on the screen come from the first of those and the rows from the
+    # last, so a queue too long to render says so instead of quietly becoming
+    # its own visible part.
+    waiting = _waiting_by_job(session, user.id)
+    shown = _queue_jobs(waiting)
+    held_back = [(job_id, n) for job_id, n in waiting if job_id not in set(shown)]
+
+    everything = _queue_rows(session, user.id, shown)
     counts = {
         "all": len(everything),
         "matched": sum(1 for r in everything if r["card_id"]),
@@ -461,7 +549,23 @@ def page_import(
             # length from the same end, rather than disagreeing about which
             # folds survived.
             "folded_max": FOLDED_MAX,
+            # About the rows on the page, which is what the filter chips
+            # narrow and what Commit and Discard all act on — those two build
+            # their payload from the DOM, so a count taken over the whole
+            # queue would promise a button more than it does.
             "counts": counts,
+            # About the whole queue, which is what the topbar tile claims to
+            # be and what the seller is actually holding.
+            "waiting_total": sum(n for _, n in waiting),
+            "held_back": {
+                "uploads": len(held_back),
+                "cards": sum(n for _, n in held_back),
+                # Whether there is a batch above the gap to clear, which is
+                # both where the note is placed and what it can honestly ask
+                # for. Counted in uploads rather than in rendered sections: a
+                # filter can leave one section on screen out of six.
+                "inline": len(shown) > 1,
+            },
             "filter": filter,
             "queue_value": sum(r["market"] for r in rows),
             "thresholds": thresholds,
