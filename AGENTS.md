@@ -75,6 +75,7 @@ wrapping at 1280 but not 1440.
 uv run python scripts/preview.py                 # serve at :8099 until Ctrl-C
 uv run python scripts/preview.py --shots ./shots # screenshot and exit
 uv run python scripts/preview.py --bulk 30000    # ...as a shop would see it
+uv run python scripts/preview.py --backlog 9     # ...with a queue too long to render
 ```
 
 Either way it is a disposable database, an account already signed in, and a
@@ -332,6 +333,38 @@ Two habits worth keeping:
   widens the catalogue before padding inventory for that reason: the screen
   groups by card, so padding rows alone against the seeded 152 cards buys 152
   lines however many rows go in.
+
+* **A cap has to fall on the end the screen is worked from.** The review
+  queue read the newest 400 waiting scans by id while presenting them
+  oldest-upload-first, so the two disagreed about which end mattered and the
+  cap took the front of the backlog — the exact section the screen sends the
+  seller to first. Nine archives waiting showed twenty cards of the fifty in
+  the oldest one; confirming those twenty freed twenty slots and the same
+  section came back with the next twenty, which reads as a screen loading a
+  page at a time and is really a screen hiding work. It cost a real afternoon
+  and the seller's first conclusion was that the upload had lost the other
+  thirty images.
+
+  Worse than the truncation: every count came from the truncated list, so
+  nothing on the page admitted to it. The section heading said `20 cards` over
+  a batch of fifty, the tile said 400 with 430 waiting, and the Commit button
+  named the same wrong number.
+
+  So the queue renders **whole uploads**. `_queue_jobs` takes them oldest
+  first up to `QUEUE_ROWS`, a section is either on the page complete or held
+  back entirely — which is what lets a heading state its own size — and what
+  is held back is named on screen where it would have been. The newest upload
+  is always rendered whatever the budget, because an import returns the seller
+  to this page and a page with no sign of it reads as an import that failed;
+  that is also the only case allowed to exceed the budget, since the
+  alternative is the partial section again. `_waiting_by_job` counts in SQL,
+  so the topbar is about the whole queue while the filter chips and the two
+  buttons are about the rows on screen — those build their payload from the
+  DOM and must not be captioned with a wider number.
+
+  Look at it with `--backlog`. Two uploads and a dozen cards are always
+  entirely on the screen, which is why the seeded preview could not reach this
+  state and a screenshot never caught it.
 
 * **A selection stopped being a list of ids the moment the screen was paged.**
   The inventory form submits one `id=` per *copy*, and one page of a hundred

@@ -73,6 +73,13 @@ def main(argv: list[str] | None = None) -> int:
         metavar="N",
         help="pad inventory to N rows, to see the screens a large seller sees",
     )
+    ap.add_argument(
+        "--backlog",
+        type=int,
+        default=0,
+        metavar="N",
+        help="seed N further uploads waiting in the review queue",
+    )
     args = ap.parse_args(argv)
 
     source_url = _admin_url()
@@ -93,6 +100,8 @@ def main(argv: list[str] | None = None) -> int:
         _seed(source_url, preview_url)
         if args.bulk:
             _bulk(source_url, preview_url, args.bulk)
+        if args.backlog:
+            _backlog(preview_url, args.backlog)
 
         proc = subprocess.Popen(
             [
@@ -677,6 +686,79 @@ def _seed(source_url: str, preview_url: str) -> None:
             )
     session.commit()
     session.close()
+
+
+def _backlog(preview_url: str, uploads: int) -> None:
+    """Seed `uploads` further archives, each still waiting on the queue.
+
+    The queue renders whole uploads and holds the rest back, which is a state
+    the seeded preview cannot reach: two sections and a dozen cards are always
+    entirely on the screen. The bug that rule is against — a section showing
+    part of itself under a heading that counted only the part — was invisible
+    for the same reason, and was found by a seller with nine archives open,
+    not by a screenshot of two.
+
+    Crude on purpose. The scans point at photographs the seed already wrote
+    and the candidates at cards it already ingested, so every row renders a
+    real thumbnail against a real match; nothing here is trying to be a
+    plausible batch, only a queue long enough to have an end.
+    """
+    import datetime as dt
+    import random
+
+    from foilstack import db
+
+    db.init(preview_url)
+    session = db.session()
+    try:
+        user_id = session.scalar(select(db.User.id).order_by(db.User.id))
+        images = session.execute(
+            select(db.Scan.filename, db.Scan.stored_path).where(db.Scan.user_id == user_id)
+        ).all()
+        cards = session.scalars(select(db.Card.id).limit(500)).all()
+        if not images or not cards:
+            print("nothing seeded to copy; skipping --backlog")
+            return
+
+        # After everything the seed wrote, because the queue orders its
+        # sections by job id and a preview whose ids and timestamps disagree
+        # renders a list that looks mis-sorted when it is not.
+        latest = session.scalar(select(func.max(db.ImportJob.created_at)))
+        rng = random.Random(20260905)
+        for n in range(uploads):
+            job = db.ImportJob(
+                user_id=user_id,
+                filename=f"box-{n + 1:02d}.zip",
+                status="done",
+                total=50,
+                processed=50,
+                created_at=latest + dt.timedelta(minutes=n + 1),
+            )
+            session.add(job)
+            session.commit()
+            for _ in range(50):
+                filename, stored_path = rng.choice(images)
+                scan = db.Scan(
+                    job_id=job.id,
+                    user_id=user_id,
+                    filename=filename,
+                    stored_path=stored_path,
+                    status="pending",
+                )
+                session.add(scan)
+                session.commit()
+                session.add(
+                    db.Candidate(
+                        scan_id=scan.id,
+                        card_id=rng.choice(cards),
+                        score=rng.uniform(0.72, 0.99),
+                        rank=0,
+                    )
+                )
+            session.commit()
+        print(f"seeded {uploads} uploads waiting in the queue")
+    finally:
+        session.close()
 
 
 def _bulk(source_url: str, preview_url: str, target: int) -> None:

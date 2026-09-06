@@ -7,7 +7,7 @@
 </span>
 {%- endmacro %}
 {% block title %}Import scans · foilstack{% endblock %}
-{% block status %}{% if active %}import running · {{ active.processed }}/{{ active.total }}{% elif counts.all %}{{ counts.all }} scans to confirm · {{ counts.nomatch }} with no match{% else %}queue clear · drop some scans to begin{% endif %}{% endblock %}
+{% block status %}{% if active %}import running · {{ active.processed }}/{{ active.total }}{% elif held_back.cards %}{{ waiting_total }} scans to confirm · {{ counts.all }} on screen{% elif counts.all %}{{ counts.all }} scans to confirm · {{ counts.nomatch }} with no match{% else %}queue clear · drop some scans to begin{% endif %}{% endblock %}
 
 {% block screen %}
 <div class="split">
@@ -58,7 +58,7 @@
     <div class="tiles-3" id="stats" {% if not active %}hidden{% endif %}>
       <div class="tile-sm" title="Images found in this archive"><div class="k">scans</div><div class="v" id="t-scans">{{ active.total if active else 0 }}</div></div>
       <div class="tile-sm" title="Scans the matcher has finished with, including any that found nothing"><div class="k">processed</div><div class="v" id="t-processed">{{ active.processed if active else 0 }}</div></div>
-      <div class="tile-sm" title="Cards in the review queue waiting for you to confirm them, including any left over from earlier imports"><div class="k">to confirm</div><div class="v" id="t-review">{{ counts.all }}</div></div>
+      <div class="tile-sm" title="Cards in the review queue waiting for you to confirm them, including any left over from earlier imports"><div class="k">to confirm</div><div class="v" id="t-review">{{ waiting_total }}</div></div>
     </div>
 
     <div style="display: flex; gap: 8px;" id="actions" {% if not active %}hidden{% endif %}>
@@ -213,12 +213,36 @@
       <button class="btn btn-primary" type="button" id="commit">Commit {{ counts.all }} to inventory</button>
     </div>
 
+    {% if held_back.cards and not held_back.inline %}
+    {# Only the newest upload fitted, so there is no "batches above" to clear
+       and the note has nowhere to stand inside the list. #}
+    <div class="queue-more">
+      {{ held_back.cards }} more {{ 'card' if held_back.cards == 1 else 'cards' }}
+      in {{ held_back.uploads }} earlier
+      {{ 'upload' if held_back.uploads == 1 else 'uploads' }}
+      · shown once this batch is cleared
+    </div>
+    {% endif %}
+
     <template id="tpl-chosen">{{ chosen_icon() }}</template>
     <div class="screen-scroll" id="queue">
       {% for g in groups %}
+      {# Where the uploads that did not fit would have been. Sections run in
+         upload order and the newest is always rendered, so what is held back
+         is the middle of the list and this is the place on the screen it
+         belongs — not a footnote at the bottom, which reads as a note about
+         the batch above it rather than about the gap it is standing in. #}
+      {% if held_back.cards and held_back.inline and loop.last %}
+      <div class="queue-more">
+        {{ held_back.cards }} more {{ 'card' if held_back.cards == 1 else 'cards' }}
+        in {{ held_back.uploads }} {{ 'upload' if held_back.uploads == 1 else 'uploads' }}
+        · shown once the batches above are cleared
+      </div>
+      {% endif %}
       {# The upload these cards arrived in. Sections run oldest first and the
-         cards inside them dearest first, so the backlog drains from the front
-         and the card worth most is the first decision in each batch.
+         cards inside them in the order they were photographed, so the backlog
+         drains from the front and the queue reads the way the pile in the
+         seller's hand does.
 
          A `<details>`, so collapsing costs no script and arrives with the
          keyboard and the accessibility tree already working — the same idiom

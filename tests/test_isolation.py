@@ -1013,7 +1013,7 @@ def test_the_queue_seeds_a_foil_only_card_as_foil(app_and_data):
     session.commit()
     scan_id = scan.id
 
-    row = next(r for r in _queue_rows(session, owner.id) if r["scan_id"] == scan_id)
+    row = next(r for r in _queue_rows(session, owner.id, [job.id]) if r["scan_id"] == scan_id)
     assert row["finish"] == "foil"
     assert row["default_finish"] == "nonfoil"
     session.close()
@@ -1057,7 +1057,7 @@ def test_the_queue_keeps_the_default_when_both_finishes_are_priced(app_and_data)
     session.commit()
     scan_id = scan.id
 
-    row = next(r for r in _queue_rows(session, owner.id) if r["scan_id"] == scan_id)
+    row = next(r for r in _queue_rows(session, owner.id, [job.id]) if r["scan_id"] == scan_id)
     assert row["finish"] == "nonfoil"
     session.close()
 
