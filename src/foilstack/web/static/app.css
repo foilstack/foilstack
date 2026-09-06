@@ -1109,15 +1109,15 @@ tr.is-sold .rowname { color: var(--faint); }
 /* Whether the floor on screen is the saved one. Wraps and is allowed to run
    to two lines — the alternative in this width is truncating the sentence
    that says a run is priced under a number the account did not set. */
-.floor-note { margin-bottom: 8px; color: var(--faint); }
-/* On its own line. Inline after the sentence naming the saved floor, the two
-   ran together — "your floor is $0.35 Save $2.00 as my floor" reads as one
-   confused sentence rather than a statement and a button, and the one thing
-   this note exists to make unmissable is that the run is not priced at the
-   saved number. */
-.floor-note .linkish {
-  display: block; margin-top: 2px;
-  font-family: var(--mono); font-size: 11px; text-align: left;
+.floor-note { margin-bottom: 6px; color: var(--faint); }
+/* Full width and on its own line, like the TCGplayer download below it. This
+   was a `linkish` span sitting inline after the sentence naming the saved
+   floor, and the two ran together — "your floor is $0.35 Save $2.00 as my
+   floor" reads as one confused sentence rather than a statement and an
+   action. Nobody found it. */
+.floor-save {
+  width: 100%; height: 24px; margin-bottom: 10px;
+  font-family: var(--mono); font-size: 11px;
 }
 
 /* The TCGplayer download, which is a round trip rather than a download: their

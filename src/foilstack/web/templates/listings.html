@@ -111,14 +111,30 @@
       <div class="floor-note">
         {% if floor_override %}
         This run only. Your floor is {{ account_floor|money }}.
-        <button class="linkish" type="button" id="save-floor"
-                data-floor="{{ '%.2f'|format(floor) }}">
-          Save {{ floor|money }} as my floor
-        </button>
         {% else %}
         Your floor, on every screen. Nothing lists below it.
         {% endif %}
       </div>
+      {# A real button, and present in both states rather than appearing only
+         once the floor has been changed. It was a `linkish` span that showed
+         up after Apply, which read as a sentence rather than an action — the
+         first person to use this concluded the control could not save at all
+         and that a floor was per-export. The disabled twin is the same answer
+         the bar above gives with "All 21 listed on TCGplayer": saying what the
+         button would do, greyed, is what makes it findable before there is
+         anything to press it for. #}
+      {% if floor_override %}
+      <button class="btn floor-save" type="button" id="save-floor"
+              data-floor="{{ '%.2f'|format(floor) }}"
+              title="Make this the floor every screen prices against, not just this run.">
+        Save {{ floor|money }} as my floor
+      </button>
+      {% else %}
+      <button class="btn floor-save" type="button" disabled
+              title="Change the floor above and Apply to save a different one.">
+        {{ floor|money }} is your floor
+      </button>
+      {% endif %}
       {# "at list", not "listed value": on this screen "listed" now means a
          row marked as being on a marketplace, and the same word for the run's
          total at list price made the summary read as the value of the marked

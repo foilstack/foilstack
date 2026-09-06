@@ -2936,6 +2936,39 @@ def test_a_run_floor_does_not_become_the_account_floor(app_and_data):
         session.close()
 
 
+def test_the_save_control_is_present_whether_or_not_there_is_anything_to_save(app_and_data):
+    """Findable before the seller has changed anything.
+
+    It used to appear only once a floor had been applied, styled as a link —
+    so the screen gave no sign that a floor could be saved at all, and the
+    first person to use it concluded a floor was per-export. Present and
+    disabled is the same answer the bar above gives with "All 21 listed on
+    TCGplayer": naming what the button would do, greyed, is what makes the
+    capability discoverable.
+    """
+    from foilstack import db, inventory
+
+    app, _ = app_and_data
+    client = _signed_in(app)
+    session = db.session()
+    try:
+        # Nothing to save: the control is there, says what the floor is, and
+        # cannot be pressed.
+        resting = client.get("/listings?sel=all&show=all").text
+        assert "is your floor" in resting
+        assert "floor-save" in resting
+        assert 'id="save-floor"' not in resting
+
+        # Something to save: the same control, live, naming the number.
+        run = client.get("/listings?sel=all&show=all&floor=2.00").text
+        assert 'id="save-floor"' in run
+        assert "Save $2.00 as my floor" in run
+    finally:
+        session.expire_all()
+        assert _owner_row(session).price_floor == inventory.DEFAULT_FLOOR
+        session.close()
+
+
 def test_a_nonsense_run_floor_prices_at_the_saved_one(app_and_data):
     """A mangled URL prices the run the way the seller set it up, rather than
     404ing at somebody who came here for a file — or repricing at 35c."""
