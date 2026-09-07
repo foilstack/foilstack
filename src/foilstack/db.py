@@ -63,6 +63,17 @@ def _now() -> dt.datetime:
 # post anything under a dollar changes it on the listing screen.
 DEFAULT_PRICE_FLOOR = 0.35
 
+# The lowest a copy may be worth and still count towards inventory value.
+#
+# Zero, because the shipped answer has to be "count everything I own": a
+# number that quietly leaves cards out of the headline figure is only honest
+# once the seller chose it. A shelf of ten-cent commons is real inventory and
+# a real ten cents each — it is the *value* it implies that misleads, because
+# sell-through on bulk is close to nothing, so the money is not money anyone
+# is going to see. Which of those two readings a seller wants is theirs to
+# say, and until they say it the software counts what is there.
+DEFAULT_VALUE_THRESHOLD = 0.0
+
 
 class User(Base):
     """One account.
@@ -98,6 +109,17 @@ class User(Base):
     # floor under accounts that never asked for it is the failure worth
     # preventing. Zero is a real answer here and means no floor at all.
     price_floor: Mapped[float] = mapped_column(Float, nullable=False, default=DEFAULT_PRICE_FLOOR)
+    # The lowest a copy may be worth and still be counted in inventory value
+    # on the analytics screen. Deliberately *not* the price floor: that one is
+    # what a seller will sell for and it changes prices, this one is what they
+    # consider worth counting and it changes nothing but a report. A single
+    # number serving both would tie "I won't post a card under a dollar" to
+    # "pretend I don't own it", which are not the same statement.
+    #
+    # Same `NOT NULL` with a default as the floor above, for the same reason.
+    value_threshold: Mapped[float] = mapped_column(
+        Float, nullable=False, default=DEFAULT_VALUE_THRESHOLD
+    )
 
 
 class Card(Base):

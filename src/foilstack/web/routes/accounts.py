@@ -254,6 +254,45 @@ def api_set_floor(
     return {"ok": True, "floor": saved}
 
 
+@router.post("/api/account/value-threshold")
+def api_set_value_threshold(
+    # Empty rather than required, for the reason the floor form is: a blank
+    # field should come back as one sentence a seller can act on rather than
+    # a framework 422 naming a pydantic location.
+    threshold: str = Form(""),
+    session=Depends(db_session),
+    user: db.User = Depends(api_owner),
+):
+    """Save the lowest a card may be worth and still count towards value.
+
+    Beside the floor and not folded into it. The floor is what this seller
+    will *sell* for and it moves prices; this is what they consider worth
+    *counting* and it moves nothing but the analytics screen. One number
+    serving both would mean a shop that will not post a card under a dollar
+    had also declared it does not own its bulk.
+
+    `/analytics?min=` is the other half, and is deliberately not a write.
+    """
+    # Same parser as the querystring so the two cannot become different ideas
+    # of what a threshold may be, and the opposite answer to a bad value —
+    # `threshold_for` falls back because a mangled URL should still report a
+    # position, and this must not, because a seller who typed a dollar and
+    # silently got zero would read a figure they did not ask for as theirs.
+    try:
+        saved = inventory.parse_threshold(threshold)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    user.value_threshold = saved
+    session.commit()
+    joblog.add(
+        user.id,
+        "counting every card towards inventory value"
+        if saved == 0
+        else f"counting cards worth ${saved:.2f} or more towards inventory value",
+    )
+    return {"ok": True, "threshold": saved}
+
+
 def _safe_next(target: str) -> str:
     """Only ever redirect within this site.
 

@@ -50,6 +50,23 @@ DEFAULT_FLOOR = db.DEFAULT_PRICE_FLOOR
 # exactly like a real one.
 MAX_FLOOR = 100.0
 
+# The lowest a copy may be worth and still count towards inventory value on
+# the analytics screen, and a ceiling on that number.
+#
+# This is a *reporting* threshold and nothing else. It never changes a price,
+# never hides a card from the inventory screen, and never touches what a sale
+# realised — a ten-cent common that sells for ten cents earned ten real cents
+# and is counted as such. What it answers is a narrower question: a shelf of
+# bulk makes "inventory value" a large number attached to cards whose
+# sell-through is close to zero, so the figure reads as money on hand when it
+# is mostly money nobody is coming to collect.
+#
+# The ceiling exists for the reason `MAX_FLOOR` does: it arrives in a
+# querystring, and a bound is what stops one hand-edited `?min=` from
+# producing a screen whose every figure is zero with no hint as to why.
+DEFAULT_THRESHOLD = db.DEFAULT_VALUE_THRESHOLD
+MAX_THRESHOLD = 1000.0
+
 # Pricing rules, applied on top of the condition discount. Two separate
 # adjustments because they answer different questions: the condition
 # multiplier is what the card is worth, the rule is where you want to sit
@@ -107,6 +124,82 @@ def parse_floor(value: float | str) -> float:
     # as 0.999 is a screen disagreeing with itself by a cent on every bulk
     # line in the run.
     return round(floor, 2)
+
+
+def parse_threshold(value: float | str) -> float:
+    """A value threshold from something a browser sent, or `ValueError`.
+
+    Deliberately a separate parser from `parse_floor` rather than one shared
+    "parse some money" helper. The two have different ceilings and, more to
+    the point, different consequences: a bad floor misprices a listing run and
+    a bad threshold misreports a position. Sharing the function would make
+    changing either bound a change to both, and the next person widening the
+    floor's range has no reason to think they are also changing what counts as
+    inventory.
+
+    The policy about a bad value lives at the call sites, same as the floor.
+    """
+    try:
+        threshold = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("that is not a number") from None
+    # NaN fails every comparison, so it would pass a naive range check and
+    # then leave `market >= threshold` false for every row — an entire
+    # inventory reported as worth nothing, from a value that looked fine.
+    if threshold != threshold or threshold in (float("inf"), float("-inf")):
+        raise ValueError("that is not a number")
+    if threshold < 0 or threshold > MAX_THRESHOLD:
+        raise ValueError(f"a threshold has to be between $0.00 and ${MAX_THRESHOLD:,.2f}")
+    return round(threshold, 2)
+
+
+def threshold_for(user: db.User, asked: float | str | None = None) -> float:
+    """This account's threshold, with anything the request asked for on top.
+
+    `Pricing.for_user` in miniature, and for the same reason: an unusable
+    `?min=` falls back to *the seller's own* threshold, not to the shipped
+    zero. A stale bookmark should report the position the way they set it up
+    rather than silently widening it back to everything.
+    """
+    try:
+        saved = parse_threshold(user.value_threshold)
+    except ValueError:
+        # A row hand-edited outside the bounds reads as the shipped answer,
+        # which is "count everything" — the reading that hides nothing.
+        saved = DEFAULT_THRESHOLD
+    if asked is None:
+        return saved
+    try:
+        return parse_threshold(asked)
+    except ValueError:
+        return saved
+
+
+def counts_towards_value(row: Mapping[str, Any], threshold: float) -> bool:
+    """Whether one copy clears the threshold for inventory value.
+
+    One function because the rule is asked three times on the analytics screen
+    — the tiles, the by-game bars, and the sentence naming what was left out —
+    and a "left out" figure computed from a slightly different rule than the
+    total it explains is worse than no sentence at all.
+
+    A copy with no catalogue price at all does not clear a threshold above
+    zero. It cannot be *shown* to be worth a dollar, and it contributes zero
+    to the value either way, so the only thing this decides is whether the
+    screen counts it as excluded and says so — which is the honest side.
+    """
+    return (row["market"] or 0.0) >= threshold
+
+
+def split_by_value(
+    rows: Iterable[Mapping[str, Any]], threshold: float
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    """Stock rows divided into what counts at this threshold and what does not."""
+    counted: list[Mapping[str, Any]] = []
+    below: list[Mapping[str, Any]] = []
+    for row in rows:
+        (counted if counts_towards_value(row, threshold) else below).append(row)
+    return counted, below
 
 
 @dataclass(frozen=True)

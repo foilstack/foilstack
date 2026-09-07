@@ -318,6 +318,14 @@ def page_listings(
 @router.get("/analytics", response_class=HTMLResponse)
 def page_analytics(
     request: Request,
+    # The value threshold for this look at the screen. `/analytics?min=1.00`
+    # reports one position; `POST /api/account/value-threshold` is what makes
+    # it the seller's own. Two presses, for the reason the floor has two: a
+    # number typed to see what the shelf looks like without the bulk must not
+    # become the account's settings because they hit Enter in a field.
+    # Aliased rather than named `min`, which shadows the builtin inside a
+    # function that does arithmetic.
+    min_value: str | None = Query(None, alias="min"),
     pricing: inventory.Pricing = Depends(pricing_dep),
     session=Depends(db_session),
     user: db.User = Depends(owner),
@@ -330,11 +338,31 @@ def page_analytics(
     foilstack never sees a sale: the CSV leaves here and what happens to it
     happens on a marketplace. Those panels are marked as the demo figures they
     are rather than dressed up as measurements.
+
+    The value threshold divides this screen in two, and which side a figure
+    falls on is a question about what the figure *is*. What a position is
+    worth is a forecast — it assumes the cards sell — so a shelf of ten-cent
+    commons that will mostly never move is exactly the thing a seller may want
+    out of it, and inventory value, listed, not-listed and the by-game bars
+    all follow the threshold. Cost basis is not a forecast: that money left a
+    bank account for every card held, cheap ones included, so it is always the
+    whole of stock. Realised figures are history and are never filtered at
+    all — a common that sold for a dime earned a real dime.
     """
+    threshold = inventory.threshold_for(user, min_value)
     rows = inventory.items(session, user.id, pricing)
     totals = inventory.totals(rows)
+
+    # Stock only, on both sides. `by_game` used to fold every row including
+    # sold ones, so a panel headed "Inventory value by game" disagreed with
+    # the "Inventory value" tile directly above it by whatever had been sold
+    # — the same fault the `listed_value` comment below describes, one panel
+    # over.
+    stock = [r for r in rows if not r["sold"]]
+    counted, excluded = inventory.split_by_value(stock, threshold)
+
     by_game: dict[str, float] = {}
-    for r in rows:
+    for r in counted:
         by_game[r["game"]] = by_game.get(r["game"], 0.0) + (r["market"] or 0) * r["quantity"]
     top = sorted(by_game.items(), key=lambda kv: -kv[1])[:5]
     peak = max((v for _, v in top), default=0.0) or 1.0
@@ -342,7 +370,30 @@ def page_analytics(
     # "listed value" include cards that are no longer on the shelf, and the
     # "not yet listed" figure beside it is that total minus this one, so one
     # sold-and-listed card overstated the first and understated the second.
-    listed_value = sum(r["market"] or 0 for r in rows if r["listed"] and not r["sold"])
+    listed_value = sum(r["market"] or 0 for r in counted if r["listed"])
+
+    # What the screen reports as the position, at this threshold. Held apart
+    # from `totals` rather than replacing its keys: `totals` is what the
+    # account owns and several figures still need that — the cost basis, and
+    # sell-through, whose denominator is every card on the shelf and not just
+    # the ones worth counting.
+    counted_market = round(sum(r["market"] or 0 for r in counted), 2)
+    position = {
+        "count": len(counted),
+        "distinct": len({r["card_id"] for r in counted}),
+        "market": counted_market,
+        "listed": round(sum(r["list_price"] or 0 for r in counted), 2),
+        # Counted value against the cost of everything held. Deliberately
+        # mixed, and said so on screen: the cards left out cost real money, so
+        # netting them out of both sides would report a gain on a position the
+        # seller did not pay for.
+        "gain": round(counted_market - totals["cost"], 2) if totals["cost"] else None,
+    }
+    left_out = {
+        "count": len(excluded),
+        "distinct": len({r["card_id"] for r in excluded}),
+        "market": round(sum(r["market"] or 0 for r in excluded), 2),
+    }
 
     # Real sales, now that they are recorded. Sell-through and days-to-sell are
     # computable from what we hold; fees and shipping are not, and are not
@@ -377,10 +428,20 @@ def page_analytics(
             "nav": "analytics",
             "rows": rows,
             "totals": totals,
+            "position": position,
+            "left_out": left_out,
             "sales": sale_stats,
             "by_game": [{"label": g, "value": v, "pct": f"{100 * v / peak:.0f}%"} for g, v in top],
             "listed_value": listed_value,
-            "unlisted_value": totals["market"] - listed_value,
+            "unlisted_value": round(counted_market - listed_value, 2),
+            # Three separate facts, the same three the floor control states:
+            # what is in force, what the account saved, and whether those are
+            # the same. A screen reporting a position under a threshold the
+            # seller never saved must not be able to pass for their settings.
+            "threshold": threshold,
+            "account_threshold": user.value_threshold,
+            "threshold_override": threshold != user.value_threshold,
+            "max_threshold": inventory.MAX_THRESHOLD,
             **_chrome(session, request, user, settings),
         },
     )

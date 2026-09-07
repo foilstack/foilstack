@@ -24,6 +24,10 @@ SHOTS = [
     ("inventory", "/inventory", None),
     ("listings", "/listings", None),
     ("analytics", "/analytics", None),
+    # The same screen with the value threshold applied. A separate shot
+    # because the whole point of the control is the figures it changes,
+    # and the default state shows none of them.
+    ("analytics-threshold", "/analytics?min=1.00", None),
     ("plugins", "/plugins", None),
 ]
 

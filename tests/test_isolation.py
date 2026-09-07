@@ -3010,3 +3010,194 @@ def test_the_export_is_priced_at_the_run_floor(app_and_data):
     # And something was actually lifted, or the assertion above would hold for
     # a file the floor never touched.
     assert 12.00 in prices
+
+
+# --- the value threshold, which reports a position and never changes one -----
+
+
+def _set_threshold(session, value):
+    owner = _owner_row(session)
+    owner.value_threshold = value
+    session.commit()
+    return owner.id
+
+
+def test_the_threshold_moves_value_and_leaves_the_cards_alone(app_and_data):
+    """It is a reporting choice, so everything that is not a report must be
+    identical either side of it.
+
+    The inventory screen still lists every card, the topbar still counts every
+    card, and a card's own page still quotes its own price. A threshold that
+    hid cards rather than excluding them from one figure would look, to a
+    seller, exactly like inventory going missing."""
+    from foilstack import db
+
+    app, _ = app_and_data
+    client = _signed_in(app)
+    session = db.session()
+    try:
+        _set_threshold(session, 0.0)
+        wide = client.get("/analytics").text
+        inventory_before = client.get("/inventory").text
+
+        narrow = client.get("/analytics?min=1000").text
+        inventory_after = client.get("/inventory").text
+
+        # Everything held is still stated on the analytics screen itself, so
+        # the excluded cards are never merely absent.
+        assert "Cards on hand" in narrow
+        assert "Under $1,000.00" in narrow
+        # ...and the screen that lists cards is byte-identical.
+        assert inventory_before == inventory_after
+        assert wide != narrow, "the threshold should have changed something"
+    finally:
+        _set_threshold(session, 0.0)
+        session.close()
+
+
+def test_the_threshold_never_touches_what_a_sale_realised(app_and_data):
+    """A ten-cent common that sold for ten cents earned a real ten cents.
+
+    Revenue is history and the threshold is a judgement about a forecast, so
+    the realised panel is computed from `totals` — every row the account owns
+    — and reads the same at any threshold."""
+    import datetime as dt
+
+    from sqlalchemy import select as sa_select
+
+    from foilstack import db
+
+    app, _ = app_and_data
+    client = _signed_in(app)
+    session = db.session()
+    try:
+        _set_threshold(session, 0.0)
+
+        # A card worth nine cents that sold for nine cents. The threshold
+        # below excludes it from every value figure; the nine cents are still
+        # nine cents that arrived.
+        owner = _owner_row(session)
+        card = db.Card(
+            source="t", source_id="t:dime", name="A Dime Common", game="mtg", market=0.09
+        )
+        session.add(card)
+        session.commit()
+        session.add(
+            db.InventoryItem(
+                user_id=owner.id,
+                card_id=card.id,
+                condition="NM",
+                finish="nonfoil",
+                status="sold",
+                sold_price=0.09,
+                sold_at=dt.datetime.now(dt.UTC),
+            )
+        )
+        session.commit()
+
+        def realised(body):
+            # The Realised heading to the foot of the screen, stopping before
+            # the status bar — that line carries the same value figures as the
+            # tiles and follows the threshold with them.
+            return body[body.index(">Realised<") : body.index('class="statusbar"')]
+
+        wide = client.get("/analytics").text
+        narrow = client.get("/analytics?min=1000").text
+        assert "Gross realised" in wide, "the sale should have reached the panel"
+        assert realised(wide) == realised(narrow)
+        # And the card really was excluded from the value side, or the
+        # assertion above holds for a threshold that did nothing.
+        assert "Under $1,000.00" in narrow
+    finally:
+        session.execute(
+            db.InventoryItem.__table__.delete().where(
+                db.InventoryItem.card_id.in_(
+                    sa_select(db.Card.id).where(db.Card.source_id == "t:dime").scalar_subquery()
+                )
+            )
+        )
+        session.execute(db.Card.__table__.delete().where(db.Card.source_id == "t:dime"))
+        session.commit()
+        _set_threshold(session, 0.0)
+        session.close()
+
+
+def test_saving_a_threshold_is_scoped_to_the_account(app_and_data, stranger):
+    """One seller's view of what counts must not become another's."""
+    from foilstack import db
+
+    app, _ = app_and_data
+    owner_client = _signed_in(app)
+    saved = owner_client.post("/api/account/value-threshold", data={"threshold": "2.50"})
+    assert saved.json()["threshold"] == 2.50
+    assert (
+        stranger.post("/api/account/value-threshold", data={"threshold": "0"}).json()["threshold"]
+        == 0.0
+    )
+
+    session = db.session()
+    try:
+        assert _owner_row(session).value_threshold == 2.50
+        session.expire_all()
+        from sqlalchemy import select as sa_select
+
+        other = session.scalars(
+            sa_select(db.User).where(db.User.email == "stranger@example.com")
+        ).one()
+        assert other.value_threshold == 0.0
+    finally:
+        _set_threshold(session, 0.0)
+        session.close()
+
+
+def test_saving_a_threshold_needs_an_account(app_and_data):
+    """`api_owner`, so a stranger gets 401 rather than a login redirect a
+    fetch() would report as success."""
+    from fastapi.testclient import TestClient
+
+    app, _ = app_and_data
+    assert (
+        TestClient(app).post("/api/account/value-threshold", data={"threshold": "1"}).status_code
+        == 401
+    )
+
+
+def test_an_unusable_threshold_is_refused_rather_than_defaulted(app_and_data):
+    """Silently storing zero in place of what was typed would report a figure
+    the seller did not ask for as the one they set."""
+    from foilstack import db
+
+    app, _ = app_and_data
+    client = _signed_in(app)
+    session = db.session()
+    try:
+        _set_threshold(session, 1.25)
+        for bad in ("", "abc", "-1", "nan", "1e9"):
+            assert (
+                client.post("/api/account/value-threshold", data={"threshold": bad}).status_code
+                == 400
+            ), bad
+        session.expire_all()
+        assert _owner_row(session).value_threshold == 1.25
+    finally:
+        _set_threshold(session, 0.0)
+        session.close()
+
+
+def test_a_mangled_min_reports_the_sellers_own_threshold(app_and_data):
+    """A stale bookmark should report the position the way they set it up,
+    not silently widen it back to counting everything."""
+    from foilstack import db
+
+    app, _ = app_and_data
+    client = _signed_in(app)
+    session = db.session()
+    try:
+        _set_threshold(session, 3.00)
+        for bad in ("abc", "-5", "99999"):
+            body = client.get(f"/analytics?min={bad}").text
+            assert "your saved threshold" in body, bad
+            assert 'value="3.00"' in body, bad
+    finally:
+        _set_threshold(session, 0.0)
+        session.close()
