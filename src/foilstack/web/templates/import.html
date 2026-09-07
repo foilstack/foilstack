@@ -1,4 +1,19 @@
 {% extends "base.html" %}
+{% macro queue_head(j) -%}
+{# One upload's heading, whether it is the open section or a shut one. Written
+   once because the two have to be the same line: a heading that changed shape
+   on opening would make the batch you are working look like a different kind
+   of thing from the batches you are not. #}
+<span class="qgroup-file" title="{{ j.filename }}">{{ j.filename }}</span>
+<span class="qgroup-meta">
+  {# Two uploads can carry the same name — "3 images" is what any loose batch
+     is called — so the heading needs the time to tell them apart. #}
+  <time data-local datetime="{{ j.at.isoformat() }}">{{ j.at.strftime('%b %d %H:%M') }}</time>
+  · {{ j.cards }} {{ 'card' if j.cards == 1 else 'cards' }}
+  {%- if j.cohort %} · {{ j.cohort }}{% endif %}
+</span>
+{%- endmacro %}
+
 {% macro chosen_icon() -%}
 <span class="qchose" title="You picked this card">
   <svg viewBox="0 0 16 16" role="img" aria-label="picked by you">
@@ -7,7 +22,7 @@
 </span>
 {%- endmacro %}
 {% block title %}Import scans · foilstack{% endblock %}
-{% block status %}{% if active %}import running · {{ active.processed }}/{{ active.total }}{% elif held_back.cards %}{{ waiting_total }} scans to confirm · {{ counts.all }} on screen{% elif counts.all %}{{ counts.all }} scans to confirm · {{ counts.nomatch }} with no match{% else %}queue clear · drop some scans to begin{% endif %}{% endblock %}
+{% block status %}{% if active %}import running · {{ active.processed }}/{{ active.total }}{% elif waiting_total > counts.all %}{{ waiting_total }} scans to confirm · {{ counts.all }} in this batch{% elif counts.all %}{{ counts.all }} scans to confirm · {{ counts.nomatch }} with no match{% else %}queue clear · drop some scans to begin{% endif %}{% endblock %}
 
 {% block screen %}
 <div class="split">
@@ -202,10 +217,14 @@
   <div class="pane-queue">
     <div class="bar">
       <h1>Matches</h1>
+      {# The batch stays open across a filter, so every one of these carries
+         it. Without that, narrowing to "No match" would also swap which
+         upload the screen was about. #}
+      {% set in_batch = ('&job=' ~ open_job) if open_job else '' %}
       <div class="chip-set">
-        <a class="chip chip-filter {{ 'on' if filter not in ('matched', 'nomatch') }}" href="/app">All {{ counts.all }}</a>
-        <a class="chip chip-filter {{ 'on' if filter == 'matched' }}" href="/app?filter=matched">Matched {{ counts.matched }}</a>
-        <a class="chip chip-filter {{ 'on' if filter == 'nomatch' }}" href="/app?filter=nomatch">No match {{ counts.nomatch }}</a>
+        <a class="chip chip-filter {{ 'on' if filter not in ('matched', 'nomatch') }}" href="/app?filter=all{{ in_batch }}">All {{ counts.all }}</a>
+        <a class="chip chip-filter {{ 'on' if filter == 'matched' }}" href="/app?filter=matched{{ in_batch }}">Matched {{ counts.matched }}</a>
+        <a class="chip chip-filter {{ 'on' if filter == 'nomatch' }}" href="/app?filter=nomatch{{ in_batch }}">No match {{ counts.nomatch }}</a>
       </div>
       <div class="spacer"></div>
       <span class="bar-note wide-only">{% if queue_value %}{{ queue_value|money }} market value{% endif %}</span>
@@ -213,53 +232,31 @@
       <button class="btn btn-primary" type="button" id="commit">Commit {{ counts.all }} to inventory</button>
     </div>
 
-    {% if held_back.cards and not held_back.inline %}
-    {# Only the newest upload fitted, so there is no "batches above" to clear
-       and the note has nowhere to stand inside the list. #}
-    <div class="queue-more">
-      {{ held_back.cards }} more {{ 'card' if held_back.cards == 1 else 'cards' }}
-      in {{ held_back.uploads }} earlier
-      {{ 'upload' if held_back.uploads == 1 else 'uploads' }}
-      · shown once this batch is cleared
-    </div>
-    {% endif %}
-
     <template id="tpl-chosen">{{ chosen_icon() }}</template>
     <div class="screen-scroll" id="queue">
-      {% for g in groups %}
-      {# Where the uploads that did not fit would have been. Sections run in
-         upload order and the newest is always rendered, so what is held back
-         is the middle of the list and this is the place on the screen it
-         belongs — not a footnote at the bottom, which reads as a note about
-         the batch above it rather than about the gap it is standing in. #}
-      {% if held_back.cards and held_back.inline and loop.last %}
-      <div class="queue-more">
-        {{ held_back.cards }} more {{ 'card' if held_back.cards == 1 else 'cards' }}
-        in {{ held_back.uploads }} {{ 'upload' if held_back.uploads == 1 else 'uploads' }}
-        · shown once the batches above are cleared
-      </div>
-      {% endif %}
-      {# The upload these cards arrived in. Sections run oldest first and the
-         cards inside them in the order they were photographed, so the backlog
-         drains from the front and the queue reads the way the pile in the
-         seller's hand does.
+      {% for j in queue_jobs %}
+      {# One heading per upload that still has something waiting, oldest
+         first, each stating its own size — from a count over the whole
+         queue, not from the rows below it, so a batch nobody has opened is
+         described as accurately as the one that is open.
 
-         A `<details>`, so collapsing costs no script and arrives with the
-         keyboard and the accessibility tree already working — the same idiom
-         the match-settings panel above uses. Open by default: a queue that
-         hid its own cards on load would be a screen with nothing on it. #}
-      <details class="qgroup" data-job="{{ g.job_id }}"
-               {{- ' open' if g.job_id not in folded }}>
+         Exactly one of them holds cards. Opening another is a link and
+         therefore a page load, which is the whole point: the seller works one
+         batch at a time and the screen builds one batch at a time, so a
+         backlog of nine uploads costs the same page as one. The queue used to
+         render as many as fitted a four-hundred-row budget and then apologise
+         at the bottom for the rest, which is a screen that both hid work and
+         had to explain itself. #}
+      {% if j.job_id == open_job %}
+      {# A `<details>`, so shutting the open batch costs no script and arrives
+         with the keyboard and the accessibility tree already working — the
+         same idiom the match-settings panel above uses. Shutting it loads
+         nothing and throws nothing away; only opening another does. #}
+      <details class="qgroup" data-job="{{ j.job_id }}" open>
         <summary class="qgroup-head">
-          <span class="qgroup-file" title="{{ g.filename }}">{{ g.filename }}</span>
-          <span class="qgroup-meta">
-            <time data-local datetime="{{ g.at.isoformat() }}">{{ g.at.strftime('%b %d %H:%M') }}</time>
-            · {{ g.rows|length }} {{ 'card' if g.rows|length == 1 else 'cards' }}
-            {%- if g.value %} · {{ g.value|money }}{% endif %}
-            {%- if g.cohort %} · {{ g.cohort }}{% endif %}
-          </span>
+          {{ queue_head(j) }}
         </summary>
-      {% for r in g.rows %}
+      {% for r in rows %}
       <div class="qrow {{ 'review' if r.needs_review }}" id="scan-{{ r.scan_id }}"
            data-scan="{{ r.scan_id }}" data-card="{{ r.card_id or '' }}"
            data-cond="{{ r.condition }}" data-finish="{{ r.finish }}"
@@ -342,14 +339,38 @@
         <div class="qfix" hidden></div>
       </div>
       {% endfor %}
-      </details>
-      {% endfor %}
-      {% if not groups %}
+      {% if not rows %}
+      {# The batch is open and its rows are all filtered out. Said inside the
+         section rather than in place of the list, because the other uploads
+         are still on the screen and a message where they are would read as a
+         claim about them. #}
       <div class="queue-empty">
-        {% if filter == 'matched' %}nothing matched is waiting
-        {% elif filter == 'nomatch' %}everything waiting has a match
-        {% else %}queue is clear · drop some scans to start{% endif %}
+        {% if filter == 'matched' %}nothing in this batch matched
+        {% else %}everything in this batch has a match{% endif %}
       </div>
+      {% endif %}
+      </details>
+      {% else %}
+      {# Shut. A link rather than a closed `<details>`, because opening it is
+         a page load — the cards do not exist yet. It works with no
+         JavaScript, and the batch is in the URL, so the screen can be
+         reloaded or bookmarked onto the batch being worked.
+
+         No `#job-N` fragment, though it is the obvious thing to add. Landing
+         on the heading puts it at the top of the viewport, which scrolls the
+         bar above the list — the filter chips and the Commit button — off the
+         screen, and arriving at a batch with its own controls missing is
+         worse than arriving above eleven lines of headings. #}
+      <div class="qgroup" data-job="{{ j.job_id }}">
+        <a class="qgroup-head"
+           href="/app?job={{ j.job_id }}{% if filter in ('matched', 'nomatch') %}&filter={{ filter }}{% endif %}">
+          {{ queue_head(j) }}
+        </a>
+      </div>
+      {% endif %}
+      {% endfor %}
+      {% if not queue_jobs %}
+      <div class="queue-empty">queue is clear · drop some scans to start</div>
       {% endif %}
     </div>
   </div>
@@ -582,49 +603,13 @@ async function poll(id) {
   // a full bar under a moving label is the shape of something that has hung.
   setBar(job.status === 'grouping' ? null : job.total ? Math.round(100 * job.processed / job.total) : null);
   $('#stage').textContent = STAGES[job.status] || job.status;
-  if (job.status === 'done') { location.href = '/app?filter=review'; return; }
+  // Named, rather than left to the default. The screen opens one batch and
+  // remembers which, so an import landing back here has to say that the batch
+  // to open is the one that just arrived.
+  if (job.status === 'done') { location.href = '/app?filter=review&job=' + id; return; }
   setTimeout(() => poll(id), 700);
 }
 {% if active %}poll({{ active.id }});{% endif %}
-
-/* ---------- folded sections ---------- */
-
-/* A cookie, not localStorage. The server has already rendered each section
-   folded or not — see `_folded_jobs` — so all this does is record what the
-   seller changes. localStorage was the first attempt and could only be read
-   after the page had parsed, which meant the queue painted expanded and then
-   snapped shut: 56ms of it here, 123ms with the CPU throttled.
-
-   Folded ids are what is stored, not open ones, so an empty cookie means
-   everything expanded — the right default both for a browser that has never
-   seen this screen and for an import that did not exist when the fold was
-   made. */
-const FOLD_COOKIE = 'foilstack_folded_{{ user.id }}';
-const FOLD_MAX = {{ folded_max }};
-
-function readFolded() {
-  const hit = document.cookie.split('; ').find(c => c.startsWith(FOLD_COOKIE + '='));
-  // Digits only. Whatever else is in there was not put there by this page,
-  // and the server discards it on the same rule.
-  return hit ? hit.slice(FOLD_COOKIE.length + 1).split(',').filter(v => /^\d+$/.test(v)) : [];
-}
-
-$$('.qgroup').forEach(group => {
-  const job = group.dataset.job;
-  group.addEventListener('toggle', () => {
-    // Re-read on every toggle rather than holding one list: two tabs on this
-    // screen would otherwise each write back a snapshot taken before the
-    // other's change, and the last to fold would erase the first.
-    const ids = readFolded().filter(id => id !== job);
-    if (!group.open) ids.push(job);
-    // `path=/app` so it rides along with this screen and its filter links and
-    // nothing else — at `/` it would be sent with every thumbnail too. Trimmed
-    // from the same end as the server reads, so the two agree about which
-    // folds survive.
-    document.cookie = FOLD_COOKIE + '=' + ids.slice(-FOLD_MAX).join(',') +
-      '; path=/app; max-age=31536000; SameSite=Lax';
-  });
-});
 
 /* ---------- queue rows ---------- */
 $$('.qrow').forEach(row => {

@@ -1,76 +1,63 @@
-"""Which uploads the review queue renders when more is waiting than fits.
+"""Which upload the review queue opens, when several are waiting.
 
-The rule is that a section is whole. The bug these are against was the other
-kind: a row cap taken from the newest end while the screen presented the
-oldest end first, so the queue served the front of the backlog twenty cards at
-a time and every count on the page — the section heading included — was
-computed from the survivors and said nothing about the rest.
+The screen lists every upload that has something waiting and renders the cards
+of exactly one of them, so this is the only decision about what gets built.
+The bug behind the rule it replaced was the other kind: a four-hundred-row cap
+taken from the newest end while the screen presented the oldest end first, so
+the queue served the front of the backlog twenty cards at a time and every
+count on the page — the section heading included — was computed from the
+survivors and said nothing about the rest. Nothing is held back now; a batch
+is either open or shut, and a shut one still states its size.
 """
 
 from __future__ import annotations
 
-from foilstack.web.routes.scans import QUEUE_ROWS, _queue_jobs
+from foilstack.web.routes.scans import _open_job
 
 
-def test_nothing_waiting_renders_nothing():
-    assert _queue_jobs([]) == []
+def _waiting(*job_ids: int) -> list[dict]:
+    return [{"job_id": job_id, "cards": 5} for job_id in job_ids]
 
 
-def test_everything_fits():
-    waiting = [(1, 50), (2, 50), (3, 50)]
-    assert _queue_jobs(waiting) == [1, 2, 3]
+def test_nothing_waiting_opens_nothing():
+    assert _open_job(None, None, []) is None
 
 
-def test_the_oldest_uploads_are_kept_and_kept_whole():
-    """The real shape of the bug: nine batches, the oldest one truncated.
+def test_the_newest_upload_opens_by_default():
+    """An import returns the seller to this page. A page whose cards are all
+    some older batch's reads as an import that failed — and the older ones are
+    a click away on the same screen, which is what makes that safe."""
+    assert _open_job(None, None, _waiting(1, 2, 3)) == 3
 
-    380 rows in the eight newest and 50 in the oldest is 430 against a 400
-    budget. The old rule showed twenty cards of that oldest batch under a
-    heading reading `20 cards`; the batch is now either all there or held
-    back with a number beside it.
+
+def test_a_batch_asked_for_by_name_wins():
+    assert _open_job(1, None, _waiting(1, 2, 3)) == 1
+
+
+def test_the_batch_this_browser_had_open_comes_back():
+    assert _open_job(None, 2, _waiting(1, 2, 3)) == 2
+
+
+def test_asking_outranks_remembering():
+    assert _open_job(1, 2, _waiting(1, 2, 3)) == 1
+
+
+def test_clearing_a_batch_advances_to_the_next_one_down_the_queue():
+    """What a cleared batch looks like from here: the last row is confirmed,
+    the page reloads, and the id in hand names an upload that is finished.
+
+    Falling back to the newest would throw a seller working through a backlog
+    to the far end of it on every batch they finished.
     """
-    waiting = [
-        (55, 50),
-        (56, 49),
-        (57, 48),
-        (58, 45),
-        (59, 46),
-        (60, 49),
-        (61, 48),
-        (62, 50),
-        (63, 45),
-    ]
-    shown = _queue_jobs(waiting)
-    assert 55 in shown, "the front of the backlog is what the screen sends you to work"
-    for job_id in shown:
-        assert job_id in dict(waiting)
-    rendered = sum(n for job_id, n in waiting if job_id in shown)
-    assert rendered <= QUEUE_ROWS
+    assert _open_job(2, None, _waiting(1, 3, 4)) == 3
 
 
-def test_the_newest_upload_is_always_rendered():
-    """An import returns the seller to this page. A page with no sign of it
-    reads as an import that failed."""
-    waiting = [(1, QUEUE_ROWS), (2, 30)]
-    # The budget is already spent by the older batch, so it is the one held
-    # back — the newest is in regardless of what that costs.
-    assert _queue_jobs(waiting) == [2]
+def test_clearing_the_newest_batch_falls_back_to_the_newest_left():
+    assert _open_job(9, None, _waiting(1, 2)) == 2
 
 
-def test_one_upload_larger_than_the_budget_is_still_whole():
-    waiting = [(1, 40), (2, QUEUE_ROWS * 2)]
-    assert _queue_jobs(waiting) == [2], "the budget yields to the whole section, not the other way"
-
-
-def test_a_batch_that_does_not_fit_stops_the_list_rather_than_being_skipped():
-    """Stepping over a big batch to reach a smaller one behind it would put
-    the screen out of the order the seller is working in."""
-    waiting = [(1, 10), (2, QUEUE_ROWS), (3, 10), (4, 10)]
-    assert _queue_jobs(waiting) == [1, 4]
-
-
-def test_held_back_uploads_are_the_middle():
-    waiting = [(1, 300), (2, 300), (3, 300), (4, 20)]
-    shown = _queue_jobs(waiting)
-    assert shown == [1, 4]
-    assert [j for j, _ in waiting if j not in shown] == [2, 3]
+def test_an_id_from_another_account_cannot_open_anything():
+    """The ids are already scoped to the account, so one that names nothing
+    waiting is treated as a batch that has been cleared — never as a reason to
+    render rows the query did not return."""
+    assert _open_job(999, None, _waiting(1, 2)) == 2
