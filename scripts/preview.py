@@ -38,16 +38,23 @@ PASSWORD = "preview-only-password"
 PENDING = 7
 
 # How many of those waiting came in on the second, newer upload. Split so the
-# queue shows more than one section — with the rest in the older one, because a
+# queue shows more than one upload — with the rest in the older one, because a
 # batch part-way through being reviewed is the ordinary state.
 #
-# The dearest cards are deliberately in the *older* batch. The queue puts the
-# earliest upload first, and the landing hero and the README animation both
-# shoot the top of that list: leave the good cards in the recent batch and both
-# open on three twenty-cent commons, which is a screenshot that argues nothing.
-# Same reasoning as seeding runners-up — the fixture has to show what the
-# product does.
-RECENT = 3
+# Most of them, and the dearest of them, because the newest upload is the one
+# the queue opens on: the screen renders one batch of cards and lists the rest
+# as headings. The landing hero and the README animation both shoot the top of
+# that batch, so leaving the good cards in the older upload opens both on a
+# heading and two twenty-cent commons, which is a screenshot that argues
+# nothing. This number is also what those two have to scroll through, and a
+# scroll with nothing under it silently moves no pixels and vanishes from the
+# GIF when identical frames collapse.
+#
+# It used to be the other way round for the same reason inverted — the queue
+# rendered every upload at once and put the *oldest* first, so the good cards
+# belonged at that end. Same rule, moved: the dearest cards go wherever the
+# screen opens.
+RECENT = 5
 
 
 def _interrupt(signum: int, frame: object) -> None:
@@ -515,10 +522,10 @@ def _seed(source_url: str, preview_url: str, data_dir: Path) -> None:
     )
     session.commit()
 
-    # Two uploads, not one. The queue groups by the archive a scan arrived in,
-    # and a preview seeded from a single job renders one section heading and
-    # proves nothing about the screen — the same way seeding one candidate per
-    # scan used to hide the runner-up row.
+    # Two uploads, not one. The queue is one heading per upload with exactly
+    # one of them open, and a preview seeded from a single job renders that as
+    # an ordinary list of cards — it proves nothing about the screen, the same
+    # way seeding one candidate per scan used to hide the runner-up row.
     older = db.ImportJob(
         user_id=user.id,
         filename="binder-a.zip",
@@ -542,10 +549,12 @@ def _seed(source_url: str, preview_url: str, data_dir: Path) -> None:
     # the rest committed so inventory does — including a duplicate and a sale.
     for i, card in enumerate(cards):
         scan = db.Scan(
-            # The tail of the waiting scans is the recent drop; everything
-            # else — the rest of the queue and all the committed cards —
-            # belongs to the older archive that is still being worked through.
-            job_id=newer.id if PENDING - RECENT <= i < PENDING else older.id,
+            # The head of the waiting scans is the recent drop, because they
+            # are seeded dearest first and the recent drop is what the queue
+            # opens on. Everything else — the tail of the queue and all the
+            # committed cards — belongs to the older archive that is still
+            # being worked through.
+            job_id=newer.id if i < RECENT else older.id,
             user_id=user.id,
             filename=card["filename"],
             stored_path=card["stored_path"],

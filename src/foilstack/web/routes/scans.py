@@ -92,85 +92,104 @@ def _cohort_label(job: db.ImportJob) -> str:
 # of the bug this path had.
 WAITING_STATUSES = ("pending", "unmatched", "error")
 
-# How many rows the queue aims to render before it starts leaving uploads for
-# later. Not a cut: sections are whole, so the upload that crosses this line
-# is either rendered entirely or held back entirely. A heading reading
-# "20 cards" over a batch of fifty is worse than a batch that is honestly
-# absent, and that heading is exactly what this number used to produce.
-QUEUE_ROWS = 400
 
-
-def _waiting_by_job(session, user_id: int) -> list[tuple[int, int]]:
+def _waiting_jobs(session, user_id: int) -> list[dict]:
     """Every upload with something still to decide, oldest first, with its size.
 
-    One aggregate rather than a read of the rows it counts. This is what the
-    topbar states and what decides which uploads are rendered, and both have
-    to be true about the whole queue rather than about the part of it that
-    fitted on the screen.
+    One aggregate over the scans, joined to the job's own columns, rather than
+    a read of the rows it counts. The screen states the whole queue — a
+    heading for every upload, each naming its real size — while rendering the
+    cards of exactly one of them, so these counts have to be true about
+    uploads whose rows were never built. That is what removed the cap: there
+    is nothing held back to describe in a footnote, because every batch is on
+    the page and only its cards are waiting to be asked for.
+
+    Oldest first, so the queue is worked in the order the batches arrived and
+    the backlog drains from the front. Newest-first read well on the batch you
+    had just dropped and badly on every one behind it: the oldest cards sank
+    further with every import and were the ones a part-way review never
+    reached.
     """
     return [
-        (job_id, n)
-        for job_id, n in session.execute(
-            select(db.Scan.job_id, func.count())
+        {
+            "job_id": job.id,
+            "filename": job.filename,
+            "at": job.created_at,
+            # What the batch was held to, on the heading of the batch it was
+            # held to. A rule applied to every row in a section is a property
+            # of the section, and repeating it on four hundred rows would say
+            # it four hundred times and explain it none.
+            "cohort": _cohort_label(job) if job.cohort_game else "",
+            "cards": n,
+        }
+        for job, n in session.execute(
+            select(db.ImportJob, func.count(db.Scan.id))
+            .join(db.Scan, db.Scan.job_id == db.ImportJob.id)
             .where(
                 db.Scan.user_id == user_id,
                 db.Scan.status.in_(WAITING_STATUSES),
             )
-            .group_by(db.Scan.job_id)
-            .order_by(db.Scan.job_id)
+            .group_by(db.ImportJob.id)
+            .order_by(db.ImportJob.id)
         )
     ]
 
 
-def _queue_jobs(waiting: list[tuple[int, int]]) -> list[int]:
-    """Which uploads the queue renders, given everything that is waiting.
+# Which upload this browser had open. Named per account below, because a
+# cookie belongs to the origin and a job id is a row number: one browser
+# signed into two accounts on a multi-user install would otherwise open
+# account A's id against account B's queue.
+#
+# A cookie rather than localStorage, for the reason the folds it replaced used
+# one — the server decides which section is open and renders its cards, so the
+# answer has to arrive with the request. Read after the page has parsed it
+# would be a second page load, not a repaint.
+OPEN_COOKIE = "foilstack_open"
 
-    Whole uploads, oldest first. Both halves of that are the fix for one bug:
-    the queue used to take the newest `QUEUE_ROWS` scans by id while the
-    screen presented them oldest-upload-first, so the cap fell on the front of
-    the backlog — the exact section the seller was being told to work
-    through. Nine batches waiting and a 400-row cap showed twenty cards of the
-    fifty in the oldest one, and every count on the page was computed from the
-    survivors, so the section heading said "20 cards", the tile said 400, and
-    nothing anywhere admitted to the thirty that were missing. Confirming the
-    twenty freed twenty slots and the same section reappeared with the next
-    twenty, which reads as a screen loading a page at a time and is really a
-    screen hiding work.
 
-    A section is therefore either on the page complete or not on it at all,
-    which is what lets its heading state its own size, and what is left out is
-    named rather than dropped.
+def _open_job(asked: int | None, remembered: int | None, waiting: list[dict]) -> int | None:
+    """Which upload has its cards on the page. Exactly one, or none at all.
 
-    The most recent upload is always in, whatever the budget: an import
-    returns the seller here, and answering a finished import with no sign of
-    it reads as an import that failed. That is also the one case that can
-    exceed the budget rather than respect it — a single batch bigger than
-    `QUEUE_ROWS` is rendered whole, because the alternative is the partial
-    section again.
+    The queue renders one batch and lists the rest as headings, so this is the
+    only decision about what gets built — and the rest of the screen is
+    honest about the whole queue whatever it answers, because the headings
+    come from a count rather than from the rows.
+
+    A batch asked for by name wins, then the one this browser had open, then
+    the newest. Newest last rather than oldest, though the backlog is worked
+    front to back: an import returns the seller to this page, and answering a
+    finished import with somebody else's batch open reads as an import that
+    failed. The older batches are on the screen the whole time, one click
+    away, which is what makes that safe — the front of the backlog is never
+    hidden, only shut.
+
+    An id that names nothing waiting is what clearing a batch looks like: the
+    last row goes, the page reloads, and the id in hand is an upload that is
+    finished. That advances to the next one down the queue rather than
+    falling back to the newest, so a seller working through a backlog stays
+    where they were working.
     """
-    if not waiting:
-        return []
-    newest, size = waiting[-1]
-    chosen = [newest]
-    budget = QUEUE_ROWS - size
-    # Stop at the first upload that does not fit rather than stepping over it
-    # to reach a smaller one behind. The queue is worked front to back, and a
-    # screen that silently skips a batch is one the seller has to keep their
-    # own list against.
-    for job_id, n in waiting[:-1]:
-        if n > budget:
-            break
-        chosen.append(job_id)
-        budget -= n
-    return sorted(chosen)
+    ids = [job["job_id"] for job in waiting]
+    if not ids:
+        return None
+    for wanted in (asked, remembered):
+        if wanted is None:
+            continue
+        if wanted in ids:
+            return wanted
+        following = next((job_id for job_id in ids if job_id > wanted), None)
+        if following is not None:
+            return following
+    return ids[-1]
 
 
-def _queue_rows(session, user_id: int, job_ids: list[int]) -> list[dict]:
-    """The match queue: scans still waiting on a decision, for the given uploads.
+def _queue_rows(session, user_id: int, job_id: int | None) -> list[dict]:
+    """The match queue: scans still waiting on a decision, for one upload.
 
-    Takes the uploads to read rather than choosing them, so the list that
-    decides what is on screen and the list that counts what is not are one
-    decision made in `_queue_jobs`.
+    One upload, because the screen shows one at a time — the headings of the
+    others are built from `_waiting_jobs`, which counts rather than reads. It
+    takes the upload rather than choosing it, so which batch is open is one
+    decision, made in `_open_job`.
 
     Confirmed scans are deliberately absent. The import screen is where cards
     arrive and where you decide about them; once decided they are inventory,
@@ -183,7 +202,7 @@ def _queue_rows(session, user_id: int, job_ids: list[int]) -> list[dict]:
     which is a better place for it anyway — it is visible for the life of the
     card rather than only until the next import.
     """
-    if not job_ids:
+    if job_id is None:
         return []
     scans = session.scalars(
         select(db.Scan)
@@ -191,11 +210,11 @@ def _queue_rows(session, user_id: int, job_ids: list[int]) -> list[dict]:
         # asking for them one at a time is four hundred queries.
         .options(selectinload(db.Scan.job))
         .where(
-            # Scoped by the account as well as by the jobs, though the job ids
+            # Scoped by the account as well as by the job, though the job id
             # came from a query that was already scoped. One query shape, no
             # branch that could forget.
             db.Scan.user_id == user_id,
-            db.Scan.job_id.in_(job_ids),
+            db.Scan.job_id == job_id,
             db.Scan.status.in_(WAITING_STATUSES),
         )
         # The order the scans arrived in, which is the order they were in the
@@ -211,8 +230,7 @@ def _queue_rows(session, user_id: int, job_ids: list[int]) -> list[dict]:
         # the pile. Value ordering optimised the part of the job that gets
         # abandoned; matching the stack means less of it gets abandoned.
         #
-        # `_group_rows` splits the result without re-sorting it, so this is
-        # also the order inside each upload's section.
+        # One upload's scans, so this is the order inside its section.
         .order_by(db.Scan.id)
     ).all()
 
@@ -278,18 +296,6 @@ def _queue_rows(session, user_id: int, job_ids: list[int]) -> list[dict]:
             {
                 "scan_id": scan.id,
                 "filename": scan.filename,
-                # The upload this scan arrived in, which is what the queue
-                # groups by. Keyed by the job rather than by its name: the same
-                # archive sent twice is two uploads, and folding them together
-                # would drop cards from an older batch in among the ones that
-                # just landed.
-                "job_id": scan.job_id,
-                "job_filename": scan.job.filename,
-                # Two uploads can carry the same name — "3 images" is what any
-                # loose batch is called — so the section heading needs the
-                # time to tell them apart.
-                "job_at": scan.job.created_at,
-                "job_cohort": _cohort_label(scan.job) if scan.job.cohort_game else "",
                 "needs_review": needs_review,
                 "chosen": chosen is not None,
                 # Not folded into `chosen`. The two look alike on the row — both
@@ -384,80 +390,6 @@ def _queue_rows(session, user_id: int, job_ids: list[int]) -> list[dict]:
     return rows
 
 
-def _group_rows(rows: list[dict]) -> list[dict]:
-    """The queue split into one section per upload, earliest upload first.
-
-    Grouping is a partition of the list it is given, not a second sort: the
-    rows arrive dearest-first from `_queue_rows` and keep that order inside
-    each section. Sorting here instead would mean the queue's ordering rule
-    lived in two places, and the two would drift.
-
-    Sections run oldest first, so the queue is worked in the order the batches
-    arrived and the backlog drains from the front. Newest-first read well on
-    the batch you had just dropped and badly on every one behind it: the
-    oldest cards sank further with each import and were the ones a part-way
-    review never reached.
-
-    That does put the archive you just uploaded at the bottom, which is what
-    the collapsible sections are for — fold the batches you are done with and
-    the new one comes up to meet you.
-    """
-    groups: dict[int, dict] = {}
-    for row in rows:
-        group = groups.get(row["job_id"])
-        if group is None:
-            group = groups[row["job_id"]] = {
-                "job_id": row["job_id"],
-                "filename": row["job_filename"],
-                "at": row["job_at"],
-                # What the batch was held to, on the heading of the batch it
-                # was held to. A rule applied to every row in a section is a
-                # property of the section, and repeating it on four hundred
-                # rows would say it four hundred times and explain it none.
-                "cohort": row["job_cohort"],
-                "rows": [],
-                "value": 0.0,
-            }
-        group["rows"].append(row)
-        # The same figure the bar totals for the whole queue, per upload. Left
-        # as market rather than the finish-aware price the rows show, so the
-        # two numbers on the screen are the same measure.
-        group["value"] += row["market"]
-    return sorted(groups.values(), key=lambda g: g["job_id"])
-
-
-# Named per account below, because a cookie belongs to the origin: one browser
-# can sign into several accounts on a multi-user install, and a job id is a row
-# number, so an unkeyed cookie would fold account B's queue to match account A's.
-FOLDED_COOKIE = "foilstack_folded"
-
-# A seller who folds every batch for a year would otherwise grow this without
-# limit, and an oversized cookie is not a slow request but a rejected one. The
-# browser trims to the same number from the same end.
-FOLDED_MAX = 200
-
-
-def _folded_jobs(request: Request, user_id: int) -> set[int]:
-    """Which upload sections this browser has folded shut.
-
-    A cookie rather than localStorage, which is where this started and could
-    not work: localStorage is only readable once the page has parsed, so the
-    queue rendered expanded and then snapped shut when the script caught up.
-    Measured at 56ms on this machine and 123ms with the CPU throttled six
-    times — not a subliminal frame but a visible jolt, on every single load,
-    on the one screen where folding is part of the workflow.
-
-    Sent with the request, the answer is known at render time and the markup is
-    right the first time, so there is nothing to correct and nothing to see.
-
-    Anything unparseable is ignored rather than raised on. This value is edited
-    by a browser and survives in one for a year; a stale or hand-mangled cookie
-    has to cost a fold, not the page.
-    """
-    raw = request.cookies.get(f"{FOLDED_COOKIE}_{user_id}", "")
-    return {int(part) for part in raw.split(",")[:FOLDED_MAX] if part.isdigit()}
-
-
 # The panel's answers are the same for one seller across batch after batch, so
 # they are remembered per account — and in a cookie for the same reason the
 # folds are: sent with the request, the chips paint right the first time rather
@@ -512,6 +444,7 @@ def _match_prefs(
 def page_import(
     request: Request,
     filter: str = "all",
+    job: int | None = None,
     session=Depends(db_session),
     user: db.User = Depends(owner),
     settings: Settings = Depends(settings_dep),
@@ -531,15 +464,16 @@ def page_import(
     # threshold on offer rather than one already running.
     thresholds = sorted({0.88, 0.92, 0.96, round(settings.auto_accept, 2)})
 
-    # What is waiting, then what of it fits, then the rows themselves. The
-    # counts on the screen come from the first of those and the rows from the
-    # last, so a queue too long to render says so instead of quietly becoming
-    # its own visible part.
-    waiting = _waiting_by_job(session, user.id)
-    shown = _queue_jobs(waiting)
-    held_back = [(job_id, n) for job_id, n in waiting if job_id not in set(shown)]
+    # Every upload that has anything waiting, then which one of them is open,
+    # then that one's rows. The headings and the topbar come from the first of
+    # those and are about the whole queue; the chips and the two buttons come
+    # from the last and are about one batch. Nothing in between, which is what
+    # the old row cap was and what it kept getting wrong.
+    waiting = _waiting_jobs(session, user.id)
+    remembered = request.cookies.get(f"{OPEN_COOKIE}_{user.id}", "")
+    open_job = _open_job(job, int(remembered) if remembered.isdigit() else None, waiting)
 
-    everything = _queue_rows(session, user.id, shown)
+    everything = _queue_rows(session, user.id, open_job)
     counts = {
         "all": len(everything),
         "matched": sum(1 for r in everything if r["card_id"]),
@@ -552,36 +486,26 @@ def page_import(
     else:
         rows = everything
 
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         request,
         "import.html",
         {
             "nav": "import",
             "jobs": jobs,
             "active": active,
-            "groups": _group_rows(rows),
-            "folded": _folded_jobs(request, user.id),
-            # Shared with the browser so the two trim the cookie to the same
-            # length from the same end, rather than disagreeing about which
-            # folds survived.
-            "folded_max": FOLDED_MAX,
-            # About the rows on the page, which is what the filter chips
-            # narrow and what Commit and Discard all act on — those two build
-            # their payload from the DOM, so a count taken over the whole
-            # queue would promise a button more than it does.
+            # Every upload with something waiting, as headings. The one that
+            # is open is the only one whose cards were built.
+            "queue_jobs": waiting,
+            "open_job": open_job,
+            "rows": rows,
+            # About the open batch, which is what the filter chips narrow and
+            # what Commit and Discard all act on — those two build their
+            # payload from the DOM, so a count taken over the whole queue
+            # would promise a button more than it does.
             "counts": counts,
             # About the whole queue, which is what the topbar tile claims to
             # be and what the seller is actually holding.
-            "waiting_total": sum(n for _, n in waiting),
-            "held_back": {
-                "uploads": len(held_back),
-                "cards": sum(n for _, n in held_back),
-                # Whether there is a batch above the gap to clear, which is
-                # both where the note is placed and what it can honestly ask
-                # for. Counted in uploads rather than in rendered sections: a
-                # filter can leave one section on screen out of six.
-                "inline": len(shown) > 1,
-            },
+            "waiting_total": sum(job["cards"] for job in waiting),
             "filter": filter,
             "queue_value": sum(r["market"] for r in rows),
             "thresholds": thresholds,
@@ -592,6 +516,25 @@ def page_import(
             **_chrome(session, request, user, settings),
         },
     )
+    if job is not None and open_job is not None:
+        # Only what the seller asked for by name is remembered — the batch
+        # they clicked, or the one an import named on its way back here. A
+        # cookie written on every render would remember incidental visits too,
+        # and then a queue reached from the nav bar would quietly re-pin the
+        # memory to whatever happened to be open.
+        #
+        # `open_job` rather than `job`, so the advance `_open_job` makes when
+        # the asked-for batch has been cleared is what gets recorded. `path=
+        # /app` so the cookie rides with this screen and nothing else; at `/`
+        # every thumbnail would carry it too.
+        response.set_cookie(
+            f"{OPEN_COOKIE}_{user.id}",
+            str(open_job),
+            max_age=31536000,
+            path="/app",
+            samesite="lax",
+        )
+    return response
 
 
 @router.get("/matches")

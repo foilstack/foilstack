@@ -719,6 +719,10 @@ body.app {
   list-style: none;
 }
 .qgroup-head::-webkit-details-marker { display: none; }
+/* A shut section's heading is a link, because opening it loads that batch's
+   cards. Styled as the open one's `<summary>` so the two read as one list:
+   what tells them apart is the marker below, not the colour of the text. */
+a.qgroup-head { color: inherit; text-decoration: none; }
 /* The same `+` / `−` the settings panel discloses itself with, rather than a
    triangle. Not decoration: this stylesheet already proves those two glyphs
    render in the shipped webfonts, and a marker that lands as a tofu box is a
@@ -882,15 +886,6 @@ body.app {
   padding: 44px; text-align: center;
   font-family: var(--mono); font-size: 11px; color: var(--faint);
 }
-/* The uploads the queue is holding back, standing where they would have been.
-   Dashed rather than solid: it is a gap in the list, not another section, and
-   it must not read as a batch whose heading failed to render. */
-.queue-more {
-  margin: 10px 8px; padding: 12px; text-align: center;
-  border: 1px dashed var(--rule); border-radius: 3px;
-  font-family: var(--mono); font-size: 11px; color: var(--faint);
-}
-
 /* ==========================================================================
    Hover preview
    --------------------------------------------------------------------------

@@ -1015,7 +1015,7 @@ def test_the_queue_seeds_a_foil_only_card_as_foil(app_and_data):
     session.commit()
     scan_id = scan.id
 
-    row = next(r for r in _queue_rows(session, owner.id, [job.id]) if r["scan_id"] == scan_id)
+    row = next(r for r in _queue_rows(session, owner.id, job.id) if r["scan_id"] == scan_id)
     assert row["finish"] == "foil"
     assert row["default_finish"] == "nonfoil"
     session.close()
@@ -1059,7 +1059,7 @@ def test_the_queue_keeps_the_default_when_both_finishes_are_priced(app_and_data)
     session.commit()
     scan_id = scan.id
 
-    row = next(r for r in _queue_rows(session, owner.id, [job.id]) if r["scan_id"] == scan_id)
+    row = next(r for r in _queue_rows(session, owner.id, job.id) if r["scan_id"] == scan_id)
     assert row["finish"] == "nonfoil"
     session.close()
 
@@ -1882,8 +1882,12 @@ def test_one_batch_of_defaults_does_not_leak_onto_another(app_and_data):
         _waiting_scan(ids, default_condition="DMG", default_finish="foil") as damaged,
         _waiting_scan(ids, default_condition="LP", default_finish="nonfoil") as played,
     ):
-        html = client.get("/app").text
-        damaged_row, played_row = _queue_row(html, damaged), _queue_row(html, played)
+        # One batch of cards per page, so each is read from its own.
+        damaged_job, _ = _job_of(damaged)
+        played_job, _ = _job_of(played)
+        damaged_row = _queue_row(client.get(f"/app?job={damaged_job}").text, damaged)
+        played_row = _queue_row(client.get(f"/app?job={played_job}").text, played)
+        client.cookies.clear()
 
     assert 'data-cond="DMG"' in damaged_row
     assert 'data-finish="foil"' in damaged_row
@@ -2056,13 +2060,12 @@ def test_an_import_creates_its_scans_in_the_archives_order(app_and_data, tmp_pat
         session.close()
 
 
-def test_the_queue_keeps_each_upload_together(app_and_data):
-    """Grouping outranks price, and only the order can show it.
+def test_the_queue_shows_one_upload_at_a_time(app_and_data):
+    """The screen holds one batch of cards, and says so about the rest.
 
     The two batches here are chosen to interleave under a flat sort — the
     older one holds the second-dearest card on the page — so a queue that
-    still ranked every row by value alone would put it between the newer
-    batch's two cards and fail here.
+    ranked every row by value alone would mix them and fail here.
     """
     app, ids = app_and_data
     client = _signed_in(app)
@@ -2071,45 +2074,59 @@ def test_the_queue_keeps_each_upload_together(app_and_data):
         _waiting_scans_worth(ids, [1.0, 30.0], filename="older.zip") as older,
         _waiting_scans_worth(ids, [2.0, 50.0], filename="newer.zip") as newer,
     ):
-        order = _queue_order(client.get("/app").text)
+        old_job, _ = _job_of(older[0])
+        # No batch asked for: an import returns the seller here, so it is the
+        # newest that opens.
+        html = client.get("/app").text
+        order = _queue_order(html)
+        # And the older one is on the page whole, as a heading naming its own
+        # size — not a row of it, and not a footnote about the rest.
+        assert f'href="/app?job={old_job}' in html
+        assert "older.zip" in html
+        assert "2 cards" in html
+
+        # Asked for by name, it is the one with the cards.
+        older_order = _queue_order(client.get(f"/app?job={old_job}").text)
+        client.cookies.clear()
 
     mine = set(older) | set(newer)
     ours = [s for s in order if s in mine]
-    assert len(ours) == 4, "the batches are not all on the page"
-
-    # Oldest upload first, so the backlog drains from the front rather than
-    # sinking further with every import.
-    assert set(ours[:2]) == set(older)
-    assert set(ours[2:]) == set(newer)
+    assert ours == newer, "the newest batch is the one that opens"
 
     # And inside each, the order the scans arrived in.
-    assert ours[:2] == older
-    assert ours[2:] == newer
+    assert [s for s in older_order if s in mine] == older
 
 
-def test_every_upload_section_starts_expanded(app_and_data):
-    """Collapsing is the seller's move to make, not the page's.
+def test_exactly_one_upload_is_open_and_it_is_the_newest(app_and_data):
+    """The open batch is the only one whose cards were built.
 
-    The sections are `<details>`, so the whole feature is one attribute — and
-    losing it is not a visual blemish but a queue that renders with every card
-    hidden and no indication that anything is waiting. Worth an assertion
-    despite being markup: there is no behaviour to observe instead, and this
-    is the one way the feature fails catastrophically rather than untidily.
+    Worth asserting on the markup despite the rule about behaviour: a section
+    that renders shut when it holds the page's only cards is a queue with
+    nothing on it and no sign that anything is waiting, and there is no
+    behaviour to observe instead. The rest of the shape — a shut batch is a
+    link, so opening it is a page load — is what keeps a nine-batch backlog
+    the same size of page as one.
     """
     app, ids = app_and_data
     client = _signed_in(app)
 
     with (
-        _waiting_scans_worth(ids, [1.0], filename="older.zip"),
-        _waiting_scans_worth(ids, [2.0], filename="newer.zip"),
+        _waiting_scans_worth(ids, [1.0], filename="older.zip") as older,
+        _waiting_scans_worth(ids, [2.0], filename="newer.zip") as newer,
     ):
+        old_job, _ = _job_of(older[0])
+        new_job, _ = _job_of(newer[0])
         html = client.get("/app").text
+        client.cookies.clear()
 
     # Every opening `<details>` on the page, with its attributes — matched
     # tolerantly so that adding one does not fail this for the wrong reason.
     sections = [tag for tag in re.findall(r"<details\b[^>]*>", html) if "qgroup" in tag]
-    assert len(sections) >= 2, "the uploads are not rendering as sections"
-    assert all("open" in tag for tag in sections)
+    assert len(sections) == 1, "more than one upload built its cards"
+    assert f'data-job="{new_job}"' in sections[0]
+    assert "open" in sections[0]
+    # The older one is on the page as a heading, and reachable in one click.
+    assert f'href="/app?job={old_job}' in html
 
 
 def _section(html: str, job_id: int) -> str:
@@ -2129,58 +2146,70 @@ def _job_of(scan_id: int) -> tuple[int, int]:
     return out
 
 
-def test_a_folded_section_is_rendered_folded(app_and_data):
-    """The fold is applied by the server, and that is the whole point of it.
+def test_the_upload_this_browser_had_open_comes_back_open(app_and_data):
+    """Which batch is open is decided by the server, and has to be.
 
-    Restoring it in the browser is the obvious way and cannot be made to look
-    right: localStorage is unreadable until the page has parsed, so the queue
-    painted expanded and snapped shut once the script caught up — 56ms here,
-    123ms with the CPU throttled. Sent as a cookie, the answer is known while
-    the markup is being written and there is nothing to correct.
+    It decides what gets built, not just what gets shown: restoring it in the
+    browser would mean rendering one batch's cards and then fetching another's.
+    Sent as a cookie, the answer is in hand while the markup is being written.
+
+    That is also why asking for a batch sets the cookie rather than the page
+    script doing it — the seller who opened an old batch, went to look at a
+    card and came back should find it where they left it.
     """
     app, ids = app_and_data
     client = _signed_in(app)
 
     with (
         _waiting_scans_worth(ids, [1.0], filename="older.zip") as older,
-        _waiting_scans_worth(ids, [2.0], filename="newer.zip") as newer,
+        _waiting_scans_worth(ids, [2.0], filename="newer.zip"),
     ):
         old_job, user_id = _job_of(older[0])
-        new_job, _ = _job_of(newer[0])
-        client.cookies.set(f"foilstack_folded_{user_id}", str(old_job))
+        asked = client.get(f"/app?job={old_job}")
+        assert "open" in _section(asked.text, old_job)
+        # Recorded by that request, so a plain reload comes back to it.
+        assert client.cookies.get(f"foilstack_open_{user_id}") == str(old_job)
         html = client.get("/app").text
         client.cookies.clear()
 
-    assert "open" not in _section(html, old_job)
-    # Only the one named. A fold is per upload, not a mode the screen is in.
-    assert "open" in _section(html, new_job)
+    assert "open" in _section(html, old_job), "the remembered batch did not come back"
 
 
-def test_a_mangled_fold_cookie_costs_a_fold_not_the_page(app_and_data):
+def test_a_mangled_open_cookie_costs_a_memory_not_the_page(app_and_data):
     """It is edited by a browser and survives in one for a year.
 
     Anything at all can be in there by the time it comes back — a truncated
     write, a hand-edit, a leftover from a different version of this screen. It
-    has to degrade to "nothing folded", because a 500 on the queue would mean
+    has to degrade to "open the newest", because a 500 on the queue would mean
     a seller could not reach their cards until they thought to clear cookies.
+
+    Same rule for `?job=`, which is a querystring anyone can type: a value
+    that names no waiting upload of this account's opens the newest one, and
+    never rows the query did not return.
     """
     app, ids = app_and_data
     client = _signed_in(app)
 
     with _waiting_scans_worth(ids, [1.0], filename="older.zip") as older:
         job_id, user_id = _job_of(older[0])
-        # None of these name this job. A value that does — including one with
-        # an empty element beside it, like "4,,7" — is not junk but a fold,
-        # and is covered above. Nor is `f"{job_id};DROP"`: a semicolon ends a
-        # cookie value in the header, so the server is handed a bare id and is
-        # right to fold on it. The digits have to be glued to something to
-        # stay junk.
         junk = ("", "not-a-number", ",,,", "-3", "9" * 400, f"{job_id}x", "<script>")
         for junk_value in junk:
-            client.cookies.set(f"foilstack_folded_{user_id}", junk_value)
+            client.cookies.set(f"foilstack_open_{user_id}", junk_value)
             got = client.get("/app")
             assert got.status_code == 200, f"{junk_value!r} took the page down"
-            assert "open" in _section(got.text, job_id), f"{junk_value!r} folded it"
+            assert "open" in _section(got.text, job_id), f"{junk_value!r} lost the batch"
+
+        # `?job=` is a querystring anyone can type, and gets the same
+        # treatment: a value that is not an integer is the framework's to
+        # refuse, and an integer naming no waiting upload of this account's
+        # falls back to one that is — never to rows the query did not return.
+        for typed in ("nine", "-3", "0", "99999999"):
+            got = client.get(f"/app?job={typed}")
+            assert got.status_code in (200, 422), f"{typed!r} took the page down"
+            if got.status_code == 200:
+                opened = [t for t in re.findall(r"<details\b[^>]*>", got.text) if "qgroup" in t]
+                assert len(opened) == 1, f"{typed!r} left no batch open"
+                assert "open" in opened[0]
         client.cookies.clear()
 
 

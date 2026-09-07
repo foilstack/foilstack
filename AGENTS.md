@@ -419,37 +419,65 @@ Two habits worth keeping:
   groups by card, so padding rows alone against the seeded 152 cards buys 152
   lines however many rows go in.
 
-* **A cap has to fall on the end the screen is worked from.** The review
-  queue read the newest 400 waiting scans by id while presenting them
-  oldest-upload-first, so the two disagreed about which end mattered and the
-  cap took the front of the backlog — the exact section the screen sends the
-  seller to first. Nine archives waiting showed twenty cards of the fifty in
-  the oldest one; confirming those twenty freed twenty slots and the same
-  section came back with the next twenty, which reads as a screen loading a
-  page at a time and is really a screen hiding work. It cost a real afternoon
-  and the seller's first conclusion was that the upload had lost the other
-  thirty images.
+* **The queue holds one upload at a time, and says so about the rest.** Every
+  waiting upload is a heading on the screen, oldest first, each naming its own
+  size from a count in SQL; exactly one of them is open and its cards are the
+  only rows built. `_waiting_jobs` is the headings, `_open_job` is which one
+  opens, `_queue_rows` takes that one job. A shut heading is a **link**, so
+  opening it is a page load and a backlog of nine uploads costs the same page
+  as one — and works with JavaScript off, and puts the batch in the URL where
+  it can be reloaded onto.
 
-  Worse than the truncation: every count came from the truncated list, so
-  nothing on the page admitted to it. The section heading said `20 cards` over
-  a batch of fifty, the tile said 400 with 430 waiting, and the Commit button
-  named the same wrong number.
+  This replaced a row cap, and the cap is worth remembering because both of
+  its shapes were wrong. It first read the newest 400 waiting scans by id
+  while the screen presented them oldest-upload-first, so it took the front of
+  the backlog — the exact section the seller is sent to work. Nine archives
+  waiting showed twenty cards of the fifty in the oldest; confirming those
+  twenty freed twenty slots and the same section came back with the next
+  twenty, which reads as a screen loading a page at a time and is really a
+  screen hiding work. Worse, every count came from the truncated list, so
+  nothing on the page admitted to it: the heading said `20 cards` over a batch
+  of fifty, the tile said 400 with 430 waiting, and the Commit button named
+  the same wrong number. Whole sections up to a budget fixed the lying counts
+  and left the rest — a screen that renders some batches, holds others back,
+  and has to print a footnote explaining that they appear "once the batches
+  above are cleared". One batch at a time needs no footnote, because nothing
+  is held back: the uploads that are not open are all on the screen, with
+  their real sizes, one click from their cards.
 
-  So the queue renders **whole uploads**. `_queue_jobs` takes them oldest
-  first up to `QUEUE_ROWS`, a section is either on the page complete or held
-  back entirely — which is what lets a heading state its own size — and what
-  is held back is named on screen where it would have been. The newest upload
-  is always rendered whatever the budget, because an import returns the seller
-  to this page and a page with no sign of it reads as an import that failed;
-  that is also the only case allowed to exceed the budget, since the
-  alternative is the partial section again. `_waiting_by_job` counts in SQL,
-  so the topbar is about the whole queue while the filter chips and the two
-  buttons are about the rows on screen — those build their payload from the
-  DOM and must not be captioned with a wider number.
+  Which one opens: the batch asked for by `?job=`, then the one this browser
+  last asked for, then the newest. Newest last rather than oldest, though the
+  backlog is worked front to back — an import returns the seller here and
+  finishing one to somebody else's batch reads as an import that failed, which
+  is why `poll()` names the job it just finished on the way back. What makes
+  that safe is that the older batches never leave the screen. An id naming
+  nothing waiting is what a cleared batch looks like — the last row is
+  confirmed, the page reloads, and the id in hand is finished — so it advances
+  to the next upload down the queue rather than throwing the seller back to
+  the newest.
 
-  Look at it with `--backlog`. Two uploads and a dozen cards are always
-  entirely on the screen, which is why the seeded preview could not reach this
-  state and a screenshot never caught it.
+  The memory is a cookie and is written **only when a batch was asked for by
+  name**, which is the same distinction the match panel draws: a screen
+  reached from the nav bar should not re-pin it to whatever happened to be
+  open. It has to be a cookie rather than localStorage for a stronger reason
+  than the folds it replaced had — the answer decides what gets *built*, not
+  just what gets shown, so restoring it in the browser would mean rendering
+  one batch's cards and then fetching another's.
+
+  The counts split cleanly and have to: `waiting_total` and the headings are
+  about the whole queue, and the filter chips, `Commit` and `Discard all` are
+  about the open batch — those build their payload from the DOM, so captioning
+  them with a queue-wide number would promise more than they do.
+
+  Shut heads carry no `#job-N` fragment, though it is the obvious addition:
+  landing on the heading pins it to the top of the viewport and scrolls the
+  bar above the list — the filter chips and the Commit button — off the
+  screen. Arriving at a batch with its own controls missing is worse than
+  arriving above a few lines of headings.
+
+  Look at it with `--backlog`. Two uploads and a dozen cards is a screen where
+  every one of these decisions looks the same as any other, which is why the
+  seeded preview never caught the truncation and cannot show this either.
 
 * **A selection stopped being a list of ids the moment the screen was paged.**
   The inventory form submits one `id=` per *copy*, and one page of a hundred
