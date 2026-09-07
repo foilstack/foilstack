@@ -500,6 +500,21 @@ def _seed(source_url: str, preview_url: str, data_dir: Path) -> None:
         )
     session.commit()
 
+    # The cards above carry their ids across from the source catalogue, because
+    # `refs/` is shared with the real install and keyed by card id. Inserting an
+    # id by hand does not move the sequence behind it, so it was still sitting
+    # at 1 — and the next insert that lets Postgres choose, which is the one
+    # `--bulk` makes to widen the catalogue, collided with a seeded row and
+    # took the whole preview down. Bumping it here rather than there because
+    # this is where the assumption is made.
+    session.execute(
+        text(
+            "SELECT setval(pg_get_serial_sequence('cards', 'id'),"
+            "              COALESCE((SELECT MAX(id) FROM cards), 1))"
+        )
+    )
+    session.commit()
+
     # Two uploads, not one. The queue groups by the archive a scan arrived in,
     # and a preview seeded from a single job renders one section heading and
     # proves nothing about the screen — the same way seeding one candidate per

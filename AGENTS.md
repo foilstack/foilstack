@@ -353,6 +353,25 @@ Two habits worth keeping:
   reason, and `facet_options` paints a picked value at zero so there is always
   something to click to undo it.
 
+  The same rule is why `_fold_filters` never folds a filter that has something
+  picked. The facets are menus now rather than rows of chips — a row painted
+  what it could fit and then admitted to hiding the rest, which at a hundred
+  sets is a `+90` nobody can click — and the tail of that row folds behind
+  `More filters` because five of them wrap at 1000px. A filter in force behind
+  a disclosure is the same silent filter as before and worse: there is nothing
+  on screen to suggest looking. A picked filter claims a standing slot rather
+  than being exempt from the budget, which is also what lets the disclosure be
+  forgotten between page loads — the filter just picked from comes back
+  standing because it now has a pick. `More filters` is a link before it is a
+  script, so the folded pair is reachable with JavaScript off, and it is the
+  one control on that screen that keeps the page number, because it is the one
+  that does not change the result.
+
+  A menu also has to say what it is doing while shut, which a row of chips
+  never had to: `any_label` is the unfiltered case in words, and a picked
+  filter reads its own value. That is the cost of the trade and it is the half
+  that goes wrong quietly.
+
 * **A quota is only real if something gives the bytes back.** `usage_bytes`
   sums `scans.size_bytes`, and discarding used to move a status and nothing
   else — so storage only ever grew, and the 413 telling a full account to
@@ -662,6 +681,18 @@ Two habits worth keeping:
   the second time. `tcgplayer.toml` still writes the bare stock line, which is
   safe only because it leaves `Total Quantity` blank and the file it produces
   is not uploadable at all.
+* **A placeholder is a promise.** The inventory search box offered `name, set,
+  sku` from the beginning and `narrow` never looked at a SKU — it reads the
+  name, game, set, conditions, finishes and collector number off the folded
+  line. A SKU is what a marketplace hands back when something sells, so
+  pasting one in to find the card is the search that box most owes a seller,
+  and what it answered was "nothing matches" — which reads as inventory that
+  is not there rather than as a box that was not looking. It reads the copies'
+  own SKUs now. Anything added to that haystack has to go in `narrow` and
+  nowhere else: `/listings` resolves a filter selection through the same
+  function, and a search that meant one thing on the screen and another at the
+  far end would list cards the seller never saw.
+
 * **`cards.name` is the cleaned spelling and cannot be joined on.** TCGCSV
   gives both: `cleanName`, which is what `name` holds and what reads and
   searches properly, and `name`, which is what every TCGplayer CSV carries.

@@ -350,29 +350,82 @@ body.app {
   font-family: var(--sans); font-size: 11.5px; white-space: nowrap;
 }
 
-/* ---------- the facet row under the inventory bar ---------- */
-/* A row of its own rather than more chips in the bar: the bar already wraps at
-   1280 with the status chips and two buttons in it, and five more facets in
-   there pushed the primary button onto a second line at every width worth
-   caring about. Separated, the bar stays one line and the facets get to wrap
-   among themselves. */
-.facets {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px;
-  flex: 0 0 auto; padding: 7px 12px;
+/* ---------- the filter row under the inventory bar ---------- */
+/* A row of its own rather than more controls in the bar: the bar already wraps
+   at 1280 with a search box and two buttons in it, and five filters in there
+   pushed the primary button onto a second line at every width worth caring
+   about. Separated, the bar stays one line and the filters get to wrap among
+   themselves. */
+.filters {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px;
+  flex: 0 0 auto; padding: 6px 12px;
   border-bottom: 1px solid var(--rule); background: var(--surface);
 }
-.facet { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; }
-.facet-label {
-  font-family: var(--mono); font-size: 9.5px; text-transform: uppercase;
-  letter-spacing: 0.08em; color: var(--faint); margin-right: 3px;
+/* `[hidden]` loses to a `display` set on the same element, and every control
+   in this row has one. The folded filters are hidden with the attribute so
+   "More filters" has exactly one thing to toggle, so it has to win here. */
+.filters [hidden] { display: none; }
+
+.filter { position: relative; flex: 0 0 auto; }
+.filter-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 26px; padding: 0 8px;
+  border: 1px solid var(--rule); border-radius: 3px;
+  background: var(--surface); color: var(--ink);
+  font-size: 11.5px; white-space: nowrap; cursor: pointer;
+  list-style: none;
 }
+.filter-btn::-webkit-details-marker { display: none; }
+.filter-btn:hover, .filter[open] .filter-btn { border-color: var(--ink); }
+.filter-label {
+  font-family: var(--mono); font-size: 9.5px; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--faint);
+}
+/* The whole point of a menu over a row of chips is that it states its own
+   state when shut, so the value carries the weight and the unfiltered case
+   stays quiet. A picked filter has to be legible from across the row. */
+.filter-value {
+  color: var(--muted); max-width: 170px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.filter-value.on { color: var(--ink); font-weight: 600; }
+.filter-caret { color: var(--faint); font-size: 9px; }
+
+.filter-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 30;
+  min-width: 210px; max-width: 340px; max-height: 320px; overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--edge); border-radius: 3px; background: var(--surface);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .10);
+}
+.filter-opt {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 7px; border-radius: 2px;
+  font-size: 12px; color: var(--ink); text-decoration: none;
+}
+/* Holds its width empty, so the labels line up in one column whether or not
+   anything above them is ticked. */
+.filter-tick { flex: 0 0 9px; font-size: 9px; color: var(--green); }
+.filter-opt:hover { background: var(--surface-3); color: var(--ink); text-decoration: none; }
+.filter-opt.is-on { background: var(--green-rail); color: var(--green); font-weight: 600; }
+.filter-opt-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.filter-note {
+  margin-top: 3px; padding: 5px 7px 3px; border-top: 1px solid var(--rule-soft);
+  font-family: var(--mono); font-size: 9.5px; color: var(--faint); line-height: 1.4;
+}
+/* Dashed, because it is the one control in this row that filters nothing —
+   it only admits that the row is not all of itself. */
+.filter-more {
+  height: 26px; padding: 0 8px; cursor: pointer;
+  border: 1px dashed var(--rule); border-radius: 3px; background: none;
+  font: inherit; font-size: 11.5px; color: var(--muted); white-space: nowrap;
+}
+.filter-more:hover { border-color: var(--ink); color: var(--ink); }
+
 /* Dimmed against its own label so the count reads as an annotation on the
    value rather than as part of it — "Base Set 12", not a set called that. */
 .facet-n { color: var(--faint); margin-left: 4px; }
 .chip.on .facet-n { color: rgba(255, 255, 255, .65); }
-.facet-more {
-  font-family: var(--mono); font-size: 9.5px; color: var(--faint); cursor: help;
-}
 .facet-clear {
   font-family: var(--mono); font-size: 10px; color: var(--faint);
   margin-left: auto;
@@ -416,16 +469,37 @@ body.app {
 .sortlink:hover { color: var(--ink); text-decoration: none; }
 .sortlink.on { color: var(--ink); }
 
-/* The one item in a nowrap bar that may give. It is the widest thing there
-   and the only one that stays usable narrower — a chip that shrinks truncates
-   the count it exists to show. */
-.searchform { min-width: 0; flex: 0 1 240px; }
+/* The one item in a nowrap bar that may give, and the one that takes what is
+   left over. It is how a seller reaches a card in an inventory too large to
+   scroll, so it gets the width; everything else on that bar is a count or a
+   button, and a count that shrinks truncates the thing it exists to show. */
+.searchform { min-width: 0; flex: 1 1 320px; }
 .searchform .search { width: 100%; flex-shrink: 1; }
 .search {
   width: 240px; flex-shrink: 0; height: 26px; padding: 0 8px;
   border: 1px solid var(--rule); border-radius: 3px;
   background: var(--surface); font-size: 12px;
 }
+.searchbox { position: relative; display: flex; align-items: center; }
+.searchbox .search { padding-left: 27px; }
+.searchbox-icon {
+  position: absolute; left: 8px; width: 13px; height: 13px; pointer-events: none;
+  fill: none; stroke: var(--faint); stroke-width: 1.6; stroke-linecap: round;
+}
+.searchbox:focus-within .searchbox-icon { stroke: var(--muted); }
+/* Room for the Clear link, and only when there is one — an input permanently
+   indented for a control that is usually absent looks like a bug. */
+.searchbox:has(.searchbox-clear) .search { padding-right: 50px; }
+.searchbox-clear {
+  position: absolute; right: 4px; height: 20px; padding: 0 6px; border-radius: 2px;
+  display: inline-flex; align-items: center;
+  font-family: var(--mono); font-size: 10px; color: var(--faint);
+}
+.searchbox-clear:hover { color: var(--warn); background: var(--surface-3); text-decoration: none; }
+/* The browser's own clear button sits exactly where ours does and means
+   something else: it empties the field and leaves the screen still filtered
+   by whatever was in it. */
+.search::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
 
 .pill {
   font-family: var(--mono); font-size: 10.5px;

@@ -1080,9 +1080,14 @@ FACET_VALUES: dict[str, Any] = {
 # as a scale, alphabetical does not. Game and set have no such order and are
 # sorted by name; they are also the two whose values come from the catalogue
 # rather than from this file, so they can only ever be listed from the rows.
+#
+# `any` is what the facet reads as when nothing in it is picked. A menu shows
+# one value where a row of chips showed all of them, so the closed control has
+# to state the unfiltered case in words — "All games" is a filter that is off,
+# where a blank box is a control whose state you have to open it to learn.
 FACETS: list[dict[str, Any]] = [
-    {"key": "game", "label": "Game"},
-    {"key": "set", "label": "Set"},
+    {"key": "game", "label": "Game", "any": "All games"},
+    {"key": "set", "label": "Set", "any": "All sets"},
     {"key": "condition", "label": "Condition", "order": CONDITIONS},
     {"key": "printing", "label": "Printing", "order": FINISHES, "labels": FINISH_LABEL},
     {
@@ -1199,6 +1204,7 @@ def facet_options(rows: list[dict[str, Any]], picks: dict[str, set[str]]) -> lis
             {
                 "key": key,
                 "label": spec["label"],
+                "any_label": spec.get("any", "Any"),
                 "hidden": hidden,
                 "options": [
                     {
@@ -1337,6 +1343,12 @@ def narrow(
                     r["conditions"],
                     r["finishes"],
                     r["number"] or "",
+                    # The seller's own SKUs, because the box has always said it
+                    # took one and never did — and a SKU is what a marketplace
+                    # hands back when something sells, so pasting one in to
+                    # find the card is the search this screen most owes them.
+                    # Every copy on the line, since a line is several of them.
+                    *(sku(i) for i in r["ids"]),
                 )
             ).lower()
         ]
