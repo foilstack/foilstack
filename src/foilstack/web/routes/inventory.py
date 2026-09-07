@@ -66,6 +66,39 @@ def _pages(page: int, last: int) -> list[int | None]:
     return out
 
 
+# How many filter menus stand on the row before the rest fold behind "More
+# filters". Three is what fits beside the status chips at 1000px, the width the
+# README animation is captured at; a fourth wrapped the row onto two lines.
+PRIMARY_FILTERS = 3
+
+
+def _fold_filters(
+    facets: list[dict[str, Any]], picks: dict[str, set[str]], unfold: bool = False
+) -> list[dict[str, Any]]:
+    """Mark the filters that start folded behind "More filters".
+
+    A filter with something picked never folds, whatever its place in the
+    order. A filter in force with nothing on screen to say so is a fault this
+    screen has had once already, and it is worse behind a disclosure than it
+    was behind a chip that had scrolled away: the seller has no reason to
+    suspect there is anything back there.
+
+    A picked filter claims a standing slot rather than being exempt from the
+    budget, so the row is the same width however many picks are in it. That is
+    also what makes the disclosure survive a click without being remembered
+    anywhere — the filter the seller just picked from comes back already open,
+    because it now has a pick.
+    """
+    shown = 0
+    for facet in facets:
+        fold = not picks.get(facet["key"]) and shown >= PRIMARY_FILTERS
+        # `unfold` only takes the row's short state off; it never brings a
+        # folded filter forward in the order or changes what claims a slot.
+        facet["more"] = fold and not unfold
+        shown += 0 if fold else 1
+    return facets
+
+
 def _href(params: dict[str, Any]) -> str:
     """One inventory URL, carrying everything still in force.
 
@@ -99,6 +132,13 @@ def page_inventory(
     condition: list[str] | None = Query(None),
     printing: list[str] | None = Query(None),
     listed: list[str] | None = Query(None),
+    # Whether the filters that did not fit are on the row. A querystring and
+    # not a script-only state, so the two folded filters are reachable with
+    # JavaScript off — the script only intercepts the link to save the round
+    # trip. Deliberately absent from `state()`, so every other control resets
+    # it: what has to survive a click is a filter in *force*, and
+    # `_fold_filters` never folds one of those whatever this says.
+    more: str = "",
     pricing: inventory.Pricing = Depends(pricing_dep),
     session=Depends(db_session),
     user: db.User = Depends(owner),
@@ -187,9 +227,14 @@ def page_inventory(
 
     for facet in groups_facets:
         for opt in facet["options"]:
-            # A chip toggles its own value and leaves every other control be.
+            # An option toggles its own value and leaves every other control be.
             chosen = picks[facet["key"]] ^ {opt["value"]}
             opt["href"] = _href(state(**{facet["key"]: sorted(chosen)}))
+        # The way back to "no opinion" on this one facet. A menu that is only
+        # toggleable a value at a time makes clearing a three-value pick three
+        # clicks, and the row's own `clear` link is all-or-nothing.
+        facet["any_href"] = _href(state(**{facet["key"]: []}))
+    _fold_filters(groups_facets, picks, unfold=bool(more))
 
     return templates.TemplateResponse(
         request,
@@ -248,6 +293,17 @@ def page_inventory(
             "prev_href": page_href(page - 1) if page > 1 else None,
             "next_href": page_href(page + 1) if page < last_page else None,
             "clear_href": _href(state(**{key: [] for key in inventory.FACET_KEYS})),
+            # Emptying the search box is a link like every other control here,
+            # so it lands on a real URL rather than on a field a script blanked
+            # — and it keeps the facets, which is the difference between
+            # "clear the search" and the `clear_href` above it.
+            "clear_q_href": _href(state(q="")),
+            # The one link on this screen that keeps the page number, because
+            # it is the one that does not change the result: it unfolds two
+            # filter menus. Every other control resets to page 1 by leaving
+            # `page` out of `state`, which is right for them and would land a
+            # seller on page 1 of 400 here for asking to see a control.
+            "more_href": _href(state(more="1", page=page if page > 1 else "")),
             "status_chips": [
                 {
                     "key": key,

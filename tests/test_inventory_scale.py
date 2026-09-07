@@ -392,3 +392,26 @@ def test_hand_picked_ids_are_not_widened_by_a_filter_riding_along(priced_invento
 
     assert got == {3, 4}
     assert described == ""
+
+
+def test_a_sku_finds_its_own_card(priced_inventory):
+    """The search box has always offered to take a SKU and never read one.
+
+    A SKU is what a marketplace hands back when something sells, so pasting
+    one in to find the card is the search this screen most owes a seller — and
+    what it answered was "nothing matches", which reads as inventory that is
+    not there rather than as a box that was not looking.
+    """
+    from foilstack import db, inventory
+
+    _, user_id = priced_inventory
+    with db.session() as session:
+        copies = inventory.index(session, user_id, inventory.Pricing())
+        wanted = copies[0]
+        found = inventory.narrow(copies, show="all", q=inventory.sku(wanted["id"]))
+
+    assert [line["card_id"] for line in found.rows] == [wanted["card_id"]]
+    assert wanted["id"] in found.rows[0]["ids"]
+    # And the search still narrows: a fixture where every card matched would
+    # pass this whatever the needle did.
+    assert found.total_lines > 1

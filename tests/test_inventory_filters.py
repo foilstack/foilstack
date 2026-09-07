@@ -14,6 +14,7 @@ from foilstack.inventory import (
     present_values,
     sort_groups,
 )
+from foilstack.web.routes.inventory import PRIMARY_FILTERS, _fold_filters
 
 
 def copy(**over):
@@ -323,3 +324,67 @@ def test_defaults_are_left_out_of_the_url():
     """So an untouched run has a clean URL, like every other link here."""
     encoded = selection(sel="page").query_items()
     assert encoded == [("sel", "page")]
+
+
+# --- Which filters the row shows at rest -------------------------------------
+#
+# The facets are menus now, and a row of five of them does not fit beside the
+# status chips at 1000px — so the tail folds behind "More filters". What these
+# pin is the one thing that rule may not do: fold away a filter that is on.
+
+
+def facet(key, on=False):
+    return {"key": key, "options": [{"value": "x", "on": on}]}
+
+
+def test_the_first_filters_stand_and_the_rest_fold():
+    facets = [facet(k) for k in ("game", "set", "condition", "printing", "listed")]
+    folded = [f["key"] for f in _fold_filters(facets, {}) if f["more"]]
+    assert folded == ["printing", "listed"]
+
+
+def test_a_filter_in_force_never_folds():
+    """A filter applying with nothing on screen to say so is the failure this
+    screen has already had once, and it is worse behind a disclosure than it
+    was behind a chip: there is no reason to look."""
+    facets = [facet(k) for k in ("game", "set", "condition", "printing", "listed")]
+    picks = {"listed": {"unlisted"}}
+    folded = [f["key"] for f in _fold_filters(facets, picks) if f["more"]]
+    assert "listed" not in folded
+
+
+def test_a_pick_claims_a_slot_rather_than_riding_along():
+    """So the row is the same width however many picks are in it — a promoted
+    filter pushes one down, it does not sit alongside the three."""
+    facets = [facet(k) for k in ("game", "set", "condition", "printing", "listed")]
+    picks = {"listed": {"unlisted"}}
+    standing = [f["key"] for f in _fold_filters(facets, picks) if not f["more"]]
+    assert len(standing) == PRIMARY_FILTERS + 1
+    assert standing == ["game", "set", "condition", "listed"]
+
+
+def test_the_row_can_be_asked_for_whole():
+    """The "More filters" link, for the case where no script intercepts it —
+    the two folded filters have to be reachable without one."""
+    facets = [facet(k) for k in ("game", "set", "condition", "printing", "listed")]
+    assert not any(f["more"] for f in _fold_filters(facets, {}, unfold=True))
+
+
+def test_a_short_row_folds_nothing():
+    """And the button that reveals them is not drawn — a disclosure with
+    nothing behind it is furniture."""
+    facets = [facet(k) for k in ("game", "set")]
+    assert not any(f["more"] for f in _fold_filters(facets, {}))
+
+
+def test_every_facet_says_what_it_reads_as_unfiltered():
+    """A menu shows one value where a row of chips showed all of them, so the
+    shut control has to state the case where nothing is picked. A blank box is
+    a filter whose state you have to open it to learn."""
+    rows = [
+        line("Bolt", [copy(game="magic", condition="NM")]),
+        line("Pikachu", [copy(game="pokemon", condition="LP")]),
+    ]
+    facets = {f["key"]: f for f in facet_options(rows, {})}
+    assert facets["game"]["any_label"] == "All games"
+    assert facets["condition"]["any_label"] == "Any"

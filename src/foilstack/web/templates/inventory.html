@@ -4,22 +4,38 @@
 
 {% block screen %}
 {# Nowrap for the reason the listing run is: at 1000px, the width the README
-   animation is captured at, the status chips pushed the primary button onto a
-   row of its own and the facet row below it then read as four rows of chrome
-   above the table. The give is the search box, which shrinks. #}
+   animation is captured at, anything else on this bar pushed the primary
+   button onto a row of its own and the filter row below it then read as three
+   rows of chrome above the table. The give is the search box, which both
+   takes the leftover width and is the only thing here still usable narrower —
+   which is why the status chips went down to the filter row and not beside
+   it. #}
 <div class="bar bar-nowrap">
   <h1>Inventory</h1>
-  <form class="searchform" method="get" action="/inventory">
-    <input class="search" type="search" name="q" value="{{ q }}" placeholder="filter name, set, sku…">
+  {# The widest thing on the bar, and the only one that grows: it is how a
+     seller reaches a card in an inventory too large to browse to, and every
+     other control here is either a fixed count or a button.
+
+     The placeholder names what the search actually reads. It used to say
+     "sku" while nothing in `narrow` looked at one, which is the kind of
+     promise a seller only finds out about by pasting a SKU from a sold
+     notification and being told they own no such card. #}
+  <form class="searchform" method="get" action="/inventory" role="search">
+    <div class="searchbox">
+      <svg class="searchbox-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <circle cx="7" cy="7" r="4.6"/><path d="M10.4 10.4 L14 14"/>
+      </svg>
+      <input class="search" type="search" name="q" value="{{ q }}" autocomplete="off"
+             aria-label="Search inventory"
+             placeholder="Search cards, sets, conditions, numbers, SKUs…">
+      {# Only where there is something to clear. A permanent Clear is a button
+         that does nothing on the screen it is most often looked at. #}
+      {% if q %}<a class="searchbox-clear" href="{{ clear_q_href }}">Clear</a>{% endif %}
+    </div>
     {# The filters and the sort, carried through, so searching narrows what is
        on screen rather than throwing the rest of the controls away. #}
     {% for name, value in carry %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
   </form>
-  <div class="chip-set">
-    {% for c in status_chips %}
-    <a class="chip chip-filter {{ 'on' if c.on }}" href="{{ c.href }}">{{ c.label }} {{ c.count }}</a>
-    {% endfor %}
-  </div>
   {# Three numbers answering three questions: where this page sits, how many
      lines the filters matched, and how many there are in all. Collapsed to one
      they contradict each other — "100 lines" above a filter chip reading 4,231
@@ -37,7 +53,6 @@
   <span class="bar-note" id="rowlabel"
         data-plain="{{ matched_lines }}{% if narrowed %} of {{ total_lines }}{% endif %} lines"
   >{% if last_page > 1 %}showing {{ row_from }}–{{ row_to }} · {% endif %}{{ matched_lines }}{% if narrowed %} of {{ total_lines }}{% endif %} lines</span>
-  <div class="spacer"></div>
   <button class="btn btn-danger" type="button" id="delbtn" hidden>Delete</button>
   {# Disabled rather than hidden, unlike the Delete button beside it. That one
      is absent at rest because it is destructive and there is nothing to
@@ -53,22 +68,77 @@
           id="listbtn" disabled title="Select rows to list">List selected →</button>
 </div>
 
-{% if facets %}
-<div class="facets">
-  {% for f in facets %}
-  <div class="facet">
-    <span class="facet-label">{{ f.label }}</span>
-    {% for o in f.options %}
-    <a class="chip chip-sm {{ 'on' if o.on }}" href="{{ o.href }}">{{ o.label }} <span class="facet-n">{{ o.count }}</span></a>
+{# Every way of narrowing the screen, on one row: which rows are in play, then
+   the facets. The status chips moved down out of the bar when the search box
+   grew to fill it — they are a filter, they belong beside the other filters,
+   and the alternative was a bar that wrapped at the width the README animation
+   is captured at.
+
+   The facets are menus rather than rows of chips because a row painted every
+   value it could fit and then admitted to hiding the rest: at ten sets that is
+   four lines of chrome above the table, and at a hundred it is a "+90" the
+   seller cannot click. A menu shows one value closed and all of them open. The
+   cost is that a closed control has to say what it is doing, which is what
+   `any_label` and the picked-value summary are for — a filter you have to open
+   a menu to discover is the same fault the old row avoided by shouting. #}
+<div class="filters">
+  <div class="chip-set">
+    {% for c in status_chips %}
+    <a class="chip chip-filter {{ 'on' if c.on }}" href="{{ c.href }}">{{ c.label }} {{ c.count }}</a>
     {% endfor %}
-    {% if f.hidden %}<span class="facet-more" title="Not shown, because this facet has more values than fit. Use the search box to reach them.">+{{ f.hidden }}</span>{% endif %}
   </div>
+
+  {% for f in facets %}
+  {# Picked values, for the summary. `options` always carries them, painted at
+     zero if that is their count, so this cannot miss a filter in force. #}
+  {% set picked = f.options|selectattr('on')|list %}
+  <details class="filter" data-filter{% if f.more %} hidden data-more{% endif %}>
+    <summary class="filter-btn">
+      <span class="filter-label">{{ f.label }}</span>
+      <span class="filter-value {{ 'on' if picked }}">
+        {%- if not picked %}{{ f.any_label }}
+        {%- elif picked|length == 1 %}{{ picked[0].label }}
+        {%- else %}{{ picked|length }} selected{% endif -%}
+      </span>
+      <span class="filter-caret" aria-hidden="true">▾</span>
+    </summary>
+    <div class="filter-menu">
+      <a class="filter-opt {{ 'is-on' if not picked }}" href="{{ f.any_href }}">
+        <span class="filter-tick" aria-hidden="true">{% if not picked %}✓{% endif %}</span>
+        <span class="filter-opt-label">{{ f.any_label }}</span>
+      </a>
+      {% for o in f.options %}
+      {# A tick and not a bullet, because values within a facet are ORed: a
+         second pick adds to the first rather than replacing it, and a menu
+         that looks like a radio group says the opposite. Two rows ticked at
+         once is the only thing on screen that can say so. #}
+      <a class="filter-opt {{ 'is-on' if o.on }}" href="{{ o.href }}">
+        <span class="filter-tick" aria-hidden="true">{% if o.on %}✓{% endif %}</span>
+        <span class="filter-opt-label">{{ o.label }}</span>
+        <span class="facet-n">{{ o.count }}</span>
+      </a>
+      {% endfor %}
+      {% if f.hidden %}
+      <div class="filter-note">+{{ f.hidden }} not shown · use the search box to reach them</div>
+      {% endif %}
+    </div>
+  </details>
   {% endfor %}
+
+  {% if facets|selectattr('more')|list %}
+  {# Only when it has something behind it. A disclosure that discloses nothing
+     is furniture, and this row has enough of that risk already.
+
+     A link, because that is what every other control on this row is and it is
+     what makes the two folded filters reachable with no JavaScript at all.
+     The script below intercepts it to save the round trip; without one it is
+     an ordinary page load that renders the row unfolded. #}
+  <a class="filter-more" id="morebtn" href="{{ more_href }}">More filters →</a>
+  {% endif %}
   {% if filtered %}
   <a class="facet-clear" href="{{ clear_href }}">clear {{ filtered }} filter{{ '' if filtered == 1 else 's' }}</a>
   {% endif %}
 </div>
-{% endif %}
 
 <div class="screen-scroll">
   <form id="sel" method="get" action="/listings">
@@ -203,6 +273,39 @@
 
 {% block scripts %}
 <script>
+/* One filter menu open at a time, and a click anywhere else shuts it.
+   `<details>` is what draws these, so the keyboard, the focus ring and the
+   no-JavaScript case all come for free; dismissal is the one thing it does
+   not give, and two menus open at once overlap into a stack sitting over the
+   first rows of the table. */
+const filters = $$('details[data-filter]');
+filters.forEach(d => d.addEventListener('toggle', () => {
+  if (d.open) filters.forEach(other => { if (other !== d) other.open = false; });
+}));
+document.addEventListener('click', ev => {
+  if (!ev.target.closest('details[data-filter]')) filters.forEach(d => { d.open = false; });
+});
+document.addEventListener('keydown', ev => {
+  if (ev.key === 'Escape') filters.forEach(d => { d.open = false; });
+});
+
+/* Unfolds the filters that did not fit and takes itself off the row, because
+   what it offers is now on screen. The link it is on asks the server for the
+   same row, so this is a shortcut and not the only way through.
+
+   Deliberately not remembered anywhere: a filter picked from down here comes
+   back promoted — the server never folds one that has something picked — so
+   the state that matters survives the navigation on its own, and the state
+   that does not is a row that reverts to its short self. */
+const morebtn = $('#morebtn');
+if (morebtn) {
+  morebtn.addEventListener('click', ev => {
+    ev.preventDefault();
+    $$('details[data-more]').forEach(d => { d.hidden = false; });
+    morebtn.hidden = true;
+  });
+}
+
 const rows = $$('tr[data-row]');
 const boxes = rows.map(r => r.querySelector('.groupbox'));
 const all = $('#all');
