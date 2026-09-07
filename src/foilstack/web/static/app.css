@@ -1186,6 +1186,35 @@ tr.is-sold .rowname { color: var(--faint); }
    Analytics screen
    ========================================================================== */
 .stats-pad { flex: 1; overflow: auto; padding: 16px; }
+
+/* The value threshold: which cards are worth counting towards a position.
+   In the bar rather than the panel it affects, because it governs four
+   figures across three panels and parking it beside any one of them would
+   read as belonging to that one. */
+.valgate { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.valgate label { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
+.valgate input {
+  width: 80px; height: 22px; padding: 0 5px;
+  border: 1px solid var(--rule); border-radius: 3px;
+  background: var(--surface); color: var(--ink);
+  font-family: var(--mono); font-size: 11px;
+}
+.valgate input:focus { outline: none; border-color: var(--green); }
+.valgate .btn { height: 22px; padding: 0 8px; font-size: 11px; }
+/* Above the tiles rather than below them, because it is what the tiles mean.
+   Read after the numbers it qualifies, it is a correction; read before, it is
+   a heading. */
+.valgate-note {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  margin-bottom: 10px;
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+}
+.valgate-note .btn.linkish { font-size: 11px; }
+/* What a figure left out, said where the figure is. Dimmer than `.s` and set
+   apart from it, so a tile reads as a number, its own caption, and then the
+   qualification — three lines of equal weight would make every tile look
+   like a warning. */
+.tile .s.left-out { color: var(--faint); margin-top: 6px; line-height: 1.35; }
 .tile-grid {
   display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 10px;
 }

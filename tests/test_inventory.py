@@ -419,3 +419,88 @@ def test_parse_floor_rejects_rather_than_correcting():
 def test_a_bad_rule_does_not_discard_a_good_floor():
     """The two halves of a policy fail independently, or one guard cancels the other."""
     assert Pricing.of("nonsense", "2.00") == Pricing(rule="market", floor=2.00)
+
+
+# --------------------------------------------------------------------------
+# The value threshold: which cards count towards a position. A reporting
+# choice and nothing else — it must never move a price, a sale or a card.
+# --------------------------------------------------------------------------
+
+
+def test_threshold_rejects_values_that_are_not_numbers():
+    from foilstack.inventory import parse_threshold
+
+    for bad in ("", "abc", None, "nan", "inf", "-inf"):
+        with pytest.raises(ValueError):
+            parse_threshold(bad)
+
+
+def test_threshold_is_bounded_at_both_ends():
+    """Unbounded, one hand-edited `?min=` reports a whole shelf as worth $0."""
+    from foilstack.inventory import MAX_THRESHOLD, parse_threshold
+
+    with pytest.raises(ValueError):
+        parse_threshold(-1)
+    with pytest.raises(ValueError):
+        parse_threshold(MAX_THRESHOLD + 0.01)
+    assert parse_threshold(MAX_THRESHOLD) == MAX_THRESHOLD
+    assert parse_threshold("1.005") == 1.0
+
+
+def test_a_card_worth_exactly_the_threshold_counts():
+    """ "At least" is the label on the field, so the bar has to be inclusive."""
+    from foilstack.inventory import counts_towards_value
+
+    assert counts_towards_value(_row(market=1.00), 1.00)
+    assert not counts_towards_value(_row(market=0.99), 1.00)
+
+
+def test_an_unpriced_card_does_not_clear_a_threshold():
+    """It cannot be shown to be worth a dollar, and it adds nothing either way.
+
+    All this decides is whether the screen counts it as left out and says so,
+    which is the side that hides nothing.
+    """
+    from foilstack.inventory import counts_towards_value
+
+    assert not counts_towards_value(_row(market=None), 1.00)
+    # ...but at no threshold at all, nothing is excluded from anything.
+    assert counts_towards_value(_row(market=None), 0.0)
+
+
+def test_zero_threshold_counts_every_card():
+    from foilstack.inventory import split_by_value
+
+    rows = [_row(market=0.01), _row(market=None), _row(market=500.0)]
+    counted, excluded = split_by_value(rows, 0.0)
+    assert len(counted) == 3
+    assert excluded == []
+
+
+def test_split_keeps_every_row_on_exactly_one_side():
+    """The 'left out' figure explains the total, so the two must partition."""
+    from foilstack.inventory import split_by_value
+
+    rows = [_row(market=m) for m in (0.10, 0.10, 1.00, 12.5, None)]
+    counted, excluded = split_by_value(rows, 1.00)
+    assert len(counted) + len(excluded) == len(rows)
+    assert sum(r["market"] or 0 for r in counted) == 13.5
+    assert len(excluded) == 3
+
+
+class _FakeUser:
+    def __init__(self, value_threshold):
+        self.value_threshold = value_threshold
+
+
+def test_a_bad_query_threshold_falls_back_to_the_sellers_own():
+    """Not to the shipped zero. A stale bookmark reports the position the way
+    they set it up rather than silently widening it back to everything."""
+    from foilstack.inventory import threshold_for
+
+    assert threshold_for(_FakeUser(1.0), "abc") == 1.0
+    assert threshold_for(_FakeUser(1.0), None) == 1.0
+    assert threshold_for(_FakeUser(1.0), "5") == 5.0
+    # And a column edited outside the bounds reads as "count everything",
+    # which is the answer that hides nothing.
+    assert threshold_for(_FakeUser(-3.0)) == 0.0

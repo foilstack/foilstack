@@ -1,40 +1,95 @@
 {% extends "base.html" %}
 {% block title %}Analytics · foilstack{% endblock %}
-{% block status %}{{ totals.distinct }} skus · {{ totals.count }} cards · {{ totals.market|money }} at market{% endblock %}
+{% block status %}{{ position.distinct }} skus · {{ position.count }} cards · {{ position.market|money }} at market{% if threshold %} · {{ left_out.count }} under {{ threshold|money }} not counted{% endif %}{% endblock %}
 
 {% block screen %}
 <div class="bar">
   <h1>Analytics</h1>
   <span class="bar-note">position from your inventory · performance needs sales data</span>
+  <div class="spacer"></div>
+  {# A control, not a caption. The threshold applies to this look at the
+     screen; making it the account's is the separate button below, for the
+     reason the listing screen's floor has two presses. #}
+  <form class="valgate" method="get" action="/analytics">
+    <label for="min">count cards worth at least</label>
+    <input id="min" name="min" type="number" inputmode="decimal"
+           min="0" max="{{ max_threshold }}" step="0.01"
+           value="{{ '%.2f'|format(threshold) }}"
+           title="Cards below this are left out of inventory value, listed value and the by-game bars. Nothing else moves: they stay in your inventory, keep their prices, and count in full when they sell.">
+    <button class="btn" type="submit">Apply</button>
+  </form>
 </div>
 
 <div class="stats-pad">
+  {# Which threshold is in force and whether it is the saved one. The same
+     three facts the floor states, and stated for the same reason: a position
+     reported under a number the seller never saved must not be able to pass
+     for the one they set. #}
+  <div class="valgate-note">
+    {% if threshold_override %}
+    <span class="pill">this view only</span>
+    Counting cards worth {{ threshold|money }} or more.
+    {% if account_threshold %}Your saved threshold is {{ account_threshold|money }}.
+    {% else %}You have not saved one, so this screen normally counts every card.{% endif %}
+    <button class="btn linkish" type="button" id="save-threshold"
+            data-threshold="{{ '%.2f'|format(threshold) }}">
+      Save {{ threshold|money }} as my threshold
+    </button>
+    {% elif threshold %}
+    Counting cards worth {{ threshold|money }} or more — your saved threshold.
+    Set it to $0.00 to count everything.
+    {% else %}
+    Counting every card. Raise the threshold to leave slow-moving bulk out of
+    the value figures below.
+    {% endif %}
+  </div>
+
   <div class="tile-grid">
     <div class="tile">
       <div class="k">Inventory value</div>
-      <div class="v">{{ totals.market|money }}</div>
-      <div class="s">{{ totals.count }} cards · {{ totals.distinct }} skus</div>
+      <div class="v">{{ position.market|money }}</div>
+      <div class="s">{{ position.count }} cards · {{ position.distinct }} skus</div>
+      {# Named where it would have been counted. A figure that quietly drops
+         part of an inventory is worse than one that counts it, so the screen
+         always says what it left out and what that was worth. #}
+      {% if left_out.count %}
+      <div class="s left-out">
+        {{ left_out.count }} card{{ '' if left_out.count == 1 else 's' }} under
+        {{ threshold|money }} left out, worth {{ left_out.market|money }}
+      </div>
+      {% endif %}
     </div>
     <div class="tile">
       <div class="k">Listed value</div>
       <div class="v">{{ listed_value|money }}</div>
       <div class="s">{{ unlisted_value|money }} not yet listed</div>
+      {% if left_out.count %}<div class="s left-out">counted cards only</div>{% endif %}
     </div>
     <div class="tile">
       <div class="k">Cost basis</div>
       <div class="v">{{ totals.cost|money if totals.cost else '—' }}</div>
       <div class="s">{% if totals.cost %}across {{ totals.distinct }} skus{% else %}no cost recorded on any row{% endif %}</div>
+      {# Never filtered. What a position is worth is a forecast and the
+         threshold is a judgement about that forecast; what it cost is not —
+         the money left the bank for the cheap cards too. #}
+      {% if left_out.count %}<div class="s left-out">every card you hold, including the {{ left_out.count }} not counted above</div>{% endif %}
     </div>
     <div class="tile">
       <div class="k">Unrealised gain</div>
-      <div class="v">{{ (totals.market - totals.cost)|money if totals.cost else '—' }}</div>
-      <div class="s">{% if totals.cost %}at market, before fees{% else %}needs a cost basis{% endif %}</div>
+      <div class="v">{{ position.gain|money if position.gain is not none else '—' }}</div>
+      <div class="s">{% if position.gain is not none %}at market, before fees{% else %}needs a cost basis{% endif %}</div>
+      {% if left_out.count and position.gain is not none %}
+      <div class="s left-out">counted value less the cost of everything held</div>
+      {% endif %}
     </div>
   </div>
 
   <div class="chart-grid">
     <div class="panel">
-      <div class="panel-title"><span>Inventory value by game</span></div>
+      <div class="panel-title">
+        <span>Inventory value by game</span>
+        {% if left_out.count %}<span class="pill">{{ threshold|money }} and up</span>{% endif %}
+      </div>
       {% for b in by_game %}
       <div class="brow">
         <div class="lbl">{{ b.label }}</div>
@@ -49,12 +104,20 @@
     <div class="panel">
       <div class="panel-title"><span>Position</span></div>
       <table class="kv">
+        {# Both populations, side by side, so the threshold never leaves a
+           question the screen will not answer. Everything held is always
+           readable here even when the value figures above exclude part of
+           it — the cards are still yours and the panel says so. #}
         <tr><td>Cards on hand</td><td>{{ totals.count }}</td></tr>
         <tr><td>Distinct skus</td><td>{{ totals.distinct }}</td></tr>
-        <tr><td>Market value</td><td>{{ totals.market|money }}</td></tr>
-        <tr><td>Suggested list value</td><td>{{ totals.listed|money }}</td></tr>
+        {% if threshold %}
+        <tr><td>Counted at {{ threshold|money }} and up</td><td>{{ position.count }}</td></tr>
+        <tr><td>Under {{ threshold|money }}</td><td>{{ left_out.count }} · {{ left_out.market|money }}</td></tr>
+        {% endif %}
+        <tr><td>Market value{% if threshold %} counted{% endif %}</td><td>{{ position.market|money }}</td></tr>
+        <tr><td>Suggested list value{% if threshold %} counted{% endif %}</td><td>{{ position.listed|money }}</td></tr>
         <tr><td>Cost basis on hand</td><td>{{ totals.cost|money if totals.cost else '—' }}</td></tr>
-        <tr><td>Unrealised gain</td><td>{{ (totals.market - totals.cost)|money if totals.cost else '—' }}</td></tr>
+        <tr><td>Unrealised gain</td><td>{{ position.gain|money if position.gain is not none else '—' }}</td></tr>
       </table>
     </div>
   </div>
@@ -123,4 +186,29 @@
     </div>
   </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Saving the threshold is a separate press from applying it. Typing a number
+// and hitting Apply re-reports this screen and nothing else; this is the one
+// that becomes the account's answer to "what counts as inventory", so it has
+// to be asked for.
+$('#save-threshold')?.addEventListener('click', async ev => {
+  const btn = ev.currentTarget;
+  btn.disabled = true;
+  // Not `quiet`: a rejected threshold has a reason worth reading, and there
+  // is no figure on screen that visibly fails to move to signal the failure.
+  const out = await postForm('/api/account/value-threshold',
+                             { threshold: btn.dataset.threshold },
+                             { error: 'that threshold was not saved' });
+  if (!out) { btn.disabled = false; return; }
+  // Reloaded with `min` dropped rather than patched in place: saving turns a
+  // view-only threshold into the account's, which changes the note, the
+  // button, and what the URL means.
+  const url = new URL(location.href);
+  url.searchParams.delete('min');
+  location.href = url;
+});
+</script>
 {% endblock %}
