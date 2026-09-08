@@ -415,3 +415,81 @@ def test_a_sku_finds_its_own_card(priced_inventory):
     # And the search still narrows: a fixture where every card matched would
     # pass this whatever the needle did.
     assert found.total_lines > 1
+
+
+def test_scoped_items_match_the_unscoped_read(priced_inventory):
+    """Narrowing in the query must answer what narrowing afterwards answered.
+
+    `export_rows` used to fold `items()` over an account's whole stock and then
+    skip the rows it had not selected, which made a twelve-row listing run cost
+    what listing everything costs. The ids go into the statement now, and the
+    only thing that may change is the price of asking — so every row is
+    compared whole against what the old shape would have produced.
+    """
+    from foilstack import db, inventory
+
+    _, user_id = priced_inventory
+    with db.session() as session:
+        every = inventory.items(session, user_id, inventory.Pricing())
+        assert len(every) > 2, "a subset of one row proves nothing about scoping"
+
+        wanted = {every[0]["id"], every[-1]["id"]}
+        scoped = inventory.items(session, user_id, inventory.Pricing(), ids=wanted)
+
+        assert scoped == [r for r in every if r["id"] in wanted]
+        # Order is part of the answer: `items()` is read by callers that fold
+        # it in sequence, and a chunked fetch orders each statement rather than
+        # the concatenation of them.
+        assert [r["id"] for r in scoped] == [r["id"] for r in every if r["id"] in wanted]
+
+        # An empty selection is not a missing one. A run that resolved to no
+        # rows must not price the whole account, which is the failure
+        # `Selection` exists to keep off `/listings`.
+        assert inventory.items(session, user_id, inventory.Pricing(), ids=set()) == []
+        assert inventory.items(session, user_id, inventory.Pricing(), ids=None) == every
+
+        # And an id belonging to nobody here is simply absent, rather than
+        # widening the read or raising.
+        assert inventory.items(session, user_id, inventory.Pricing(), ids={-1}) == []
+
+
+def test_scoped_items_survive_more_ids_than_one_statement_binds(priced_inventory, monkeypatch):
+    """The chunking, driven rather than trusted.
+
+    Postgres binds at most 65535 parameters in a message and `IN (...)` spends
+    one per element, so a `sel=all` run over a large account is the case that
+    breaks. Reaching that many rows in a fixture is not worth the minutes, so
+    the chunk size is lowered instead — the seam is the same one either way,
+    and this drives several chunks against a handful of rows.
+    """
+    from foilstack import db, inventory
+
+    _, user_id = priced_inventory
+    monkeypatch.setattr(inventory, "BIND_CHUNK", 1)
+    with db.session() as session:
+        every = inventory.items(session, user_id, inventory.Pricing())
+        wanted = {r["id"] for r in every}
+        assert len(wanted) > 2
+
+        assert inventory.items(session, user_id, inventory.Pricing(), ids=wanted) == every
+
+
+def test_export_rows_scopes_to_the_selection(priced_inventory):
+    """The caller that motivated all of it, end to end."""
+    from foilstack import db, inventory
+
+    _, user_id = priced_inventory
+    with db.session() as session:
+        pricing = inventory.Pricing()
+        every = inventory.export_rows(session, user_id, pricing)
+        assert len(every) > 1
+
+        wanted = set(every[0]["ids"])
+        scoped = inventory.export_rows(session, user_id, pricing, ids=wanted)
+
+        assert scoped == [every[0]]
+        # A line is regrouped from its copies, so scoping to some of them has
+        # to restate the line rather than hand back the whole one: a quantity
+        # inherited from the unscoped read would export cards the seller did
+        # not select.
+        assert sum(r["quantity"] for r in scoped) == len(wanted)
