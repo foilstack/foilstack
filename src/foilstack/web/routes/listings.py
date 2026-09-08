@@ -51,6 +51,36 @@ router = APIRouter()
 # enough to be shared around.
 MAX_SELECTED_LINES = 50_000
 
+# How many lines of a run the table paints before it stops and says so.
+#
+# A display budget and nothing else. The run is whatever was selected — the
+# totals, the CSV, the `Mark N` buttons and the TCGplayer round trip all cover
+# every line of it, and none of them consult this number. What it bounds is the
+# HTML: `sel=all` may resolve fifty thousand lines, and fifty thousand rows of
+# this table is tens of megabytes the browser has to parse before it paints the
+# figure the seller actually came to read.
+#
+# Deliberately not a pager. On `/inventory` a page is what the seller acts on,
+# which is why it earns page numbers in the URL and why `sel=page` means
+# something; here the *run* is the unit and a row is not clickable, so paging
+# controls would suggest the run is divided when only the view is. It is also
+# not lazily scrolled: the header folds every line before the page can print
+# `$2,203.43 at list`, so loading rows on scroll would buy the same smaller DOM
+# for a JSON endpoint and an observer, on a screen nobody browses.
+#
+# Set well above any selection made by ticking rows. One inventory page is 100
+# grouped lines, and `export_rows` splits those by condition and finish, so a
+# hand-picked run or a `sel=page` one cannot exceed this: a seller who chose
+# rows one at a time always sees every one of them.
+#
+# What does get windowed is the run nobody picked — `sel=all`, and the bare
+# `/listings` off the nav bar, which is no selection at all and which
+# `_resolve` answers with the whole of stock. That second one is the common
+# case rather than the exotic one, and it is the page `--shots` was timing out
+# on: reaching this screen without touching inventory first prices everything
+# the seller owns, and the screen says `whole inventory` because it does.
+RUN_ROWS_SHOWN = 1_000
+
 # How many set names the match form spells out before it stops naming them.
 # The list exists so the seller can filter their TCGplayer export down to it;
 # past a couple of dozen sets a filtered export is not meaningfully smaller
@@ -219,6 +249,14 @@ def page_listings(
     )
     picked_label = ", ".join(c["name"] for c in CHANNELS if c["key"] in picked)
 
+    # Windowed last, after every figure above has been folded over the whole
+    # run. `line_count` is the run; `rows` is what gets painted. The template
+    # counts listings off `line_count` for that reason — a status bar reporting
+    # the window would be the truncated-count bug the review queue already had,
+    # where a heading said `20 cards` over a batch of fifty.
+    line_count = len(rows)
+    shown = rows[:RUN_ROWS_SHOWN]
+
     # The selection travels onward as whatever it arrived as. Re-encoding a
     # filter run as its resolved ids would put the length ceiling back on the
     # one URL the browser follows after the run is priced — and it is the
@@ -237,7 +275,20 @@ def page_listings(
         "listings.html",
         {
             "nav": "listings",
-            "rows": rows,
+            "rows": shown,
+            # The run, and how much of it the table is showing. Both, because
+            # a seller looking at a thousand rows under a heading that says
+            # 3,884 has to be told plainly that the missing ones are in the
+            # file — a window that looks like a truncation is worse than no
+            # window, since the fix for a truncated export is not obvious and
+            # the seller would have no reason to trust the CSV.
+            "line_count": line_count,
+            "rows_hidden": line_count - len(shown),
+            # Preformatted, as `matched_label` is on the inventory screen:
+            # Jinja has no thousands filter here and a run is exactly the size
+            # at which the separators start mattering.
+            "shown_label": f"{len(shown):,}",
+            "line_label": f"{line_count:,}",
             "rule": pricing.rule,
             "rules": [
                 {

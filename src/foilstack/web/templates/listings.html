@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 {% block title %}Listing run · foilstack{% endblock %}
-{% block status %}{{ card_count }} cards · {{ rows|length }} listings · {{ rule_obj.name }} · {{ run_value|money }} at list{% endblock %}
+{% block status %}{{ card_count }} cards · {{ line_count }} listings · {{ rule_obj.name }} · {{ run_value|money }} at list{% endblock %}
 
 {% block screen %}
 <div class="bar bar-nowrap">
   <h1>Listing run</h1>
   <span class="bar-note">
     {{ card_count }} card{{ '' if card_count == 1 else 's' }}
-    {% if rows|length != card_count %}· {{ rows|length }} listings{% endif %}
+    {% if line_count != card_count %}· {{ line_count }} listings{% endif %}
     {# A run chosen by filter says so in its own terms. The seller never saw
        most of these lines — that is the point of selecting by filter — so a
        bare "selected" would be the run declining to say what it is over,
@@ -226,6 +226,16 @@
           {% endfor %}
         </tbody>
       </table>
+      {% if rows_hidden %}
+      {# The run is not truncated and the file is not short: this is the table
+         declining to paint fifty thousand rows. Said in those words because a
+         seller who reads it as a truncated export has no obvious way to check,
+         and would be right not to trust the CSV. #}
+      <div class="empty">
+        showing the first {{ shown_label }} of {{ line_label }} lines ·
+        the run and its file cover all {{ line_label }}
+      </div>
+      {% endif %}
       {% if not rows %}
       <div class="empty">nothing selected · pick rows on the inventory screen</div>
       {% endif %}
