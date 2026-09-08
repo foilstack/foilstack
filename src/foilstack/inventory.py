@@ -9,7 +9,7 @@ inventing its own arithmetic.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, replace
 from itertools import takewhile
 from typing import Any
@@ -499,7 +499,7 @@ def sku(item_id: int) -> str:
     return f"FS-{10000 + item_id}"
 
 
-# How many card ids one price fetch may name in a single statement.
+# How many ids one statement may name in an `IN (...)`.
 #
 # Postgres carries at most 65535 bind parameters in one message and `IN (...)`
 # renders one per element, so an account holding more distinct cards than that
@@ -510,7 +510,11 @@ def sku(item_id: int) -> str:
 #
 # Chunked well below the limit rather than exactly at it: the cap is on the
 # whole message, and this list is not always the only thing in one.
-PRICE_CHUNK = 10_000
+#
+# Shared by the price fetch and the scoped read in `items`, because it is a
+# fact about Postgres rather than about either query — a second copy tuned
+# separately would be two answers to one protocol limit.
+BIND_CHUNK = 10_000
 
 
 def _prices_for(session, card_ids: set[int]) -> dict[int, dict[str, Any]]:
@@ -524,9 +528,9 @@ def _prices_for(session, card_ids: set[int]) -> dict[int, dict[str, Any]]:
         return {}
     out: dict[int, dict[str, Any]] = {}
     ids = list(card_ids)
-    for start in range(0, len(ids), PRICE_CHUNK):
+    for start in range(0, len(ids), BIND_CHUNK):
         rows = session.scalars(
-            select(db.CardPrice).where(db.CardPrice.card_id.in_(ids[start : start + PRICE_CHUNK]))
+            select(db.CardPrice).where(db.CardPrice.card_id.in_(ids[start : start + BIND_CHUNK]))
         ).all()
         for row in rows:
             out.setdefault(row.card_id, {})[row.sub_type] = row
@@ -798,7 +802,11 @@ def index(
 
 
 def items(
-    session, user_id: int, pricing: Pricing, status: str | None = None
+    session,
+    user_id: int,
+    pricing: Pricing,
+    status: str | None = None,
+    ids: Collection[int] | None = None,
 ) -> list[dict[str, Any]]:
     """Every row this account owns, optionally only those in one state.
 
@@ -810,6 +818,22 @@ def items(
     alongside stock. Callers that must not see sold cards — a listing run, most
     obviously, since listing something you have already sold is the one
     inventory error that reaches a customer — pass "stock" explicitly.
+
+    `ids` narrows to particular rows, and narrows them *in the query*. A caller
+    holding a selection could always drop the rest afterwards, and
+    `export_rows` did: it folded this function over the whole of an account's
+    stock and then skipped what it had not chosen. That ties the cost of a
+    listing run to how much the seller owns rather than to how much they
+    selected, which is the same wrong number the inventory screen was built
+    four times over. Twelve ticked rows on a large account paid for the full
+    join, every printing price, and a hundred and fifty thousand dictionaries
+    built to be thrown away — and paid it again on the export click behind it.
+
+    An empty collection means no rows, and is deliberately distinct from
+    `None`. The two have to stay apart here because a selection that resolved
+    to nothing must not read as "everything the account owns"; that is the
+    hazard `Selection` exists to keep off `/listings` and it should not be
+    reintroduced one layer down.
     """
     query = (
         select(db.InventoryItem, db.Card)
@@ -818,7 +842,23 @@ def items(
     )
     if status is not None:
         query = query.where(db.InventoryItem.status == status)
-    rows = session.execute(query.order_by(db.InventoryItem.id.desc())).all()
+    if ids is None:
+        rows = session.execute(query.order_by(db.InventoryItem.id.desc())).all()
+    else:
+        # Chunked for the reason the price fetch is — see `BIND_CHUNK`. A
+        # `sel=all` run may name every copy of a fifty-thousand-line result,
+        # which is well past what one statement can bind. Sorted after the
+        # fact rather than relying on the per-chunk ordering, which orders
+        # each statement and not the concatenation of them.
+        wanted = list(ids)
+        rows = [
+            row
+            for start in range(0, len(wanted), BIND_CHUNK)
+            for row in session.execute(
+                query.where(db.InventoryItem.id.in_(wanted[start : start + BIND_CHUNK]))
+            ).all()
+        ]
+        rows.sort(key=lambda r: r[0].id, reverse=True)
     prices = _prices_for(session, {card.id for _, card in rows})
 
     out: list[dict[str, Any]] = []
@@ -1430,11 +1470,13 @@ def export_rows(
 
     A sold card is never here — an export containing one is a listing for
     something you cannot ship.
+
+    `ids` is a selection and is handed to `items` rather than applied to what
+    comes back, so a run costs what it covers. See the note there for why that
+    distinction is worth a keyword argument.
     """
     lines: dict[tuple, dict[str, Any]] = {}
-    for row in items(session, user_id, pricing, status="stock"):
-        if ids is not None and row["id"] not in ids:
-            continue
+    for row in items(session, user_id, pricing, status="stock", ids=ids):
         key = (row["card_id"], row["condition"], row["finish"])
         line = lines.get(key)
         if line is None:
