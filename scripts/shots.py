@@ -22,7 +22,13 @@ from playwright.sync_api import sync_playwright
 SHOTS = [
     ("import", "/app", None),
     ("inventory", "/inventory", None),
-    ("listings", "/listings", None),
+    # Both states of this screen, because its default changed and the
+    # interesting one is no longer what a bare visit gives you. `/listings`
+    # with nothing selected is now the empty screen a seller lands on from the
+    # nav bar; the run itself has to be asked for, and the link below is the
+    # one that screen offers.
+    ("listings-empty", "/listings", None),
+    ("listings", "/listings?sel=all&listed=unlisted", None),
     ("analytics", "/analytics", None),
     # The same screen with the value threshold applied. A separate shot
     # because the whole point of the control is the figures it changes,

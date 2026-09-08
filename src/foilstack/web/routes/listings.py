@@ -21,7 +21,7 @@ from urllib.parse import quote_plus
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from foilstack import db, inventory, tcgplayer
 from foilstack.config import Settings
@@ -154,6 +154,12 @@ def _resolve(
     the account owned while the screen behind it read `Not listed 75`.
     """
     if not sel.by_filter:
+        # Empty stays empty. `export_rows` reads `None` as "everything this
+        # account owns", and passing it here is what made a bare `/listings`
+        # off the nav bar price the seller's whole inventory and offer to mark
+        # all of it — a run nobody asked for, one click from the screen's most
+        # consequential button. Reaching this screen without a selection is now
+        # a screen that says so and offers a way to make one.
         return set(sel.ids), ""
 
     copies = inventory.index(session, user_id, pricing)
@@ -219,7 +225,7 @@ def page_listings(
     marketplaces. It ends in a CSV — nothing here posts to a marketplace."""
     chosen, described = _resolve(session, user.id, pricing, sel)
     picked = set(channel or ["tcgplayer"])
-    rows = inventory.export_rows(session, user.id, pricing, ids=chosen or None)
+    rows = inventory.export_rows(session, user.id, pricing, ids=chosen)
     run_value = sum((r["list_price"] or 0) * r["quantity"] for r in rows)
     market_value = sum((r["market"] or 0) * r["quantity"] for r in rows)
 
@@ -257,6 +263,33 @@ def page_listings(
     line_count = len(rows)
     shown = rows[:RUN_ROWS_SHOWN]
 
+    # Whether to offer the way in, for a seller who arrived with nothing
+    # selected. Counted in SQL rather than off `rows`, which is empty in
+    # exactly the case this is for.
+    #
+    # A test for "is there anything to list", not a figure to print. The run
+    # behind the link matches inventory lines and takes them whole, so it is
+    # reliably larger than this; showing it on the button promised 19,746 and
+    # delivered 28,160.
+    #
+    # It is a link and not a default: `?sel=all&listed=unlisted` is a stated
+    # selection that arrives in the URL, can be reloaded onto and reads back
+    # in the run's own terms. That is the whole distinction — the widest
+    # useful run is one deliberate click away, rather than the thing that
+    # happens to you for clicking `Listings` in the nav.
+    unlisted = 0
+    if not rows:
+        unlisted = (
+            session.scalar(
+                select(func.count(db.InventoryItem.id)).where(
+                    db.InventoryItem.user_id == user.id,
+                    db.InventoryItem.status == "stock",
+                    db.InventoryItem.listed == 0,
+                )
+            )
+            or 0
+        )
+
     # The selection travels onward as whatever it arrived as. Re-encoding a
     # filter run as its resolved ids would put the length ceiling back on the
     # one URL the browser follows after the run is priced — and it is the
@@ -283,6 +316,10 @@ def page_listings(
             # window, since the fix for a truncated export is not obvious and
             # the seller would have no reason to trust the CSV.
             "line_count": line_count,
+            # Only meaningful on the empty screen, and zero everywhere else so
+            # the template has one thing to test.
+            "unlisted_count": unlisted,
+            "unlisted_href": f"/listings?rule={pricing.rule}{chans}{fq}&sel=all&listed=unlisted",
             "rows_hidden": line_count - len(shown),
             # Preformatted, as `matched_label` is on the inventory screen:
             # Jinja has no thousands filter here and a run is exactly the size
@@ -584,6 +621,27 @@ async def api_unmark_listed(
     return {"ok": True, "unmarked": changed}
 
 
+def _require_selection(sel: Selection, chosen: set[int]) -> None:
+    """Refuse to build a file for a run nobody chose.
+
+    The screen can answer "nothing selected" with a screen. A download cannot:
+    a header-only CSV is a file that looks like a file, uploads without
+    complaint and does nothing, and nothing about it says the selection was
+    the problem. That is the shape of the dead-file trap the TCGplayer export
+    button was removed from the inventory bar for.
+
+    Only a *missing* selection is refused. A filter that legitimately matched
+    nothing is an explicit question with an empty answer, and an empty file is
+    the honest reply to it.
+    """
+    if not sel.by_filter and not chosen:
+        raise HTTPException(
+            400,
+            "nothing selected. Pick rows on the inventory screen and press "
+            "List selected, or open /listings to list everything unlisted.",
+        )
+
+
 # Declared ahead of `/export/{name}`. FastAPI matches in declaration order and
 # these do not overlap — one is a POST two segments deep — but the pair is the
 # same shape as the one that has already broken here once, and keeping the
@@ -606,7 +664,8 @@ async def export_tcgplayer_match(
     catalogue has no way to know.
     """
     chosen, _ = _resolve(session, user.id, pricing, sel)
-    rows = inventory.export_rows(session, user.id, pricing, ids=chosen or None)
+    _require_selection(sel, chosen)
+    rows = inventory.export_rows(session, user.id, pricing, ids=chosen)
     if not rows:
         raise HTTPException(400, "nothing in stock to list")
 
@@ -673,7 +732,8 @@ def export_csv(
     if spec is None:
         raise HTTPException(404, "no such exporter")
     chosen, _ = _resolve(session, user.id, pricing, sel)
-    rows = inventory.export_rows(session, user.id, pricing, ids=chosen or None)
+    _require_selection(sel, chosen)
+    rows = inventory.export_rows(session, user.id, pricing, ids=chosen)
     body = spec.render(rows)
     joblog.add(user.id, f"wrote {spec.filename} · {len(rows)} rows · {_policy_label(pricing)}")
     return Response(
