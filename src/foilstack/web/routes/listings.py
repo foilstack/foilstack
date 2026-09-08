@@ -70,9 +70,15 @@ MAX_SELECTED_LINES = 50_000
 #
 # Set well above any selection made by ticking rows. One inventory page is 100
 # grouped lines, and `export_rows` splits those by condition and finish, so a
-# hand-picked run or a `sel=page` one cannot exceed this — the seller who chose
-# rows one at a time always sees all of them, and only an unbounded `sel=all`
-# is ever windowed.
+# hand-picked run or a `sel=page` one cannot exceed this: a seller who chose
+# rows one at a time always sees every one of them.
+#
+# What does get windowed is the run nobody picked — `sel=all`, and the bare
+# `/listings` off the nav bar, which is no selection at all and which
+# `_resolve` answers with the whole of stock. That second one is the common
+# case rather than the exotic one, and it is the page `--shots` was timing out
+# on: reaching this screen without touching inventory first prices everything
+# the seller owns, and the screen says `whole inventory` because it does.
 RUN_ROWS_SHOWN = 1_000
 
 # How many set names the match form spells out before it stops naming them.
