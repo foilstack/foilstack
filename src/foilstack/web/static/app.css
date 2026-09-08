@@ -1360,6 +1360,17 @@ code {
   padding: 26px; text-align: center;
   font-family: var(--mono); font-size: 11px; color: var(--faint);
 }
+/* The no-selection state on /listings, which is a screen in its own right
+   rather than a one-line apology: it is where a seller who clicked `Listings`
+   in the nav lands, and the run they probably wanted has to be reachable from
+   it. Generous padding because it sits alone in the table's scroll box. */
+.empty-panel { padding: 56px 26px; }
+.empty-panel p { margin: 0 0 10px; }
+.empty-lead { font-size: 13px; color: var(--ink); }
+.empty-actions {
+  display: flex; gap: 8px; justify-content: center;
+  margin-top: 18px; flex-wrap: wrap;
+}
 
 /* ==========================================================================
    Responsive — the mock's two breakpoints. Under 860 the rail becomes tabs in

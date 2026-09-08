@@ -609,8 +609,16 @@ def test_correcting_to_a_card_that_does_not_exist_is_refused(app_and_data):
 
 def test_stranger_exports_an_empty_csv(stranger):
     """Header only. An unscoped export is a one-click dump of everyone's
-    inventory, and it looks like a working feature."""
-    assert len(stranger.get("/export/tcgplayer").text.splitlines()) == 1
+    inventory, and it looks like a working feature.
+
+    A bare export is refused now rather than answered emptily — a header-only
+    CSV is a file that uploads and does nothing. So the scoping claim is made
+    against a stated selection, which is the one that could actually leak: the
+    stranger asks for everything they own and gets a header, because they own
+    nothing.
+    """
+    assert stranger.get("/export/tcgplayer").status_code == 400
+    assert len(stranger.get("/export/tcgplayer?sel=all").text.splitlines()) == 1
 
 
 def test_owner_still_sees_their_own(app_and_data):
@@ -679,7 +687,7 @@ def test_owner_can_edit_mark_sold_and_the_row_leaves_stock(app_and_data):
 
     # Sold rows must not reach a marketplace export.
     client.post(f"/api/inventory/{ids['item']}", json={"status": "sold", "sold_price": "12.00"})
-    assert len(client.get("/export/tcgplayer").text.splitlines()) == 1
+    assert len(client.get("/export/tcgplayer?sel=all").text.splitlines()) == 1
     assert client.get("/inventory?show=stock").text.count("<tr data-row") == 0
     assert client.get("/inventory?show=sold").text.count("<tr data-row") == 1
 
@@ -831,7 +839,7 @@ def test_mixed_conditions_are_one_inventory_row_but_two_export_lines(app_and_dat
     assert page.count("<tr data-row") == 1
     assert "1 NM, 1 LP" in page or "1 LP, 1 NM" in page
 
-    rows = [r for r in client.get("/export/tcgplayer").text.splitlines() if "Split Me" in r]
+    rows = [r for r in client.get("/export/tcgplayer?sel=all").text.splitlines() if "Split Me" in r]
     assert len(rows) == 2, f"condition must split the export: {rows}"
 
 
@@ -841,7 +849,9 @@ def test_export_emits_one_line_per_stock_line_with_a_real_quantity(app_and_data)
     _fresh_line("t:export", "Export Me", ["NM", "NM", "NM"])
     client = _signed_in(app)
 
-    rows = [r for r in client.get("/export/tcgplayer").text.splitlines() if "Export Me" in r]
+    rows = [
+        r for r in client.get("/export/tcgplayer?sel=all").text.splitlines() if "Export Me" in r
+    ]
     assert len(rows) == 1, f"three copies must be one line, got {rows}"
     assert ",3," in rows[0], f"quantity must be 3: {rows[0]}"
 
@@ -1107,11 +1117,13 @@ def test_the_list_button_ships_disabled_so_a_run_needs_a_selection(app_and_data)
     assert tag, "the inventory bar no longer has a #listbtn"
     assert "disabled" in tag.group(0), tag.group(0)
 
-    # And the thing it is guarding: no ids is not an empty run, it is all of
-    # them. If this ever starts answering zero, the button may go back to being
-    # a plain link and this whole test is moot.
+    # The button now guards a milder thing than it used to: no ids is an empty
+    # run, not the whole inventory. It stays disabled because pressing it with
+    # nothing ticked would land on a screen with nothing to do, which is a
+    # worse answer than a button that declines to be pressed.
     body = client.get("/listings").text
-    assert "whole inventory" in body
+    assert "nothing selected" in body
+    assert "whole inventory" not in body
 
 
 def _stock_item(email: str, name: str, source_id: str, sold: bool = False) -> tuple[int, int]:
@@ -1241,7 +1253,7 @@ def test_the_job_log_does_not_show_one_account_what_another_just_did(stranger, a
     before = _job_log(stranger.get("/listings").text)
 
     owner_before = _job_log(owner.get("/listings").text)
-    owner.get("/export/tcgplayer")
+    owner.get("/export/tcgplayer?sel=all")
 
     # The owner sees their own action...
     assert len(_job_log(owner.get("/listings").text)) == len(owner_before) + 1
@@ -2574,7 +2586,7 @@ def test_the_tcgplayer_round_trip_returns_the_sellers_own_sku_ids(app_and_data):
         '"0.16","","1.6000","0.1100","","0","",""'
     )
     response = _signed_in(app_and_data[0]).post(
-        "/export/tcgplayer/match", files={"file": ("pricing.csv", upload, "text/csv")}
+        "/export/tcgplayer/match?sel=all", files={"file": ("pricing.csv", upload, "text/csv")}
     )
     assert response.status_code == 200
     body = response.text
@@ -2601,7 +2613,7 @@ def test_a_stranger_gets_no_rows_from_the_tcgplayer_round_trip(stranger, app_and
         '"1.68","","2.9000","1.4100","","0","",""'
     )
     response = stranger.post(
-        "/export/tcgplayer/match", files={"file": ("pricing.csv", upload, "text/csv")}
+        "/export/tcgplayer/match?sel=all", files={"file": ("pricing.csv", upload, "text/csv")}
     )
     assert response.status_code == 400, "an account with no stock has nothing to list"
     assert "Abundance" not in response.text
@@ -2610,7 +2622,7 @@ def test_a_stranger_gets_no_rows_from_the_tcgplayer_round_trip(stranger, app_and
 def test_the_wrong_tcgplayer_file_is_refused_with_a_reason(app_and_data):
     _fresh_line("t:wrongfile", "Abundance", ["NM"])
     response = _signed_in(app_and_data[0]).post(
-        "/export/tcgplayer/match",
+        "/export/tcgplayer/match?sel=all",
         files={"file": ("orders.csv", b"Order Number,Quantity\n1,2\n", "text/csv")},
     )
     assert response.status_code == 400
@@ -3281,3 +3293,43 @@ def test_the_run_table_windows_without_shrinking_the_run(app_and_data, monkeypat
     whole = client.get("/listings?rule=market" + query).text
     assert whole.count('<td class="name">') == 10
     assert "showing the first" not in whole
+
+
+def test_a_bare_listings_visit_selects_nothing_and_offers_a_way_in(app_and_data):
+    """Clicking `Listings` in the nav must not price everything you own.
+
+    `export_rows` reads `ids=None` as "everything this account owns", and the
+    screen passed exactly that when no selection arrived — so a nav-bar visit
+    built a run over the seller's whole inventory, headed it `whole inventory`,
+    and offered to mark all of it on a marketplace. One click, on the screen's
+    most consequential button, for a run nobody had asked for.
+
+    The empty screen replaces it, and it has to be more than a refusal: the
+    widest useful run is still the one most sellers want, so it is offered as a
+    stated selection they click. `?sel=all&listed=unlisted` arrives in the URL,
+    can be reloaded onto, and reads back in the run's own terms.
+    """
+    app, _ = app_and_data
+    client = _signed_in(app)
+
+    page = client.get("/listings").text
+    assert "nothing selected" in page
+    assert "whole inventory" not in page
+
+    # Nothing is selected, so there is nothing to mark. This is the assertion
+    # that matters: the button is absent rather than merely relabelled.
+    assert "on TCGplayer" not in page, "an empty run must offer no marking at all"
+
+    # And the export behind it agrees — by refusing. A screen showing no rows
+    # over a file containing every card would be far worse than the default it
+    # replaced; a file containing nothing would be quieter and nearly as bad,
+    # since a header-only CSV uploads without complaint and does nothing.
+    refused = client.get("/export/tcgplayer")
+    assert refused.status_code == 400
+    assert "nothing selected" in refused.text
+
+    # The way in is offered, and it resolves to a real run.
+    assert "sel=all&amp;listed=unlisted" in page
+    listed_run = client.get("/listings?rule=market&sel=all&listed=unlisted").text
+    assert "nothing selected" not in listed_run
+    assert "unlisted" in listed_run

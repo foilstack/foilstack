@@ -14,7 +14,7 @@
        which is the shape of the bug that made this screen price the whole
        inventory under a heading reading `Not listed 75`. #}
     {% if described %}· {{ described }}
-    {% elif selected_ids %}· selected{% else %}· whole inventory{% endif %}
+    {% elif selected_ids %}· selected{% else %}· nothing selected{% endif %}
   </span>
   <div class="spacer"></div>
   <div class="bar-actions">
@@ -45,10 +45,14 @@
           title="Record these as listed on {{ picked_label }}. Nothing is sent — you upload the CSV yourself.">
     Mark {{ mark_ids|length }} on {{ picked_label }}
   </button>
-  {% else %}
+  {% elif card_count %}
   <button class="btn" type="button" disabled title="Tick another channel to mark these there too">
     All {{ card_count }} listed on {{ picked_label }}
   </button>
+  {# ...and nothing at all when there is no run. This twin says "everything
+     here is already listed", which over an empty selection read "All 0 listed
+     on TCGplayer" — a sentence about nothing, in the place the screen puts its
+     most consequential button. #}
   {% endif %}
   </div>
 </div>
@@ -139,10 +143,20 @@
          row marked as being on a marketplace, and the same word for the run's
          total at list price made the summary read as the value of the marked
          half. #}
+      {# Only when there is a run. These are its two figures, and over an empty
+         selection they read `$0.00` and `+$0.00` — true, and a summary of
+         nothing, next to a floor control that is still worth using. #}
+      {% if rows %}
       <div>at list &nbsp; <b>{{ run_value|money }}</b></div>
       <div>vs market &nbsp; <b>{{ '+' if delta >= 0 }}{{ delta|money }}</b></div>
+      {% endif %}
     </div>
 
+    {# Offered only when there is a run to download. With nothing selected both
+       of these lead into the 400 the export answers an empty selection with —
+       a button that cannot work, styled like one that can, which is what got
+       the TCGplayer CSV removed from the inventory bar. #}
+    {% if rows %}
     <div class="sec-label" style="margin-top: 16px">Download</div>
     {% for c in channels %}
     {% if c.on and c.exporter %}
@@ -192,11 +206,13 @@
     {% endif %}
     {% endif %}
     {% endfor %}
+    {% endif %}
   </div>
 
   <div class="run-body">
     <div class="screen-scroll">
       <table class="dtable">
+        {% if rows %}
         <thead>
           <tr>
             <th>CARD</th>
@@ -208,6 +224,7 @@
             <th>STATUS</th>
           </tr>
         </thead>
+        {% endif %}
         <tbody>
           {% for r in rows %}
           <tr>
@@ -237,7 +254,28 @@
       </div>
       {% endif %}
       {% if not rows %}
-      <div class="empty">nothing selected · pick rows on the inventory screen</div>
+      {# Arriving here with no selection used to price the seller's whole
+         inventory and offer to mark all of it. It says what it has instead,
+         and offers the widest useful run as a *click* — a stated
+         `?sel=all&listed=unlisted` that reads back in its own terms — rather
+         than as the thing that happens to you for using the nav bar. #}
+      <div class="empty empty-panel">
+        <p class="empty-lead">nothing selected</p>
+        <p>Pick rows on the inventory screen and press <strong>List selected →</strong>.</p>
+        {% if unlisted_count %}
+        {# No count on this button, deliberately. `listed=unlisted` matches
+           inventory *lines* with an unlisted copy and takes those lines whole,
+           so a line half on TCGplayer arrives with both copies — the run is
+           reliably larger than a count of unlisted copies, and the first
+           version of this promised 19,746 and delivered 28,160. The run states
+           its own terms on arrival, which is where they can be computed
+           correctly; the count survives only as the test for whether there is
+           anything to offer. #}
+        <p class="empty-actions">
+          <a class="btn btn-primary" href="{{ unlisted_href }}">List everything not yet listed →</a>
+        </p>
+        {% endif %}
+      </div>
       {% endif %}
     </div>
 
