@@ -3230,3 +3230,54 @@ def test_a_mangled_min_reports_the_sellers_own_threshold(app_and_data):
     finally:
         _set_threshold(session, 0.0)
         session.close()
+
+
+def test_the_run_table_windows_without_shrinking_the_run(app_and_data, monkeypatch):
+    """The table may paint fewer lines than the run. Nothing else may.
+
+    `sel=all` resolves up to fifty thousand lines and the table drew every one
+    of them, which is tens of megabytes the browser parses before it paints the
+    figure the seller came to read. So the table stops at `RUN_ROWS_SHOWN` and
+    says so.
+
+    The hazard is entirely in what the *rest* of the screen then reports. A
+    window that quietly became the run would be the review queue's truncation
+    bug again, where a heading said `20 cards` over a batch of fifty and the
+    Commit button named the same wrong number — every count came off the
+    shortened list, so nothing on the page admitted to it. Here the same slip
+    would end in a CSV missing rows the seller was told it contained, which
+    they would find out about from a marketplace.
+    """
+    from foilstack.web.routes import listings as listing_routes
+
+    app, _ = app_and_data
+    client = _signed_in(app)
+
+    # Five cards in two conditions each: ten export lines, ten cards.
+    lines = [_fresh_line(f"t:window{n}", f"Window Card {n}", ["NM", "LP"]) for n in range(5)]
+    ids = [i for line in lines for i in line["item_ids"]]
+    query = "".join(f"&id={i}" for i in ids)
+
+    monkeypatch.setattr(listing_routes, "RUN_ROWS_SHOWN", 3)
+    page = client.get("/listings?rule=market" + query).text
+
+    # The table is windowed...
+    assert page.count('<td class="name">') == 3
+    assert "showing the first 3 of 10 lines" in page
+
+    # ...and every other number on the screen is still about the run.
+    assert "10 cards" in page, "the run is ten cards, whatever the table paints"
+    assert "10 listings" in page
+    assert "Mark 10 on TCGplayer" in page
+
+    # The file is the part that must not move. It is built from the run, so it
+    # carries all ten lines while the table shows three.
+    csv = client.get("/export/tcgplayer?rule=market" + query).text
+    assert sum(1 for line in csv.splitlines() if "Window Card" in line) == 10
+
+    # And the window is a ceiling, not a fixed size: a run under it says
+    # nothing, because there is nothing to admit to.
+    monkeypatch.setattr(listing_routes, "RUN_ROWS_SHOWN", 1_000)
+    whole = client.get("/listings?rule=market" + query).text
+    assert whole.count('<td class="name">') == 10
+    assert "showing the first" not in whole
