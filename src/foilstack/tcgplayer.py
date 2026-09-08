@@ -83,6 +83,25 @@ TOTAL_COLUMN = "Total Quantity"
 QUANTITY_COLUMN = "Add to Quantity"
 PRICE_COLUMN = "TCG Marketplace Price"
 
+# A custom listing's id, and the reason those rows are skipped entirely.
+#
+# TCGplayer lets a seller list one physical card as its own item — their own
+# photograph, their own title — rather than against the catalogue product. Such
+# a row carries a `C-` id from a separate id space, no market or low price, a
+# `Photo URL`, a `Title` where a catalogue row leaves it blank, and `0` in
+# `Total Quantity` where a catalogue row leaves *that* blank.
+#
+# It answers to the same five columns the join is on, so it collides with the
+# real product and made the card ambiguous: in one real Pokemon export, 122 of
+# 2,469 rows were these, against 109 keys, one of which carried three of them.
+# Deciding between them was never the question. A `C-` id addresses one
+# photographed copy that has already been sold, so it is not a candidate for
+# our stock however few of them there are — which is why this drops them at the
+# read rather than teaching `fill` to prefer the catalogue row. A lone `C-` row
+# with no catalogue row beside it is not ambiguous and would have been written
+# out as a match.
+CUSTOM_ID_PREFIX = "C-"
+
 Key = tuple[str, str, str, str, str]
 
 
@@ -197,12 +216,15 @@ def fill(upload: Iterable[bytes], rows: list[dict[str, Any]]) -> tuple[str, Matc
         if key not in wanted:
             continue
         if key in found:
-            # The same five columns twice in their own export. 24 keys of
-            # 800,318 in a real file, all of them proxy printings. Two ids
-            # answer to one description and there is no evidence here for
-            # which, so neither is written: an unlisted card is a card the
-            # seller can list by hand, and a wrong SKU id edits a listing they
-            # did not mean to touch.
+            # The same five columns twice in their own export. Every real
+            # instance found so far was a custom listing, and those are gone
+            # before this point — so this is now the branch for a collision
+            # between two *catalogue* products, which none of the three real
+            # exports measured here contains. It stays because the guarantee is
+            # upstream's to break: two ids answer to one description and there
+            # is no evidence here for which, so neither is written. An unlisted
+            # card is a card the seller can list by hand, and a wrong SKU id
+            # edits a listing they did not mean to touch.
             found[key] = "ambiguous"
             continue
         ours = wanted[key]
@@ -269,6 +291,9 @@ def _read(upload: Iterable[bytes]) -> Iterator[dict[str, str]]:
     offers several exports and only one of them is this — and it has to be
     named as such. Reading on regardless would produce a valid, empty CSV and
     a seller with no idea why their inventory vanished.
+
+    Custom listings are dropped here rather than downstream; see
+    `CUSTOM_ID_PREFIX` for what they are and why they are never a candidate.
     """
     reader = csv.reader(line.decode("utf-8-sig", "replace") for line in _lines(upload))
     try:
@@ -283,7 +308,10 @@ def _read(upload: Iterable[bytes]) -> Iterator[dict[str, str]]:
     for values in reader:
         if len(values) != len(HEADER):
             continue
-        yield dict(zip(HEADER, values, strict=True))
+        row = dict(zip(HEADER, values, strict=True))
+        if row["TCGplayer Id"].startswith(CUSTOM_ID_PREFIX):
+            continue
+        yield row
 
 
 def _lines(chunks: Iterable[bytes]) -> Iterator[bytes]:

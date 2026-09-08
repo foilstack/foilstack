@@ -132,6 +132,62 @@ def test_two_ids_for_one_description_are_dropped_rather_than_guessed():
     assert report.ambiguous and "Abundance" in report.ambiguous[0]
 
 
+def test_a_custom_listing_beside_the_catalogue_row_is_ignored_not_ambiguous():
+    """A `C-` row is one photographed copy, already sold. Never our card.
+
+    The catalogue row is real, from a Pokemon export. The `C-` row is that
+    export's shape with the id and photo replaced — those identify one seller's
+    own listing, and this repository is public.
+
+    Together they are what a seller who had listed their own Abomasnow with
+    their own photograph sends back: the same five columns naming a catalogue
+    product and a dead listing of it. That read as ambiguous, and it cost the
+    card its place in the file.
+    """
+    theirs = [
+        '"7158253","Pokemon","SV02: Paldea Evolved","Abomasnow","","011/193","Rare","Near Mint Holofoil","0.05","0.03","1.5000","0.0100","","0","",""',
+        '"C-1000001","Pokemon","SV02: Paldea Evolved","Abomasnow","Abomasnow","011/193","Rare","Near Mint Holofoil","","","","","0","0","0.0100","https://example.invalid/photo"',
+    ]
+    ours = _ours(
+        tcg_product_line="Pokemon",
+        set_name="SV02: Paldea Evolved",
+        tcg_name="Abomasnow",
+        number="011/193",
+        tcg_condition="Near Mint Holofoil",
+    )
+    body, report = tcgplayer.fill(_upload(theirs), [ours])
+
+    rows = list(csv.reader(io.StringIO(body)))
+    assert report.matched == 1
+    assert not report.ambiguous
+    assert rows[1][0] == "7158253", "the catalogue id, never the custom listing's"
+
+
+def test_a_custom_listing_alone_is_not_written_as_a_match():
+    """The half that is not about duplicates.
+
+    With no catalogue row beside it there is nothing to be ambiguous with, so
+    the old reading was a clean single match — and it wrote the custom
+    listing's id into the column that decides which listing the seller's
+    quantity lands on, pointing it at a copy already sold.
+    """
+    theirs = [
+        '"C-1000001","Pokemon","SV02: Paldea Evolved","Abomasnow","Abomasnow","011/193","Rare","Near Mint Holofoil","","","","","0","0","0.0100","https://example.invalid/photo"',
+    ]
+    ours = _ours(
+        tcg_product_line="Pokemon",
+        set_name="SV02: Paldea Evolved",
+        tcg_name="Abomasnow",
+        number="011/193",
+        tcg_condition="Near Mint Holofoil",
+    )
+    body, report = tcgplayer.fill(_upload(theirs), [ours])
+
+    assert len(list(csv.reader(io.StringIO(body)))) == 1, "header only"
+    assert report.matched == 0
+    assert report.unmatched and "Abomasnow" in report.unmatched[0]
+
+
 def test_the_wrong_export_is_rejected_by_name():
     """The pricing screen offers several files and only one of them is this.
 
