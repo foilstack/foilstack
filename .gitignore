@@ -244,3 +244,10 @@ backups/
 # the README shows it. Playwright's webm is not: it is for posting to places
 # that take real video, and regenerating it is one command.
 src/foilstack/web/static/demo/video/
+
+# A seller's own TCGplayer pricing export, dropped in for the round trip
+# through `/export/tcgplayer/match`. Their business data — every SKU they
+# stock, at their prices — and this repository is public, so the pattern
+# matches at any depth rather than only at the root: the file arrives wherever
+# the browser put it and gets moved here by hand.
+TCGplayer_*.csv
