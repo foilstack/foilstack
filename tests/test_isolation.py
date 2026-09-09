@@ -2082,6 +2082,69 @@ def test_an_import_creates_its_scans_in_the_archives_order(app_and_data, tmp_pat
         session.close()
 
 
+def test_an_over_quota_archive_fails_without_leaving_the_files(app_and_data, tmp_path, monkeypatch):
+    """The quota is enforced on what an archive *becomes*, not what it weighs.
+
+    Both checks at the door measure the upload on the wire, which for an
+    uncompressed image is a thousandth of what it costs on disk. This drives
+    the whole path: an archive small enough to be accepted, large enough
+    unpacked to exceed what the account has room for, and the two things the
+    seller and the operator each need afterwards — a message that says what
+    happened, and no bytes left behind that nothing can account for.
+    """
+    import asyncio
+    import dataclasses
+    import zipfile as zf
+
+    from foilstack import db, importing
+    from foilstack.config import get_settings
+
+    _app, ids = app_and_data
+    settings = get_settings()
+
+    archive = tmp_path / "bulk.zip"
+    with zf.ZipFile(archive, "w", zf.ZIP_DEFLATED) as z:
+        for n in range(8):
+            z.writestr(f"card{n}.jpg", bytes(1024 * 1024))
+    assert archive.stat().st_size < 64 * 1024, "the archive must be small on the wire"
+
+    # 1 MB of quota, 1 MB of slack: 8 MB unpacked does not fit.
+    quota = dataclasses.replace(settings, max_account_mb=1, max_archive_mb=1)
+    monkeypatch.setattr(importing, "usage_bytes", lambda session, user_id: 0)
+
+    session = db.session()
+    owner_id = session.get(db.Scan, ids["scan"]).user_id
+    job = db.ImportJob(user_id=owner_id, filename="bulk.zip", status="pending")
+    session.add(job)
+    session.commit()
+    job_id = job.id
+
+    try:
+        asyncio.run(importing.run_import(job_id, archive, quota))
+
+        session.expire_all()
+        job = session.get(db.ImportJob, job_id)
+        assert job.status == "failed"
+        # The seller reads this on the import screen, so it has to name the
+        # thing that went wrong rather than a traceback.
+        assert "unpacks to more than" in job.message
+
+        assert session.scalars(select(db.Scan).where(db.Scan.job_id == job_id)).all() == [], (
+            "a failed extraction must not leave scan rows"
+        )
+
+        # And nothing on disk either. Files here would have no row pointing at
+        # them, so `usage_bytes` could not count them and `foilstack purge`
+        # could not find them: an account refused for being full would fill
+        # the disk being refused.
+        scans_dir = quota.scans_dir / str(job_id)
+        assert not scans_dir.exists() or list(scans_dir.iterdir()) == []
+    finally:
+        session.delete(session.get(db.ImportJob, job_id))
+        session.commit()
+        session.close()
+
+
 def test_the_queue_shows_one_upload_at_a_time(app_and_data):
     """The screen holds one batch of cards, and says so about the rest.
 

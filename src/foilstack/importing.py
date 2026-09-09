@@ -154,6 +154,36 @@ def usage_bytes(session, user_id: int) -> int:
     return int(total or 0)
 
 
+def extraction_ceiling(session, settings: Settings, user_id: int) -> int:
+    """How many bytes this account's next archive may expand into.
+
+    The quota is checked twice at the door, and both times against the upload
+    as it arrives on the wire — which is the wrong number. What fills a disk is
+    what comes back out of the zip, and `.tif` is in `IMAGE_SUFFIXES`: an
+    uncompressed TIFF deflates about 1000:1, so 2 MB accepted against the quota
+    became 2 GB written under it. The only ceiling on the way out was
+    `MAX_TOTAL_BYTES`, which is one number for the whole disk and says nothing
+    about whose account is spending it. Registration is open by default, so
+    that 4 GiB was per signup.
+
+    Deliberately not `ceiling - used` exactly. The extracted size cannot be
+    known before extracting, so a hard edge would truncate an ordinary batch
+    mid-archive for landing near the line, and a seller left holding half a
+    shelf of cards is a worse answer than a seller slightly over. The slack is
+    `max_archive_mb` — the operator's own number for "one upload", already on
+    the import screen as a promise — so the overshoot stays proportional to
+    configured policy instead of to a constant nobody set.
+
+    Returns the global ceiling untouched when no quota is configured, which is
+    the self-hosted default: one person, their own disk.
+    """
+    if not settings.max_account_mb:
+        return MAX_TOTAL_BYTES
+    room = settings.max_account_mb * 1024 * 1024 - usage_bytes(session, user_id)
+    slack = settings.max_archive_mb * 1024 * 1024
+    return min(MAX_TOTAL_BYTES, max(0, room) + slack)
+
+
 def purge_scans(session, settings: Settings, scans: list[db.Scan]) -> int:
     """Delete the images behind discarded scans. Returns the bytes released.
 
@@ -220,55 +250,94 @@ def purge_scans(session, settings: Settings, scans: list[db.Scan]) -> int:
     return released
 
 
-def extract_archive(archive_path: Path, dest: Path) -> list[Path]:
-    """Unpack image entries, refusing anything that tries to escape `dest`."""
+def extract_archive(archive_path: Path, dest: Path, ceiling: int = MAX_TOTAL_BYTES) -> list[Path]:
+    """Unpack image entries, refusing anything that tries to escape `dest`.
+
+    `ceiling` is how many bytes this archive may become. It is a parameter
+    rather than the module constant because the constant answers for the disk
+    and the caller answers for the account — see `extraction_ceiling`.
+
+    Either returns the files or leaves nothing behind. A refusal that kept what
+    it had already written would leave bytes on disk that no `Scan` row points
+    at, and a row is the only thing `usage_bytes` counts and the only thing
+    `foilstack purge` can find — so they would be charged to nobody and
+    reclaimable by nothing. That was survivable while the only ceiling was
+    `MAX_TOTAL_BYTES` and reaching it meant a hostile archive; it stops being
+    survivable once the ceiling is the account's own quota, because then the
+    ordinary over-quota import is the one that leaks, and an account refused
+    for being full fills the disk being refused.
+    """
     dest.mkdir(parents=True, exist_ok=True)
     resolved_dest = dest.resolve()
     written: list[Path] = []
     total = 0
 
-    with zipfile.ZipFile(archive_path) as zf:
-        for info in zf.infolist():
-            if info.is_dir():
-                continue
-            raw = info.filename
-            # Check the *declared* name before flattening it. Taking the
-            # basename would neutralise `../../evil.jpg` on its own, but
-            # silently: an archive containing such an entry is hostile, and
-            # quietly sanitising it throws away the only evidence of that.
-            parts = PurePosixPath(raw.replace("\\", "/")).parts
-            if raw.startswith("/") or ".." in parts:
-                raise ImportError_(f"refusing unsafe archive entry: {raw}")
+    try:
+        with zipfile.ZipFile(archive_path) as zf:
+            for info in zf.infolist():
+                if info.is_dir():
+                    continue
+                raw = info.filename
+                # Check the *declared* name before flattening it. Taking the
+                # basename would neutralise `../../evil.jpg` on its own, but
+                # silently: an archive containing such an entry is hostile, and
+                # quietly sanitising it throws away the only evidence of that.
+                parts = PurePosixPath(raw.replace("\\", "/")).parts
+                if raw.startswith("/") or ".." in parts:
+                    raise ImportError_(f"refusing unsafe archive entry: {raw}")
 
-            name = Path(raw).name
-            if not name or Path(raw).suffix.lower() not in IMAGE_SUFFIXES:
-                continue
-            if info.file_size > MAX_ENTRY_BYTES:
-                logger.warning("skipping oversized entry %s", info.filename)
-                continue
-            total += info.file_size
-            if total > MAX_TOTAL_BYTES:
-                raise ImportError_("archive expands beyond the size limit")
+                name = Path(raw).name
+                if not name or Path(raw).suffix.lower() not in IMAGE_SUFFIXES:
+                    continue
+                if info.file_size > MAX_ENTRY_BYTES:
+                    logger.warning("skipping oversized entry %s", info.filename)
+                    continue
+                # The declared size, not the compressed one, and that is the
+                # whole point: an uncompressed TIFF deflates about 1000:1, so
+                # 2 MB accepted at the door is a 2 GB directory here. Trusting
+                # the header is safe in the direction that matters — `zipfile`
+                # truncates the read at `file_size`, so an entry that lies
+                # large is accounted large and one that lies small is written
+                # short.
+                total += info.file_size
+                if total > ceiling:
+                    # The ceiling goes to the log, not to the seller. It is
+                    # room-left plus one archive's slack, which is the number
+                    # that bounded this import and not a number they can
+                    # reconcile with the quota they were told about.
+                    logger.warning("archive for %s expands past %s bytes, refusing", dest, ceiling)
+                    raise ImportError_(
+                        "archive unpacks to more than there was room for. discard "
+                        "some scans, or upload it in smaller batches"
+                    )
 
-            target = (resolved_dest / name).resolve()
-            if not str(target).startswith(str(resolved_dest) + "/"):
-                # Second belt. The guard above catches declared traversal; this
-                # catches anything that still resolves outside the directory,
-                # such as a symlinked destination.
-                raise ImportError_(f"refusing unsafe archive entry: {info.filename}")
+                target = (resolved_dest / name).resolve()
+                if not str(target).startswith(str(resolved_dest) + "/"):
+                    # Second belt. The guard above catches declared traversal; this
+                    # catches anything that still resolves outside the directory,
+                    # such as a symlinked destination.
+                    raise ImportError_(f"refusing unsafe archive entry: {info.filename}")
 
-            stem, suffix = target.stem, target.suffix
-            n = 1
-            while target.exists():
-                target = resolved_dest / f"{stem}-{n}{suffix}"
-                n += 1
+                stem, suffix = target.stem, target.suffix
+                n = 1
+                while target.exists():
+                    target = resolved_dest / f"{stem}-{n}{suffix}"
+                    n += 1
 
-            with zf.open(info) as src, open(target, "wb") as out:
-                out.write(src.read())
-            written.append(target)
-            if len(written) >= MAX_IMAGES:
-                logger.warning("archive truncated at %s images", MAX_IMAGES)
-                break
+                with zf.open(info) as src, open(target, "wb") as out:
+                    out.write(src.read())
+                written.append(target)
+                if len(written) >= MAX_IMAGES:
+                    logger.warning("archive truncated at %s images", MAX_IMAGES)
+                    break
+    except BaseException:
+        # Only what this call wrote, never the directory's other contents.
+        for path in written:
+            with suppress(OSError):
+                path.unlink()
+        with suppress(OSError):
+            dest.rmdir()
+        raise
 
     # Archive order, not filename order. `zf.infolist()` is the central
     # directory, which is the order the entries were written — and for the
@@ -292,7 +361,12 @@ async def run_import(job_id: int, archive_path: Path, settings: Settings) -> Non
 
     try:
         scans_dir = settings.scans_dir / str(job_id)
-        files = extract_archive(archive_path, scans_dir)
+        # Read here rather than at the door: an archive queued behind three
+        # others is extracted against the room left when its turn comes, not
+        # the room there was when it was accepted.
+        files = extract_archive(
+            archive_path, scans_dir, extraction_ceiling(session, settings, job.user_id)
+        )
         job.total = len(files)
         job.status = "matching"
         session.commit()

@@ -581,9 +581,13 @@ async def api_import(
     if len(uploads) > importing.MAX_IMAGES:
         raise HTTPException(400, f"at most {importing.MAX_IMAGES:,} images per upload")
 
-    # Checked before a byte is written, and again against what the archive
-    # actually contains once its size is known. A quota tested only after the
-    # upload has landed is a quota that still lets the disk fill.
+    # This is the check against the upload; the check against what the upload
+    # *becomes* is `importing.extraction_ceiling`, applied when the archive is
+    # unpacked. Both are needed and neither substitutes for the other — a zip
+    # is accepted or refused by its size on the wire, and an image costs disk
+    # by its size once expanded, which for an uncompressed TIFF is a thousand
+    # times more. This comment claimed the second check for a long time before
+    # anything performed it.
     if settings.max_account_mb:
         used = importing.usage_bytes(session, user.id)
         ceiling = settings.max_account_mb * 1024 * 1024
