@@ -31,6 +31,7 @@ from foilstack.web.chrome import CHANNELS, _aware, _chrome, templates
 from foilstack.web.deps import (
     Selection,
     api_owner,
+    api_pricing_dep,
     db_session,
     owner,
     pricing_dep,
@@ -73,12 +74,11 @@ MAX_SELECTED_LINES = 50_000
 # hand-picked run or a `sel=page` one cannot exceed this: a seller who chose
 # rows one at a time always sees every one of them.
 #
-# What does get windowed is the run nobody picked — `sel=all`, and the bare
-# `/listings` off the nav bar, which is no selection at all and which
-# `_resolve` answers with the whole of stock. That second one is the common
-# case rather than the exotic one, and it is the page `--shots` was timing out
-# on: reaching this screen without touching inventory first prices everything
-# the seller owns, and the screen says `whole inventory` because it does.
+# What does get windowed is the run nobody ticked row by row: `sel=all`, which
+# may cover every unlisted line the account owns and is one deliberate click
+# from the empty screen. A bare `/listings` off the nav bar is not that — it
+# used to be, and was the page `--shots` timed out on, but it selects nothing
+# now and this number never sees it.
 RUN_ROWS_SHOWN = 1_000
 
 # How many set names the match form spells out before it stops naming them.
@@ -235,24 +235,13 @@ def page_listings(
     # inventory and the topbar both say 41 reads as a bug in whichever number
     # the seller trusts less.
     card_count = sum(r["quantity"] for r in rows)
-    # What pressing the button would actually change: the copies not yet
-    # recorded as listed on every channel selected for this run. A card marked
-    # on TCGplayer is still unlisted on eBay, so this grows again the moment a
-    # second channel is ticked.
-    mark_ids = sorted(
-        item_id
-        for r in rows
-        for item_id, on in r["copy_channels"].items()
-        if not picked.issubset(on)
-    )
-    # And what the other button would change: the copies recorded on at least
-    # one channel in this run. The two overlap on purpose — a copy on
-    # TCGplayer with eBay also ticked has something to add and something to
-    # take away, and offering only one of those would make the pair of buttons
-    # disagree about the same row.
-    unmark_ids = sorted(
-        item_id for r in rows for item_id, on in r["copy_channels"].items() if picked & set(on)
-    )
+    # What pressing each button would actually change. A card marked on
+    # TCGplayer is still unlisted on eBay, so the first of these grows again
+    # the moment a second channel is ticked.
+    #
+    # Two numbers, where this was two lists of ids serialised into the page
+    # and posted back. See `_marking_targets` for why that had to stop.
+    mark_count, unmark_count = _mark_counts(rows, picked)
     picked_label = ", ".join(c["name"] for c in CHANNELS if c["key"] in picked)
 
     # Windowed last, after every figure above has been folded over the whole
@@ -370,9 +359,18 @@ def page_listings(
             "run_sets": _run_sets(rows),
             "picked_label": picked_label,
             "card_count": card_count,
-            "mark_ids": mark_ids,
-            "unmark_ids": unmark_ids,
-            "selected_ids": sorted(chosen),
+            "mark_count": mark_count,
+            "unmark_count": unmark_count,
+            # The run itself, for the two buttons to post back to. It carries
+            # the selection exactly as the export links beside it do, and for
+            # the same reason: whatever the seller chose, said the way they
+            # said it, so both ends resolve one description through one
+            # `inventory.narrow` rather than agreeing about a list.
+            "mark_href": f"/api/listings/mark?rule={pricing.rule}{fq}{ids}",
+            "unmark_href": f"/api/listings/unmark?rule={pricing.rule}{fq}{ids}",
+            # Whether anything was selected at all — a test, not a list. The
+            # screen only ever asked it that way.
+            "has_selection": bool(chosen),
             # What this run is over, in words, when it was chosen by filter
             # rather than by ticking rows. Empty for a hand-picked run, where
             # the seller has already seen every line they chose.
@@ -535,31 +533,82 @@ def page_analytics(
     )
 
 
-def _marking_targets(payload: dict, session, user_id: int) -> tuple[list, list[str]]:
-    """The rows and channels named by a mark/unmark request.
+def _marking_targets(
+    session,
+    user_id: int,
+    pricing: inventory.Pricing,
+    sel: Selection,
+    channels: list[str],
+) -> list[db.InventoryItem]:
+    """The stock rows this run covers, for a mark or an unmark to act on.
 
     Shared so the two directions cannot drift, and so neither can be written
     without the `user_id` filter — the whole difference between marking your
     own cards and marking somebody else's is one `where` clause.
+
+    It takes the *selection* and resolves it, rather than taking the ids the
+    page worked out. That is the same trade `Selection` was invented to make
+    one screen earlier and then did not finish making: `sel=all` on a large
+    account put every id in the run into the HTML as a JSON array and posted
+    the array back, which at thirty thousand lines is around 200 KB in each
+    direction per button — on the screen whose whole design note is that a
+    selection stopped being a list of ids. Resolved here, the same run travels
+    as a querystring the other links on the page already carry.
+
+    Stock only, which is the run's own rule and not a new one: a run is
+    `export_rows`, which never contains a sold card, so a button captioned off
+    that run must not be able to reach one. It mattered less when the ids
+    arrived pre-filtered by the page; resolving a filter here means the sold
+    rows it matches are ours to exclude, and marking one advertises a card
+    that cannot be shipped.
     """
-    ids = [int(i) for i in (payload.get("ids") or [])]
-    channels = [c for c in (payload.get("channels") or []) if c in {c2["key"] for c2 in CHANNELS}]
-    if not ids:
-        raise HTTPException(400, "no rows selected")
     if not channels:
         raise HTTPException(400, "no channels selected")
-    items = session.scalars(
-        select(db.InventoryItem).where(
-            db.id_in(db.InventoryItem.id, ids),
-            db.InventoryItem.user_id == user_id,
-        )
-    ).all()
-    return list(items), channels
+    chosen, _ = _resolve(session, user_id, pricing, sel)
+    if not chosen:
+        raise HTTPException(400, "no rows selected")
+    return list(
+        session.scalars(
+            select(db.InventoryItem).where(
+                db.id_in(db.InventoryItem.id, chosen),
+                db.InventoryItem.user_id == user_id,
+                db.InventoryItem.status == "stock",
+            )
+        ).all()
+    )
+
+
+def _marking_channels(payload: dict) -> list[str]:
+    """The channels a mark request names, keeping only ones we export."""
+    known = {c["key"] for c in CHANNELS}
+    return [c for c in (payload.get("channels") or []) if c in known]
+
+
+def _mark_counts(rows: list[dict[str, Any]], picked: set[str]) -> tuple[int, int]:
+    """How many copies each button would change, for the buttons to say so.
+
+    Counted rather than listed, which is the whole of this. The two overlap on
+    purpose — a copy on TCGplayer with eBay also ticked has something to add
+    and something to take away, and offering only one of those would make the
+    pair of buttons disagree about the same row.
+
+    The same two rules run again in `api_mark_listed` and `api_unmark_listed`,
+    per row, as the test for whether that row changed. That is deliberate and
+    is not the duplication worth removing: a caption is about the run as it was
+    drawn and the skip is about the row in hand at the moment of writing, and
+    a count that disagrees slightly with what a press then reports is the
+    honest answer to a run that moved in between.
+    """
+    mark = sum(1 for r in rows for on in r["copy_channels"].values() if not picked.issubset(on))
+    unmark = sum(1 for r in rows for on in r["copy_channels"].values() if picked & set(on))
+    return mark, unmark
 
 
 @router.post("/api/listings/mark")
 async def api_mark_listed(
     request: Request,
+    pricing: inventory.Pricing = Depends(api_pricing_dep),
+    sel: Selection = Depends(selection_dep),
     session=Depends(db_session),
     user: db.User = Depends(api_owner),
 ):
@@ -569,25 +618,38 @@ async def api_mark_listed(
     button that calls it does not claim to: you export the CSV, you upload it,
     and this is how you tell foilstack you did.
     """
-    items, channels = _marking_targets(await request.json(), session, user.id)
+    channels = _marking_channels(await request.json())
+    items = _marking_targets(session, user.id, pricing, sel, channels)
     now = dt.datetime.now(dt.UTC)
+    changed = 0
     for item in items:
         # Added to, not replaced. A card listed on TCGplayer and then also on
         # eBay is on both, and overwriting the label said the seller had taken
         # the first listing down — which they never told us. Taking one down is
         # `unmark`, which names the channel it is removing.
-        on = set(inventory.merge_channels([item.listed_channels or ""])) | set(channels)
+        on = set(inventory.merge_channels([item.listed_channels or ""]))
+        gained = on | set(channels)
+        # Skipped when it would change nothing, as `unmark` already did. The
+        # count used to be every id handed over, which was only ever accurate
+        # because the browser had pre-filtered the list — so the honesty of
+        # the number lived in the caller. It lives here now, which is also
+        # what lets the caller send the run instead of a list.
+        if gained == on:
+            continue
+        changed += 1
         item.listed = 1
-        item.listed_channels = ", ".join(sorted(on))
+        item.listed_channels = ", ".join(sorted(gained))
         item.listed_at = now
     session.commit()
-    joblog.add(user.id, f"marked {len(items)} cards listed on {', '.join(channels)}")
-    return {"ok": True, "marked": len(items)}
+    joblog.add(user.id, f"marked {changed} cards listed on {', '.join(channels)}")
+    return {"ok": True, "marked": changed}
 
 
 @router.post("/api/listings/unmark")
 async def api_unmark_listed(
     request: Request,
+    pricing: inventory.Pricing = Depends(api_pricing_dep),
+    sel: Selection = Depends(selection_dep),
     session=Depends(db_session),
     user: db.User = Depends(api_owner),
 ):
@@ -598,7 +660,8 @@ async def api_unmark_listed(
     ends an auction tells foilstack here, and the card returns to the run so
     the next export contains it again.
     """
-    items, channels = _marking_targets(await request.json(), session, user.id)
+    channels = _marking_channels(await request.json())
+    items = _marking_targets(session, user.id, pricing, sel, channels)
     dropped = set(channels)
     changed = 0
     for item in items:

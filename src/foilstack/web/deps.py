@@ -100,6 +100,26 @@ def pricing_dep(
     return inventory.Pricing.for_user(user, rule, floor)
 
 
+def api_pricing_dep(
+    rule: str = inventory.DEFAULT_RULE,
+    floor: str | None = Query(None),
+    user: db.User = Depends(api_owner),
+) -> inventory.Pricing:
+    """The same policy, for a route a fetch() calls.
+
+    It differs from `pricing_dep` in one dependency and nothing else. `owner`
+    sends a browser to the login screen, which a fetch() follows and reports
+    as success — the reason `api_owner` exists — and a dependency taking the
+    wrong one of those would put that back on whichever route used it.
+
+    The rule and the floor matter to a POST at all because a run selected by
+    filter is resolved, not enumerated: `sel=page` is a window on an ordering,
+    and market-price sorts are an ordering the pricing rule decides. Resolved
+    under a different rule, the same page number is a different page.
+    """
+    return inventory.Pricing.for_user(user, rule, floor)
+
+
 @dataclass(frozen=True)
 class Selection:
     """What a listing run is over: hand-picked rows, or a filter.

@@ -150,6 +150,22 @@ def stranger(app_and_data):
     return client
 
 
+def _press(client, action, ids, channels, extra=""):
+    """Press one of the listing run's two buttons, the way the screen does.
+
+    The selection goes in the URL and the channels in the body, because that is
+    what those buttons send: the run travels as a description and the far end
+    resolves it through the same `inventory.narrow` the page used. They used to
+    post the ids themselves, which is the thing that had to stop — a test still
+    doing it would be pinning a wire format nothing speaks.
+    """
+    query = "".join(f"&id={i}" for i in ids)
+    return client.post(
+        f"/api/listings/{action}?rule=market" + query + extra,
+        json={"channels": list(channels)},
+    )
+
+
 def test_anonymous_is_sent_to_the_login_screen(app_and_data):
     from fastapi.testclient import TestClient
 
@@ -211,10 +227,7 @@ def test_stranger_cannot_confirm_a_scan(stranger, app_and_data):
 
 def test_stranger_cannot_mark_someone_elses_rows_listed(stranger, app_and_data):
     _, ids = app_and_data
-    r = stranger.post(
-        "/api/listings/mark",
-        json={"ids": [ids["item"]], "channels": ["tcgplayer"]},
-    )
+    r = _press(stranger, "mark", [ids["item"]], ["tcgplayer"])
     assert r.json()["marked"] == 0
 
 
@@ -222,10 +235,7 @@ def test_stranger_cannot_unmark_someone_elses_rows(stranger, app_and_data):
     """Unlisting somebody's card is as much a write as listing it, and the
     quieter of the two: it puts a card back into an export they already ran."""
     _, ids = app_and_data
-    r = stranger.post(
-        "/api/listings/unmark",
-        json={"ids": [ids["item"]], "channels": ["tcgplayer"]},
-    )
+    r = _press(stranger, "unmark", [ids["item"]], ["tcgplayer"])
     assert r.json()["unmarked"] == 0
 
 
@@ -2665,13 +2675,7 @@ def test_everything_marked_leaves_nothing_to_mark(app_and_data):
     line = _fresh_line("t:allmarked", "Already Listed", ["NM", "LP"])
     client = _signed_in(app)
 
-    assert (
-        client.post(
-            "/api/listings/mark",
-            json={"ids": line["item_ids"], "channels": ["tcgplayer"]},
-        ).json()["marked"]
-        == 2
-    )
+    assert _press(client, "mark", line["item_ids"], ["tcgplayer"]).json()["marked"] == 2
 
     page = _run(client, line)
     assert "All 2 listed on TCGplayer" in page
@@ -2683,10 +2687,7 @@ def test_a_second_channel_reopens_the_button(app_and_data):
     app, _ = app_and_data
     line = _fresh_line("t:twochannels", "Also On eBay", ["NM"])
     client = _signed_in(app)
-    client.post(
-        "/api/listings/mark",
-        json={"ids": line["item_ids"], "channels": ["tcgplayer"]},
-    )
+    _press(client, "mark", line["item_ids"], ["tcgplayer"])
 
     page = _run(client, line, channel="ebay")
     assert "Mark 1 on eBay" in page, "unlisted on eBay is still work to do"
@@ -2705,10 +2706,7 @@ def test_marking_a_second_channel_keeps_the_first(app_and_data):
     line = _fresh_line("t:keepfirst", "On Both", ["NM"])
     client = _signed_in(app)
     for channel in ("tcgplayer", "ebay"):
-        client.post(
-            "/api/listings/mark",
-            json={"ids": line["item_ids"], "channels": [channel]},
-        )
+        _press(client, "mark", line["item_ids"], [channel])
 
     session = db.session()
     item = session.get(db.InventoryItem, line["item_ids"][0])
@@ -2725,10 +2723,7 @@ def test_a_half_marked_line_says_which_half(app_and_data):
     app, _ = app_and_data
     line = _fresh_line("t:halfmarked", "Half Listed", ["NM", "NM"])
     client = _signed_in(app)
-    client.post(
-        "/api/listings/mark",
-        json={"ids": line["item_ids"][:1], "channels": ["tcgplayer"]},
-    )
+    _press(client, "mark", line["item_ids"][:1], ["tcgplayer"])
 
     page = _run(client, line)
     assert "1 of 2 listed" in page
@@ -2746,17 +2741,8 @@ def test_unmarking_one_channel_leaves_the_other(app_and_data):
     app, _ = app_and_data
     line = _fresh_line("t:unmarkone", "Off eBay Only", ["NM"])
     client = _signed_in(app)
-    client.post(
-        "/api/listings/mark",
-        json={"ids": line["item_ids"], "channels": ["tcgplayer", "ebay"]},
-    )
-    assert (
-        client.post(
-            "/api/listings/unmark",
-            json={"ids": line["item_ids"], "channels": ["ebay"]},
-        ).json()["unmarked"]
-        == 1
-    )
+    _press(client, "mark", line["item_ids"], ["tcgplayer", "ebay"])
+    assert _press(client, "unmark", line["item_ids"], ["ebay"]).json()["unmarked"] == 1
 
     session = db.session()
     item = session.get(db.InventoryItem, line["item_ids"][0])
@@ -2777,14 +2763,8 @@ def test_unmarking_the_last_channel_makes_the_card_ready_again(app_and_data):
     app, _ = app_and_data
     line = _fresh_line("t:unmarklast", "Back On The Shelf", ["NM"])
     client = _signed_in(app)
-    client.post(
-        "/api/listings/mark",
-        json={"ids": line["item_ids"], "channels": ["tcgplayer"]},
-    )
-    client.post(
-        "/api/listings/unmark",
-        json={"ids": line["item_ids"], "channels": ["tcgplayer"]},
-    )
+    _press(client, "mark", line["item_ids"], ["tcgplayer"])
+    _press(client, "unmark", line["item_ids"], ["tcgplayer"])
 
     session = db.session()
     item = session.get(db.InventoryItem, line["item_ids"][0])
@@ -2803,10 +2783,7 @@ def test_the_unmark_button_counts_only_what_is_on_a_picked_channel(app_and_data)
     app, _ = app_and_data
     line = _fresh_line("t:unmarkcount", "Half Off", ["NM", "NM"])
     client = _signed_in(app)
-    client.post(
-        "/api/listings/mark",
-        json={"ids": line["item_ids"][:1], "channels": ["tcgplayer"]},
-    )
+    _press(client, "mark", line["item_ids"][:1], ["tcgplayer"])
 
     page = _run(client, line)
     assert "Unmark 1 on TCGplayer" in page
@@ -2823,16 +2800,136 @@ def test_unmarking_ignores_a_channel_the_card_is_not_on(app_and_data):
     app, _ = app_and_data
     line = _fresh_line("t:unmarkabsent", "Never On eBay", ["NM"])
     client = _signed_in(app)
-    client.post(
-        "/api/listings/mark",
-        json={"ids": line["item_ids"], "channels": ["tcgplayer"]},
-    )
+    _press(client, "mark", line["item_ids"], ["tcgplayer"])
 
-    r = client.post(
-        "/api/listings/unmark",
-        json={"ids": line["item_ids"], "channels": ["ebay"]},
-    )
+    r = _press(client, "unmark", line["item_ids"], ["ebay"])
     assert r.json()["unmarked"] == 0
+
+
+def test_a_filter_run_is_marked_without_naming_a_single_row(app_and_data):
+    """The run travels as a filter and the far end resolves it.
+
+    This is the whole change. The buttons used to carry every id in the run
+    into the page as a JSON array and post the array back — hundreds of
+    kilobytes each way on a `sel=all` run over a real shop, on the screen
+    `Selection` was invented to keep ids off. Nothing here names a row, and
+    both copies are still marked.
+    """
+    app, _ = app_and_data
+    line = _fresh_line("t:filtermark", "Resolved By Filter", ["NM", "LP"])
+    client = _signed_in(app)
+
+    r = _press(client, "mark", [], ["tcgplayer"], extra="&sel=all&q=Resolved+By+Filter")
+    assert r.json()["marked"] == 2
+
+    page = _run(client, line)
+    assert "All 2 listed on TCGplayer" in page
+
+
+def _button_url(page, button):
+    """The URL one of the run's buttons posts to, read off the rendered page.
+
+    Markup, and deliberately: it is read in order to *use* it, which is what
+    the browser does, and every assertion below is about what the URL then
+    resolves to. Parsed as JSON rather than matched as a string because
+    `tojson` escapes the `&` between query parameters — comparing text would
+    pin the escaping and say nothing about the selection.
+    """
+    import json
+    import re as _re
+
+    found = _re.search(rf"wireMark\('#{button}', (\".*?\")\);", page)
+    assert found, f"no {button} button wired on this page"
+    return json.loads(found.group(1))
+
+
+def test_the_buttons_post_a_url_that_resolves_to_the_same_run(app_and_data):
+    """A filter run's buttons hand on the filter, not what it resolved to.
+
+    Pinned because the failure is silent and only shows at size: a page that
+    quietly went back to enumerating its rows still marks the right cards and
+    is simply enormous — hundreds of kilobytes into the page and back out of
+    it on a `sel=all` run over a real shop. So the assertion is that no row is
+    named, and that the URL still resolves to both of them.
+    """
+    app, _ = app_and_data
+    _fresh_line("t:filterhref", "Carried Onward", ["NM", "LP"])
+    client = _signed_in(app)
+
+    page = client.get("/listings?rule=market&sel=all&q=Carried+Onward").text
+    assert "Mark 2 on TCGplayer" in page, "the filter resolved to this card's two copies"
+
+    url = _button_url(page, "mark")
+    assert "sel=all" in url
+    assert "id=" not in url, "the run travels as a filter, not as its rows"
+
+    assert client.post(url, json={"channels": ["tcgplayer"]}).json()["marked"] == 2
+
+
+def test_marking_nothing_selected_is_refused_not_read_as_everything(app_and_data):
+    """An absent selection selects nothing, on this route as on the screen.
+
+    The reason the mark route may take a filter at all is that it resolves one
+    — and a route that resolves a filter is one press away from resolving the
+    empty filter as "every card you own". `/listings` had exactly that bug and
+    it is the most consequential button on the screen.
+    """
+    app, _ = app_and_data
+    line = _fresh_line("t:markempty", "Not Selected", ["NM"])
+    client = _signed_in(app)
+
+    from foilstack import db
+
+    assert client.post("/api/listings/mark", json={"channels": ["tcgplayer"]}).status_code == 400
+
+    session = db.session()
+    assert session.get(db.InventoryItem, line["item_ids"][0]).listed == 0
+    session.close()
+
+
+def test_a_sold_row_in_the_selection_is_never_marked_listed(app_and_data):
+    """A listing run is stock only, so the button behind it has to be too.
+
+    The ids used to arrive pre-filtered by the page, which builds them from
+    `export_rows` and therefore never saw a sold card. Resolving the selection
+    here means the run is whatever the filter matched, and the sold rows in it
+    are the software's problem rather than the browser's — marking one
+    advertises a card that cannot be shipped.
+    """
+    from foilstack import db
+
+    app, _ = app_and_data
+    line = _fresh_line("t:marksold", "Half Sold Already", ["NM", "LP"])
+    client = _signed_in(app)
+
+    session = db.session()
+    sold = session.get(db.InventoryItem, line["item_ids"][1])
+    sold.status = "sold"
+    session.commit()
+    session.close()
+
+    assert _press(client, "mark", line["item_ids"], ["tcgplayer"]).json()["marked"] == 1
+
+    session = db.session()
+    assert session.get(db.InventoryItem, line["item_ids"][1]).listed == 0
+    session.close()
+
+
+def test_marking_counts_what_it_changed_not_what_it_was_handed(app_and_data):
+    """The count is the software's answer now, not the browser's.
+
+    It used to report every id it was given, which was honest only because the
+    page had pre-filtered the list to the copies that needed marking. Handed
+    the run instead, the same code would have reported both copies of a card
+    that was already half listed — and the count in the job log is the only
+    confirmation this screen gives.
+    """
+    app, _ = app_and_data
+    line = _fresh_line("t:markcount", "One Already Done", ["NM", "LP"])
+    client = _signed_in(app)
+    _press(client, "mark", line["item_ids"][:1], ["tcgplayer"])
+
+    assert _press(client, "mark", line["item_ids"], ["tcgplayer"]).json()["marked"] == 1
 
 
 def test_both_buttons_name_the_channels_they_act_on(app_and_data):
@@ -2845,10 +2942,7 @@ def test_both_buttons_name_the_channels_they_act_on(app_and_data):
     app, _ = app_and_data
     line = _fresh_line("t:bothchannels", "Named On Both", ["NM"])
     client = _signed_in(app)
-    client.post(
-        "/api/listings/mark",
-        json={"ids": line["item_ids"], "channels": ["tcgplayer"]},
-    )
+    _press(client, "mark", line["item_ids"], ["tcgplayer"])
 
     page = _run(client, line, channel=["tcgplayer", "ebay"])
     assert "Mark 1 on TCGplayer, eBay" in page, "still to do on eBay"

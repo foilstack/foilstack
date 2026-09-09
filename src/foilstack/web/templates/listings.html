@@ -14,7 +14,7 @@
        which is the shape of the bug that made this screen price the whole
        inventory under a heading reading `Not listed 75`. #}
     {% if described %}· {{ described }}
-    {% elif selected_ids %}· selected{% else %}· nothing selected{% endif %}
+    {% elif has_selection %}· selected{% else %}· nothing selected{% endif %}
   </span>
   <div class="spacer"></div>
   <div class="bar-actions">
@@ -34,16 +34,16 @@
   {# Shown only when there is something on a picked channel to take off it.
      No disabled twin, unlike the button beside it: "nothing here is listed" is
      already what a live Mark button and an empty status column say. #}
-  {% if unmark_ids %}
+  {% if unmark_count %}
   <button class="btn" type="button" id="unmark"
           title="Record these as no longer listed on {{ picked_label }}. Undoes the record, not the listing — foilstack never posted it.">
-    Unmark {{ unmark_ids|length }} on {{ picked_label }}
+    Unmark {{ unmark_count }} on {{ picked_label }}
   </button>
   {% endif %}
-  {% if mark_ids %}
+  {% if mark_count %}
   <button class="btn btn-primary" type="button" id="mark"
           title="Record these as listed on {{ picked_label }}. Nothing is sent — you upload the CSV yourself.">
-    Mark {{ mark_ids|length }} on {{ picked_label }}
+    Mark {{ mark_count }} on {{ picked_label }}
   </button>
   {% elif card_count %}
   <button class="btn" type="button" disabled title="Tick another channel to mark these there too">
@@ -297,16 +297,22 @@ const channels = {{ picked | tojson }};
 
 // Either button is absent when it has nothing to do — the bar shows a disabled
 // button or none at all rather than a live one that would change nothing.
-const wireMark = (sel, url, ids) => $(sel)?.addEventListener('click', async ev => {
-  if (!ids.length) return;
+// The run travels in the URL and the far end resolves it, which is why
+// nothing here holds a list of rows. It used to post one: every id in the run,
+// serialised into this script and sent back, which on a `sel=all` run over a
+// large account is hundreds of kilobytes in each direction — the selection
+// problem `/listings` itself was already fixed for, still living in its two
+// most consequential buttons. Neither button is rendered at all unless the
+// server counted something for it to do, so there is nothing to check here.
+const wireMark = (sel, url) => $(sel)?.addEventListener('click', async ev => {
   ev.target.disabled = true;
   // `quiet`: the button coming back to life is the failure message here.
-  if (await postJSON(url, { ids, channels }, { quiet: true })) location.reload();
+  if (await postJSON(url, { channels }, { quiet: true })) location.reload();
   else ev.target.disabled = false;
 });
 
-wireMark('#mark', '/api/listings/mark', {{ mark_ids | tojson }});
-wireMark('#unmark', '/api/listings/unmark', {{ unmark_ids | tojson }});
+wireMark('#mark', {{ mark_href | tojson }});
+wireMark('#unmark', {{ unmark_href | tojson }});
 
 // Saving the floor is a separate press from applying it. Typing a number and
 // hitting Enter re-prices this run and nothing else; this is the one that
