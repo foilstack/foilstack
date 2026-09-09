@@ -396,6 +396,17 @@ Two habits worth keeping:
   than that got a 500, on every page at once, with nothing on the way there
   getting slower to warn anyone. A seller buying collections reaches 65k.
 
+  **Never pass a list of ids to `.in_()`.** Use `db.id_in(column, ids)`, which
+  sends `= ANY(:ids)` — one array parameter, no ceiling, and faster where the
+  list is large. This was a `BIND_CHUNK` constant in `inventory.py` first,
+  applied at two call sites out of seven; the other five included `purge_scans`,
+  which `foilstack purge` hands every discarded scan on the install, and a
+  second chunk size in `importing.py` tuned separately from the first. A rule
+  you have to remember at every call site is one a call site will forget, which
+  is the same reason `items()` takes `user_id` positionally and `Pricing` has no
+  default floor. `.in_()` is still right for a fixed set of statuses or
+  sub-types — the rule is about lists that grow with what a seller owns.
+
   Three things answer it, and the order matters. `position()` is the topbar as
   one aggregate query. `index()` is the thin per-copy read the screen folds
   over — same key names as `items()`, minus what only a card page uses.

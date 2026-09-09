@@ -321,6 +321,37 @@ def test_a_confirmed_card_keeps_its_photograph(client, app_and_data):
     assert path.exists()
 
 
+def test_purge_survives_more_scans_than_one_statement_binds(app_and_data):
+    """`foilstack purge` is unbounded by design, so its query has to be.
+
+    The command takes *every* discarded scan on the install still holding a
+    file — no cap, no batching — and hands the list here. So the `IN (...)`
+    this used to issue failed in proportion to how much there was to reclaim:
+    an operator with more than 65535 of them got an `OperationalError` naming
+    the wire protocol, from the one command that frees the disk, at exactly
+    the point they needed it. `db.id_in` sends an array and has no ceiling.
+
+    The scans are transient rather than inserted. What broke was the statement
+    over `inventory.scan_id`, which only needs the ids; seventy thousand real
+    rows would buy nothing here but a slow test.
+    """
+    from foilstack import db, importing
+    from foilstack.config import get_settings
+
+    _, ids, _ = app_and_data
+    scans = [
+        db.Scan(id=n, user_id=ids["user"], stored_path=f"{n}/gone.jpg", size_bytes=0)
+        for n in range(1, 70_001)
+    ]
+    assert len(scans) > 65_535
+
+    session = db.session()
+    # Nothing to release — every file is already gone, which `purge_scans`
+    # treats as ordinary. Reaching the return at all is the assertion.
+    assert importing.purge_scans(session, get_settings(), scans) == 0
+    session.close()
+
+
 def test_a_full_account_can_upload_after_discarding(client, app_and_data, monkeypatch):
     """The whole point of the fix, stated the way the 413 states it.
 

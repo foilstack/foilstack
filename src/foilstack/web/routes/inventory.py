@@ -468,7 +468,7 @@ async def api_inventory_bulk_delete(
 
     items = session.scalars(
         select(db.InventoryItem).where(
-            db.InventoryItem.id.in_(ids),
+            db.id_in(db.InventoryItem.id, ids),
             db.InventoryItem.user_id == user.id,
         )
     ).all()
@@ -665,5 +665,5 @@ def _delete_items(session, items: list[db.InventoryItem]) -> None:
         session.delete(item)
     session.flush()
     if scan_ids:
-        for scan in session.scalars(select(db.Scan).where(db.Scan.id.in_(scan_ids))):
+        for scan in session.scalars(select(db.Scan).where(db.id_in(db.Scan.id, scan_ids))):
             scan.status = "discarded"

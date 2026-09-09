@@ -24,6 +24,7 @@ from typing import Any
 
 from pgvector.sqlalchemy import HALFVEC
 from sqlalchemy import (
+    ARRAY,
     Boolean,
     Date,
     DateTime,
@@ -34,6 +35,8 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    any_,
+    bindparam,
     create_engine,
     func,
 )
@@ -517,6 +520,36 @@ Index(
     unique=True,
     postgresql_where=InventoryItem.scan_id.isnot(None),
 )
+
+
+def id_in(column: Any, ids: Any) -> Any:
+    """`column` is one of these ids — as an array parameter, not an `IN` list.
+
+    `col.in_([...])` renders one bind parameter per element, and a Postgres
+    Bind message carries at most 65,535 of them. That is a cliff rather than a
+    curve: nothing on the way to it gets slower to warn anyone, and the query
+    that worked on a test archive raises `OperationalError` on a real one,
+    naming a wire protocol rather than anything the caller did. The paths that
+    reach it are the ones that scale with how much a seller actually has —
+    every copy in a listing run, every discarded scan `foilstack purge` is
+    meant to reclaim — so it fails hardest exactly where it is needed most.
+
+    `= ANY(:ids)` sends the whole list as a single array parameter instead, so
+    there is no ceiling to stay under and no chunk size to agree on. It is also
+    faster where it used to be chunked — one round trip rather than several,
+    over a query string short enough to parse and plan cheaply.
+
+    This lives here rather than beside any of its callers because it is a fact
+    about Postgres, not about inventory or importing. It was a `BIND_CHUNK`
+    constant in `inventory.py` before, applied at two call sites out of seven;
+    a rule that has to be remembered at every `in_` is one a call site will
+    forget, and five of them had — including a second chunk size, tuned
+    separately, reasoning out the same protocol limit from scratch.
+
+    The bind parameter is anonymous so that two of these in one statement do
+    not collide.
+    """
+    return column == any_(bindparam(None, list(ids), type_=ARRAY(Integer)))
 
 
 _engine = None
