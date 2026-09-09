@@ -499,41 +499,21 @@ def sku(item_id: int) -> str:
     return f"FS-{10000 + item_id}"
 
 
-# How many ids one statement may name in an `IN (...)`.
-#
-# Postgres carries at most 65535 bind parameters in one message and `IN (...)`
-# renders one per element, so an account holding more distinct cards than that
-# did not get a slow page — it got a 500, and it got one on every screen in the
-# application, because the topbar priced inventory through this same function.
-# A seller buying collections passes 65k distinct cards; that is a cliff rather
-# than a curve, and nothing on the way to it gets slower to warn you.
-#
-# Chunked well below the limit rather than exactly at it: the cap is on the
-# whole message, and this list is not always the only thing in one.
-#
-# Shared by the price fetch and the scoped read in `items`, because it is a
-# fact about Postgres rather than about either query — a second copy tuned
-# separately would be two answers to one protocol limit.
-BIND_CHUNK = 10_000
-
-
 def _prices_for(session, card_ids: set[int]) -> dict[int, dict[str, Any]]:
     """Every stored printing price for these cards, keyed by card then sub-type.
 
-    Fetched in chunks rather than per row: an inventory of a few hundred cards
-    would otherwise issue a few hundred round trips to render a table, and one
-    of a hundred thousand exceeds what a single statement can bind.
+    One statement rather than one per row: an inventory of a few hundred cards
+    would otherwise issue a few hundred round trips to render a table. `id_in`
+    is what lets that stay a single statement at any size — see it for why an
+    `IN` list cannot.
     """
     if not card_ids:
         return {}
     out: dict[int, dict[str, Any]] = {}
-    ids = list(card_ids)
-    for start in range(0, len(ids), BIND_CHUNK):
-        rows = session.scalars(
-            select(db.CardPrice).where(db.CardPrice.card_id.in_(ids[start : start + BIND_CHUNK]))
-        ).all()
-        for row in rows:
-            out.setdefault(row.card_id, {})[row.sub_type] = row
+    for row in session.scalars(
+        select(db.CardPrice).where(db.id_in(db.CardPrice.card_id, card_ids))
+    ).all():
+        out.setdefault(row.card_id, {})[row.sub_type] = row
     return out
 
 
@@ -842,23 +822,14 @@ def items(
     )
     if status is not None:
         query = query.where(db.InventoryItem.status == status)
-    if ids is None:
-        rows = session.execute(query.order_by(db.InventoryItem.id.desc())).all()
-    else:
-        # Chunked for the reason the price fetch is — see `BIND_CHUNK`. A
-        # `sel=all` run may name every copy of a fifty-thousand-line result,
-        # which is well past what one statement can bind. Sorted after the
-        # fact rather than relying on the per-chunk ordering, which orders
-        # each statement and not the concatenation of them.
-        wanted = list(ids)
-        rows = [
-            row
-            for start in range(0, len(wanted), BIND_CHUNK)
-            for row in session.execute(
-                query.where(db.InventoryItem.id.in_(wanted[start : start + BIND_CHUNK]))
-            ).all()
-        ]
-        rows.sort(key=lambda r: r[0].id, reverse=True)
+    if ids is not None:
+        # `db.id_in` rather than `in_`: a `sel=all` run may name every copy of
+        # a fifty-thousand-line result, which is well past what one `IN` list
+        # can bind. One statement also means the `ORDER BY` below is the whole
+        # answer's ordering — chunking made it each chunk's, and needed a
+        # re-sort afterwards to put that right.
+        query = query.where(db.id_in(db.InventoryItem.id, ids))
+    rows = session.execute(query.order_by(db.InventoryItem.id.desc())).all()
     prices = _prices_for(session, {card.id for _, card in rows})
 
     out: list[dict[str, Any]] = []

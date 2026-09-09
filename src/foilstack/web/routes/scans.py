@@ -960,7 +960,7 @@ async def api_discard_all(
     if not ids:
         raise HTTPException(400, "nothing to discard")
     scans = session.scalars(
-        select(db.Scan).where(db.Scan.id.in_(ids), db.Scan.user_id == user.id)
+        select(db.Scan).where(db.id_in(db.Scan.id, ids), db.Scan.user_id == user.id)
     ).all()
     dropped = [scan for scan in scans if scan.status != "confirmed"]
     for scan in dropped:

@@ -550,7 +550,7 @@ def _marking_targets(payload: dict, session, user_id: int) -> tuple[list, list[s
         raise HTTPException(400, "no channels selected")
     items = session.scalars(
         select(db.InventoryItem).where(
-            db.InventoryItem.id.in_(ids),
+            db.id_in(db.InventoryItem.id, ids),
             db.InventoryItem.user_id == user_id,
         )
     ).all()

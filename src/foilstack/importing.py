@@ -191,7 +191,7 @@ def purge_scans(session, settings: Settings, scans: list[db.Scan]) -> int:
     claimed = {
         scan_id
         for scan_id in session.scalars(
-            select(db.InventoryItem.scan_id).where(db.InventoryItem.scan_id.in_(ids))
+            select(db.InventoryItem.scan_id).where(db.id_in(db.InventoryItem.scan_id, ids))
         )
         if scan_id is not None
     }
@@ -699,19 +699,17 @@ def apply_cohort(
 def _load_cards(session, ids: set[int]) -> dict[int, db.Card]:
     """Every candidate card in one batch's search results, by id.
 
-    Chunked because the set is unbounded in principle — five thousand scans of
-    twenty-five hits each — and a single `IN` with six figures of parameters is
-    how a query that works on a test archive falls over on a real one.
+    The set is unbounded in principle — five thousand scans of twenty-five hits
+    each — which is what `db.id_in` is for: a single `IN` with six figures of
+    parameters is how a query that works on a test archive falls over on a real
+    one. This chunked at its own size before, which was the same protocol fact
+    answered a second time and differently.
     """
     from sqlalchemy import select
 
-    cards: dict[int, db.Card] = {}
-    ordered = sorted(ids)
-    for start in range(0, len(ordered), 2000):
-        chunk = ordered[start : start + 2000]
-        for card in session.scalars(select(db.Card).where(db.Card.id.in_(chunk))):
-            cards[card.id] = card
-    return cards
+    return {
+        card.id: card for card in session.scalars(select(db.Card).where(db.id_in(db.Card.id, ids)))
+    }
 
 
 def _cohort_message(job: db.ImportJob, cohort: tuple[str, ...], moved: int, stranded: int) -> str:

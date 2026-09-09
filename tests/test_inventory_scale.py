@@ -453,25 +453,92 @@ def test_scoped_items_match_the_unscoped_read(priced_inventory):
         assert inventory.items(session, user_id, inventory.Pricing(), ids={-1}) == []
 
 
-def test_scoped_items_survive_more_ids_than_one_statement_binds(priced_inventory, monkeypatch):
-    """The chunking, driven rather than trusted.
+def test_scoped_items_survive_more_ids_than_one_statement_binds(priced_inventory):
+    """The real ceiling, driven rather than simulated.
 
-    Postgres binds at most 65535 parameters in a message and `IN (...)` spends
-    one per element, so a `sel=all` run over a large account is the case that
-    breaks. Reaching that many rows in a fixture is not worth the minutes, so
-    the chunk size is lowered instead — the seam is the same one either way,
-    and this drives several chunks against a handful of rows.
+    Postgres binds at most 65535 parameters in one message and `IN (...)`
+    spends one per element, so a `sel=all` run over a large account was the
+    case that broke — and it broke with an `OperationalError` naming the wire
+    protocol. `db.id_in` sends an array instead, which has no such limit.
+
+    The ids do the scaling here, not the rows: what has to exceed 65535 is the
+    selection, so a handful of real rows padded with ids belonging to nobody
+    drives the limit exactly as a large account would, in one query rather
+    than the minutes it would take to insert them. Padding with *absent* ids
+    also pins the other half — a selection must narrow to what the account
+    owns, never widen.
     """
     from foilstack import db, inventory
 
     _, user_id = priced_inventory
-    monkeypatch.setattr(inventory, "BIND_CHUNK", 1)
     with db.session() as session:
         every = inventory.items(session, user_id, inventory.Pricing())
         wanted = {r["id"] for r in every}
         assert len(wanted) > 2
 
         assert inventory.items(session, user_id, inventory.Pricing(), ids=wanted) == every
+
+        padded = wanted | {-i for i in range(1, 70_001)}
+        assert len(padded) > 65_535
+        assert inventory.items(session, user_id, inventory.Pricing(), ids=padded) == every
+
+
+def test_id_in_replaces_a_limit_that_in_still_has(priced_inventory):
+    """The seam itself, and the cliff it exists to remove.
+
+    Every id list in this codebase goes through `db.id_in` now, so this is the
+    one place the protocol limit has to be pinned. It asserts the old spelling
+    still fails, deliberately: `col.in_(ids)` is the obvious thing to write and
+    reads as correct, so what stops it coming back is a test that names what
+    happens when it does.
+    """
+    import pytest
+    import sqlalchemy as sa
+    from sqlalchemy.exc import OperationalError
+
+    from foilstack import db
+
+    _, user_id = priced_inventory
+    with db.session() as session:
+        mine = sorted(session.scalars(sa.select(db.InventoryItem.id)).all())
+        assert len(mine) > 2
+
+        # Same answer as `in_` where `in_` still works.
+        assert sorted(
+            session.scalars(
+                sa.select(db.InventoryItem.id).where(db.id_in(db.InventoryItem.id, mine))
+            )
+        ) == sorted(
+            session.scalars(sa.select(db.InventoryItem.id).where(db.InventoryItem.id.in_(mine)))
+        )
+
+        # And an answer at all where `in_` has none. 65535 is the whole message,
+        # so the list is taken well past it rather than to the boundary.
+        huge = mine + [-i for i in range(1, 100_001)]
+        assert (
+            sorted(
+                session.scalars(
+                    sa.select(db.InventoryItem.id).where(db.id_in(db.InventoryItem.id, huge))
+                )
+            )
+            == mine
+        )
+        with pytest.raises(OperationalError):
+            session.scalars(
+                sa.select(db.InventoryItem.id).where(db.InventoryItem.id.in_(huge))
+            ).all()
+        session.rollback()
+
+        # Two in one statement must not collide. The bind parameter is
+        # anonymous for this reason, and a named one would silently make the
+        # second filter overwrite the first.
+        both = session.scalars(
+            sa.select(db.InventoryItem.id).where(
+                db.id_in(db.InventoryItem.id, mine),
+                db.id_in(db.InventoryItem.user_id, [user_id]),
+            )
+        ).all()
+        assert sorted(both) == mine
 
 
 def test_export_rows_scopes_to_the_selection(priced_inventory):
