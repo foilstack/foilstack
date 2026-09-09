@@ -4,7 +4,12 @@ import zipfile
 
 import pytest
 
-from foilstack.importing import ImportError_, extract_archive
+from foilstack.importing import (
+    MAX_TOTAL_BYTES,
+    ImportError_,
+    extract_archive,
+    extraction_ceiling,
+)
 
 
 def _zip(tmp_path, entries):
@@ -40,6 +45,116 @@ def test_refuses_path_traversal(tmp_path):
     archive = _zip(tmp_path, {"../../evil.jpg": b"x"})
     with pytest.raises(ImportError_, match="unsafe archive entry"):
         extract_archive(archive, tmp_path / "out")
+
+
+def test_the_ceiling_counts_expanded_bytes_not_compressed_ones(tmp_path):
+    """The gap this closes: what the quota measured and what the disk paid.
+
+    Zeroes deflate to nothing, so this archive is a few hundred bytes on the
+    wire and 3 MB unpacked. Measured the way the upload is measured it fits
+    anywhere; measured as what it becomes, it does not fit in 1 MB.
+    """
+    archive = tmp_path / "small.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+        for n in "abc":
+            zf.writestr(f"{n}.jpg", bytes(1024 * 1024))
+    assert archive.stat().st_size < 64 * 1024
+
+    with pytest.raises(ImportError_, match="unpacks to more than"):
+        extract_archive(archive, tmp_path / "out", 1024 * 1024)
+
+    # The same archive under a ceiling that fits it.
+    assert len(extract_archive(archive, tmp_path / "roomy", 8 * 1024 * 1024)) == 3
+
+
+def test_a_refusal_leaves_no_files_behind(tmp_path):
+    """The bytes written before a refusal have no `Scan` row, so `usage_bytes`
+    cannot count them and `foilstack purge` cannot find them. An account
+    refused for being full would otherwise fill the disk being refused."""
+    archive = tmp_path / "big.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+        for n in range(6):
+            zf.writestr(f"{n}.jpg", bytes(1024 * 1024))
+
+    out = tmp_path / "out"
+    with pytest.raises(ImportError_, match="unpacks to more than"):
+        extract_archive(archive, out, 3 * 1024 * 1024)
+
+    assert not out.exists() or list(out.iterdir()) == []
+
+
+def test_a_refusal_leaves_the_directorys_other_files_alone(tmp_path):
+    """Cleanup takes back what this call wrote, not what it found."""
+    out = tmp_path / "out"
+    out.mkdir()
+    bystander = out / "already-here.jpg"
+    bystander.write_bytes(b"keep me")
+
+    archive = tmp_path / "big.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+        for n in range(6):
+            zf.writestr(f"{n}.jpg", bytes(1024 * 1024))
+
+    with pytest.raises(ImportError_, match="unpacks to more than"):
+        extract_archive(archive, out, 3 * 1024 * 1024)
+
+    assert bystander.read_bytes() == b"keep me"
+    assert list(out.iterdir()) == [bystander]
+
+
+def test_an_unsafe_entry_also_cleans_up(tmp_path):
+    """Not only the ceiling: every road out of the extractor is a road that
+    wrote files, and traversal is the one an attacker picks on purpose."""
+    archive = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("good.jpg", b"x")
+        zf.writestr("../../evil.jpg", b"y")
+
+    out = tmp_path / "out"
+    with pytest.raises(ImportError_, match="unsafe archive entry"):
+        extract_archive(archive, out)
+
+    assert not out.exists() or list(out.iterdir()) == []
+
+
+class _QuotaSettings:
+    max_account_mb = 10
+    max_archive_mb = 2
+
+
+def test_the_ceiling_is_the_room_left_plus_one_archive(monkeypatch):
+    """Slack on purpose: the extracted size is unknowable before extracting, so
+    a hard edge would truncate an ordinary batch for landing near the line.
+
+    The sum itself is tested where it lives; the arithmetic on top of it is
+    what this pins.
+    """
+    import foilstack.importing as imp
+
+    monkeypatch.setattr(imp, "usage_bytes", lambda session, user_id: 6 * 1024 * 1024)
+    ceiling = imp.extraction_ceiling(None, _QuotaSettings(), 1)
+
+    assert ceiling == (4 * 1024 * 1024) + (2 * 1024 * 1024)
+
+
+def test_an_account_already_over_gets_one_archive_and_no_more(monkeypatch):
+    """Room left is negative here. It must not become a negative ceiling, which
+    would refuse every entry, nor wrap into a large one."""
+    import foilstack.importing as imp
+
+    monkeypatch.setattr(imp, "usage_bytes", lambda session, user_id: 50 * 1024 * 1024)
+
+    assert imp.extraction_ceiling(None, _QuotaSettings(), 1) == 2 * 1024 * 1024
+
+
+def test_no_quota_leaves_the_global_ceiling_alone():
+    """A self-hosted install is one person and their own disk."""
+
+    class _NoQuota:
+        max_account_mb = 0
+        max_archive_mb = 512
+
+    assert extraction_ceiling(None, _NoQuota(), 1) == MAX_TOTAL_BYTES
 
 
 def test_duplicate_filenames_do_not_overwrite(tmp_path):

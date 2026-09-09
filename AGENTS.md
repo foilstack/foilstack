@@ -383,6 +383,36 @@ Two habits worth keeping:
   rows on the stated grounds that an in-stock row is recoverable "because its
   scan is on disk", and that promise has to stay true. `foilstack purge` is
   where an operator asks for those.
+* **A quota has to be enforced on what an upload becomes.** Both checks in
+  `api_import` measure the archive as it arrives on the wire, and what fills a
+  disk is what comes back out of the zip. `.tif` is in `IMAGE_SUFFIXES` and an
+  uncompressed TIFF deflates about 1000:1, so 2.2 MB accepted against the
+  quota wrote 2.2 GB under it; the only ceiling on the way out was
+  `MAX_TOTAL_BYTES`, one number for the whole disk that says nothing about
+  whose account is spending it, and registration is open by default, so that
+  4 GiB was per signup. `extraction_ceiling` is the account's number and
+  `extract_archive` takes it as an argument — the constant answers for the
+  disk, the caller answers for the account.
+
+  The slack is deliberate. It is room-left *plus one* `max_archive_mb`,
+  because the extracted size cannot be known before extracting and a hard edge
+  would truncate an ordinary batch mid-archive for landing near the line. A
+  seller slightly over is a better answer than a seller holding half a shelf
+  of cards. For the same reason the ceiling goes to the log and not to the
+  seller: it is a sum they cannot reconcile with the quota they were told
+  about.
+
+  What made this worth more than a one-line change is the failure path.
+  Nothing removed the files already written when extraction refused, and those
+  bytes have no `Scan` row — which is the only thing `usage_bytes` counts and
+  the only thing `foilstack purge` can find, so they are charged to nobody and
+  reclaimable by nothing. Survivable at 4 GiB, where reaching it meant a
+  hostile archive. Not survivable once the ceiling is the account's own quota,
+  because then the *ordinary* over-quota import is the one that leaks and an
+  account refused for being full fills the disk being refused. Lowering a
+  ceiling turns its rejection path from an edge case into the common case, so
+  the rejection path is the half to read first.
+
 * **A page that reads all of something has a size it stops working at.** The
   inventory screen built every row the account owned — three times, through
   `items()`, which is the wide dictionary a card page needs — and `_chrome`
