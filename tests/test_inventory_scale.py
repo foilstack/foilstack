@@ -1,17 +1,24 @@
 """The aggregate and paginated paths must answer what `items()` answers.
 
 `/inventory` no longer builds every row a seller owns to draw one screen, and
-the topbar never did need to. Both now ask Postgres instead, through
-`inventory.priced_printing` — which is a second expression of the rule
-`resolve_printing` and `pick_printing` state in Python.
+the topbar never did need to. Both ask Postgres instead, through
+`inventory.priced_printing` — which is now the only expression of the rule.
 
-Two expressions of one rule is the whole risk of this change, and it is the
-kind that fails quietly: a topbar disagreeing with the table under it by a few
-dollars looks like a rounding choice, not a bug. So these drive both against
-the same rows and demand the same numbers, over a catalogue built to contain
-every shape the picker distinguishes — a card priced on both sides of the foil
-line, one priced on only one side, one with several foil printings at
-different money, and one the catalogue has no price for at all.
+It was one of two. `resolve_printing` and `pick_printing` said the same thing
+in Python, and most of this module existed to drive the pair against the same
+rows and demand the same numbers. The Python copy is gone, so what is left
+here has two jobs instead: pin the picker's rules to the printings they must
+name, over a catalogue built to contain every shape it distinguishes — a card
+priced on both sides of the foil line, one priced on only one side, one with
+several foil printings at different money, one catalogued but priced nowhere,
+and one the catalogue has never heard a price for — and hold `position`, which
+states the rule a third time as a grouped aggregate and genuinely can drift.
+
+The picker's cases came here from `tests/test_inventory.py`, where they ran
+against `pick_printing` without a database. That is the price of one
+implementation: the rules can only be driven where they now live, and this
+file skips without Postgres. `scripts/check-tests.sh` fails on a skip for
+exactly that reason.
 
 Needs Postgres: the picker is a lateral with window functions, so there is
 nothing here that SQLite could answer.
@@ -91,20 +98,23 @@ def priced_inventory():
             ],
         ),
         ("Unpriced", 1.25, []),
-        # A printing with no market price at all: `pick_printing` sorts it as
-        # zero rather than dropping it, and `items()` then falls back to
-        # `cards.market`. The two have to agree about which of those happens.
+        # A printing with no market price at all: the picker sorts it as zero
+        # rather than dropping it, so the row still names the printing it
+        # holds and the price falls back to `cards.market`.
         ("Null Market", 6.00, [("Normal", None, None)]),
         # Catalogued on both sides of the foil line, priced on one. Around
         # 2,700 cards in a real catalogue look like this, and they are what
         # separates "has a printing" from "has a price": the foil row is a
         # real printing that nothing will pay for, so a foil copy of this card
-        # is priced off the Normal and `finish_unpriced` says so. Both
-        # decisions are made twice here — `priced_finishes` against the
-        # lateral's `has_foil`, `pick_printing` against its ORDER BY — which
-        # is precisely the drift this module exists to catch.
+        # is priced off the Normal and `finish_unpriced` says so — the
+        # lateral's `has_foil` and its ORDER BY answering one question each.
         ("Foil Unpriced", 3.00, [("Normal", 3.00, 2.75), ("Holofoil", None, None)]),
         ("Plain Unpriced", 40.00, [("Normal", None, None), ("Holofoil", 40.00, 36.00)]),
+        # Catalogued on both sides and priced on neither, which is the one
+        # shape where no price can break the tie and the foil line has to
+        # decide alone — while still naming a printing, so a card nobody will
+        # pay for does not lose the sub-type it holds.
+        ("Neither Priced", 7.00, [("Normal", None, None), ("Foil", None, None)]),
     ]
 
     cards = {}
@@ -152,6 +162,8 @@ def priced_inventory():
         # sub_type is the seller speaking, so it still wins over a price.
         ("Foil Unpriced", "foil", "Holofoil", "NM", "stock"),
         ("Plain Unpriced", "nonfoil", None, "NM", "stock"),
+        ("Neither Priced", "foil", None, "NM", "stock"),
+        ("Neither Priced", "nonfoil", None, "NM", "stock"),
         # Sold rows must not reach the topbar's figures at all.
         ("Three Foils", "foil", None, "NM", "sold"),
         ("Both Sides", "nonfoil", None, "NM", "sold"),
@@ -185,51 +197,107 @@ def priced_inventory():
     get_settings.cache_clear()
 
 
-def test_sql_picks_the_printing_python_picks(priced_inventory):
-    """The lateral and `resolve_printing` must name the same printing, per row.
+# Which printing the picker must name, and the rule each case is there for.
+#
+# These were pure-function tests against `pick_printing` until that function
+# was deleted as the second copy of this rule. The cases were always the
+# valuable part rather than the direct call, and the fixture above was already
+# built to hold every shape they name — so they moved rather than went. What
+# changed is that they now drive the expression that actually prices
+# `/inventory`, `/listings` and the topbar, instead of one that agreed with it.
+PICKER_CASES = [
+    # (card, finish, declared printing, the printing it must be priced at)
+    ("Both Sides", "nonfoil", None, "Normal"),
+    ("Both Sides", "foil", None, "Foil"),
+    # A single printing serves both answers rather than pricing at nothing.
+    ("Plain Only", "foil", None, "Normal"),
+    ("Foil Only", "nonfoil", None, "Holofoil"),
+    ("Foil Only", "foil", None, "Holofoil"),
+    # Several foils at different money is a choice the seller has not made, so
+    # it guesses high: unsold is noticed, undersold is found out from a payout.
+    ("Three Foils", "foil", None, "1st Edition Holofoil"),
+    ("Three Foils", "nonfoil", None, "Normal"),
+    # A printing the seller named wins outright — including one the catalogue
+    # will not price, because that is still a person speaking.
+    ("Three Foils", "foil", "Holofoil", "Holofoil"),
+    ("Both Sides", "foil", "Normal", "Normal"),
+    ("Foil Unpriced", "foil", "Holofoil", "Holofoil"),
+    # ...unless upstream has dropped it, where it falls back to the guess
+    # rather than pricing the card at nothing.
+    ("Three Foils", "foil", "Gone From Upstream", "1st Edition Holofoil"),
+    # A price outranks the seller's side of the foil line. Taking the unpriced
+    # printing instead sent the row to `cards.market` while `finish_unpriced`
+    # claimed it had been "priced off the other finish", which was not true.
+    ("Foil Unpriced", "foil", None, "Normal"),
+    ("Plain Unpriced", "nonfoil", None, "Holofoil"),
+    ("Foil Unpriced", "nonfoil", None, "Normal"),
+    # Only where something is priced. With nothing to prefer, the foil line
+    # decides again and the row still names the printing it holds.
+    ("Neither Priced", "foil", None, "Foil"),
+    ("Neither Priced", "nonfoil", None, "Normal"),
+    ("Null Market", "nonfoil", None, "Normal"),
+    # And a card the catalogue has no printings for at all names none.
+    ("Unpriced", "nonfoil", None, None),
+]
 
-    Compared row by row rather than in total, because two errors that cancel
-    would pass a comparison of the sums — and the printing is what the price,
-    the `?` flag and the TCGplayer condition column are all read off.
-    """
-    from sqlalchemy import select, true
+
+@pytest.fixture(scope="module")
+def picked(priced_inventory):
+    """Every seeded row's printing, keyed by what the row asked for."""
+    from sqlalchemy import select
 
     from foilstack import db, inventory
 
     _, user_id = priced_inventory
     with db.session() as session:
-        priced = inventory.priced_printing()
-        from_sql = {
-            row[0]: (row[1], row[2])
-            for row in session.execute(
-                select(
-                    db.InventoryItem.id,
-                    priced.c.sub_type,
-                    inventory.func.coalesce(priced.c.market, db.Card.market),
-                )
-                .select_from(db.InventoryItem)
-                .join(db.Card, db.Card.id == db.InventoryItem.card_id)
-                .outerjoin(priced, true())
-                .where(db.InventoryItem.user_id == user_id)
-            ).all()
-        }
-        from_python = {
-            r["id"]: (r["sub_type"], r["market"])
-            for r in inventory.items(session, user_id, inventory.Pricing())
-        }
+        rows = {r["id"]: r for r in inventory.index(session, user_id, inventory.Pricing())}
+        out = {}
+        for item, card in session.execute(
+            select(db.InventoryItem, db.Card)
+            .join(db.Card, db.Card.id == db.InventoryItem.card_id)
+            .where(db.InventoryItem.user_id == user_id)
+        ):
+            out[(card.name, item.finish, item.sub_type)] = rows[item.id]["sub_type"]
+    return out
 
-    assert from_sql == from_python
+
+@pytest.mark.parametrize("card, finish, declared, expected", PICKER_CASES)
+def test_the_picker_names_the_printing_its_rules_demand(picked, card, finish, declared, expected):
+    """One rule of `priced_printing`'s ORDER BY per case.
+
+    Pinned to the printing rather than to the price, because the printing is
+    what the price, the `?` flag, the finish warning and the TCGplayer
+    `Condition` column are all read off — a wrong pick that happens to carry
+    the right number is still a wrong row in an upload file.
+    """
+    assert picked[(card, finish, declared)] == expected
+
+
+def test_every_seeded_row_is_covered_by_a_picker_case(picked):
+    """A case list is only a guard while it still covers the fixture.
+
+    The fixture is shared with the paging and selection tests, so a row added
+    for one of those would otherwise join the catalogue with nothing asserting
+    what it prices at — which is how a shape stops being tested without anyone
+    removing a test.
+    """
+    covered = {(card, finish, declared) for card, finish, declared, _ in PICKER_CASES}
+    assert set(picked) - covered == set()
 
 
 def test_index_agrees_with_items_on_every_shared_key(priced_inventory):
     """The thin read and the wide one must not disagree about anything.
 
     `index` exists to be cheaper, not to be different: the inventory screen
-    reads it and the card page reads `items()`, and a seller moving between the
+    reads it and the card page reads `items`, and a seller moving between the
     two must not see a card change its price, its printing or its warning
-    triangle on the way. So every key they share is compared, rather than the
-    handful this screen happens to paint — the next key added to `items()`
-    should be caught here if `index` was not given it too.
+    triangle on the way.
+
+    Both are `_read` now, so the shared keys agree by construction and this no
+    longer guards two implementations. What it still guards is the `detail`
+    branch: sixteen keys are built on one path and not the other, and a rule
+    written inside that branch — or a shared key computed from a column only
+    the detailed read selects — would be a difference again.
     """
     from foilstack import db, inventory
 

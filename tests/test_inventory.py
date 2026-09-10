@@ -133,31 +133,24 @@ def test_other_rules_ignore_the_lowest_listing():
     assert list_price(10.0, "NM", Pricing("under"), low=1.00) == 9.5
 
 
-def test_finish_picks_the_matching_printing():
-    """A foil priced at its non-foil market value is wrong by a multiple, and
-    always wrong in the direction that loses money."""
-    from foilstack.inventory import matching_printings
-
-    assert matching_printings("foil", ["Foil", "Normal"]) == ["Foil"]
-    assert matching_printings("nonfoil", ["Foil", "Normal"]) == ["Normal"]
-
-
-def test_finish_matching_handles_games_we_have_not_seen():
+def test_the_foil_line_is_read_off_the_word():
     """TCGplayer names printings, not finishes — Pokemon uses Holofoil and
-    Reverse Holofoil, and a new game will invent its own."""
-    from foilstack.inventory import matching_printings
+    Reverse Holofoil, and a new game will invent its own. Matching on the word
+    rather than an exhaustive list means a game we have not seen yet still
+    lands on the right side of the only distinction a seller can make in bulk.
 
-    assert matching_printings("foil", ["Normal", "Reverse Holofoil"]) == ["Reverse Holofoil"]
-    assert matching_printings("nonfoil", ["1st Edition Holofoil", "Unlimited"]) == ["Unlimited"]
-    assert matching_printings("foil", []) == []
+    This is the half of the picker that is still a pure function. Which
+    printing a row is *priced* at is `inventory.priced_printing`, a lateral, and
+    its cases are in `tests/test_inventory_scale.py` — including the ones that
+    used to live here.
+    """
+    from foilstack.inventory import finish_of
 
-
-def test_a_single_printing_serves_both_finishes():
-    """Rather than returning nothing and pricing the card at zero."""
-    from foilstack.inventory import matching_printings
-
-    assert matching_printings("foil", ["Normal"]) == ["Normal"]
-    assert matching_printings("nonfoil", ["Foil"]) == ["Foil"]
+    assert finish_of("Foil") == "foil"
+    assert finish_of("Reverse Holofoil") == "foil"
+    assert finish_of("1st Edition Holofoil") == "foil"
+    assert finish_of("Normal") == "nonfoil"
+    assert finish_of("Unlimited") == "nonfoil"
 
 
 def _priced(**markets):
@@ -253,60 +246,6 @@ def test_a_resolved_finish_is_never_the_one_that_falls_back():
             picked = resolve_finish(default, by_sub)
             available = priced_finishes(by_sub)
             assert not available or picked in available
-
-
-def test_the_fallback_is_reported_not_just_taken():
-    """`matching_printings` crossing the foil line is the one path that prices
-    a card off the wrong side of the seller's own answer. The two functions
-    have to agree about when that happened, or the warning appears on the
-    wrong rows."""
-    from foilstack.inventory import matching_printings, priced_finishes
-
-    for finish, markets in [("foil", {"Normal": 2.0}), ("nonfoil", {"Holofoil": 9.0})]:
-        names = list(markets)
-        picked = matching_printings(finish, names)
-        crossed = finish not in priced_finishes(
-            _priced(**{n.replace(" ", "_"): m for n, m in markets.items()})
-        )
-        assert crossed and picked == names
-
-
-def test_ambiguous_foil_printings_price_high():
-    """Base Set Blastoise is "1st Edition Holofoil" at $1300 and "Unlimited
-    Holofoil" at $820. A seller who ticked "foil" has not said which.
-
-    Guessing high leaves a card unsold and noticed; guessing low sells it
-    immediately at a loss and the seller finds out from the payout.
-    """
-    from types import SimpleNamespace
-
-    from foilstack.inventory import pick_printing
-
-    by_sub = {
-        "1st Edition Holofoil": SimpleNamespace(market=1300.0),
-        "Unlimited Holofoil": SimpleNamespace(market=820.0),
-        "Normal": SimpleNamespace(market=12.0),
-    }
-    assert pick_printing("foil", by_sub) == "1st Edition Holofoil"
-    assert pick_printing("nonfoil", by_sub) == "Normal"
-
-
-def test_a_price_outranks_the_seller_s_side_of_the_foil_line():
-    """An unpriced printing on the right side is not an answer.
-
-    Picking it prices the row off `cards.market` — one printing's figure
-    standing in for all of them — while `finish_unpriced` tells the seller it
-    was "priced off the other finish". Taking the priced printing instead makes
-    that sentence true, and puts a real number on the row.
-    """
-    from foilstack.inventory import pick_printing
-
-    assert pick_printing("foil", _priced(Foil=None, Normal=2.0)) == "Normal"
-    assert pick_printing("nonfoil", _priced(Normal=None, Foil=9.0)) == "Foil"
-    # Only where something is priced. With nothing to prefer, the foil line
-    # decides again and the row still names the printing it holds.
-    assert pick_printing("foil", _priced(Foil=None, Normal=None)) == "Foil"
-    assert pick_printing("nonfoil", {}) is None
 
 
 def _pt(days_ago, value):

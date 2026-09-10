@@ -388,74 +388,6 @@ def resolve_finish(default: str, by_sub: Mapping[str, Any]) -> str:
     return available.pop()
 
 
-def matching_printings(finish: str, names: list[str]) -> list[str]:
-    """The printings that count as this finish, in the order given.
-
-    Falls back to the other side rather than returning nothing: a card with a
-    single printing serves both answers, and pricing it at zero because the
-    seller said "foil" would be worse than pricing it at the only price there
-    is.
-
-    That fallback has to be *visible* where it happens. It is the one path
-    that prices a card off the wrong side of the only distinction the seller
-    was asked to make, and silently it reads as a confirmed price. Callers get
-    `finish_unpriced` on the row for exactly that.
-    """
-    foils = [n for n in names if finish_of(n) == "foil"]
-    plain = [n for n in names if finish_of(n) == "nonfoil"]
-    if finish == "foil":
-        return foils or plain
-    return plain or foils
-
-
-def pick_printing(finish: str, by_sub: dict[str, Any]) -> str | None:
-    """Which stored printing to price a card at, when nobody has said.
-
-    A finish is binary and a printing list is not: Base Set Charizard is "1st
-    Edition Holofoil" at $10,000, "Unlimited Holofoil" at $2,146 and "Holofoil"
-    at $855, and a seller who ticked "foil" has chosen between none of them.
-
-    So it guesses **high**. Overpricing leaves a card unsold and noticed;
-    underpricing sells it immediately at a loss discovered from the payout.
-    Only one of those is recoverable.
-
-    A guess is still a guess, which is why `InventoryItem.sub_type` exists —
-    once the seller names the printing this function is not consulted, and the
-    card page marks any row where it still is.
-
-    A price outranks the foil line. The seller's side is only worth honouring
-    where something on it can be sold for a number: an unpriced Holofoil beside
-    a priced Normal used to win on being the foil, price at nothing, and send
-    the row to `cards.market` — the card-level figure, which is one printing's
-    price standing in for all of them. Then `finish_unpriced` would fire and
-    tell the seller the row was "priced off the other finish", which was not
-    what had happened. Now it is. Only when nothing at all is priced does the
-    whole list come back into play, so a card the catalogue has no money for
-    still names the printing it holds rather than none.
-    """
-    priced = priced_printings(by_sub)
-    candidates = matching_printings(finish, sorted(priced)) or matching_printings(
-        finish, sorted(by_sub)
-    )
-    if not candidates:
-        return None
-    return max(candidates, key=lambda n: (by_sub[n].market or 0.0, n))
-
-
-def resolve_printing(
-    declared: str | None, finish: str, by_sub: dict[str, Any]
-) -> tuple[str | None, bool]:
-    """The printing to price at, and whether it was chosen by a person.
-
-    A declared printing that is no longer in the catalogue falls back to the
-    guess rather than pricing at nothing — upstream renames sub-types
-    occasionally, and a seller should not lose a price to that.
-    """
-    if declared and declared in by_sub:
-        return declared, True
-    return pick_printing(finish, by_sub), False
-
-
 # TCGplayer spells conditions out. Our codes are for a person typing at a pile
 # of cards; the upload wants the words its own export writes, and a file that
 # says "NM" is a file it rejects.
@@ -520,18 +452,47 @@ def _prices_for(session, card_ids: set[int]) -> dict[int, dict[str, Any]]:
 def priced_printing(holder: Any = None) -> Any:
     """The `card_prices` row that prices one inventory row, as SQL.
 
-    The same decision `resolve_printing` makes in Python — the printing the
-    seller named if the catalogue still has it, otherwise `pick_printing`'s
-    guess — written once as a correlated lateral, so a query can ask what an
-    inventory is worth without materialising every row of it in Python first.
+    **The** definition of which printing prices a card, and the only one. A
+    correlated lateral rather than a Python fold so that a query can ask what
+    an inventory is worth without materialising every row of it first — which
+    is what the topbar needs, on every screen, including the ones that never
+    mention inventory.
 
-    That there are now two expressions of one rule is the cost of this, and it
-    is paid deliberately: the alternative was a topbar that summed
-    `cards.market` and quoted a different total from the table underneath it,
-    which is the bug the comment in `chrome._chrome` records. `pick_printing`
-    stays the definition for callers that already hold the price map, and
-    `tests/test_inventory_scale.py` drives the two against the same rows,
-    printing by printing, so they cannot drift apart in silence.
+    It was one of two for a while. `resolve_printing` and `pick_printing`
+    stated the same rule in Python for the callers that already held a price
+    map, and `tests/test_inventory_scale.py` drove the pair against the same
+    rows so they could not drift apart in silence. What made that worth
+    undoing is that the split fell along no line that meant anything: the two
+    screens a seller actually works in read this one, so the Python copy
+    served the narrower half of the application while carrying the whole of
+    the risk — and the risk was the quiet kind, a topbar disagreeing with the
+    table beneath it by a few dollars reading as a rounding choice.
+
+    So the rules the Python copy documented live here, in the `ORDER BY`:
+
+    * A printing the seller **named** wins outright, if the catalogue still
+      carries it. Upstream renames sub-types, and a declared printing that has
+      gone should fall back to the guess rather than price the card at
+      nothing.
+    * Then a **price**, ahead of the foil line. The seller's side is only
+      worth honouring where something on it can be sold for a number: an
+      unpriced Holofoil beside a priced Normal used to win on being the foil,
+      price at nothing, and send the row to `cards.market` — the card-level
+      figure, one printing's price standing in for all of them — while
+      `finish_unpriced` told the seller the row was "priced off the other
+      finish", which was not what had happened.
+    * Then the seller's **side of the foil line**, falling back across it
+      rather than to nothing: a card with a single printing serves both
+      answers, and pricing it at zero because the seller said "foil" is worse
+      than pricing it off the only price there is. That fallback is what
+      `finish_unpriced` exists to make visible.
+    * And within that side, **dearest**. It guesses high on purpose:
+      overpricing leaves a card unsold and noticed, underpricing sells it at a
+      loss discovered from the payout. Only one of those is recoverable.
+
+    A guess is still a guess, which is why `InventoryItem.sub_type` exists —
+    once the seller names the printing, only the first rule above applies, and
+    the card page marks any row where it does not.
 
     The window functions ride along for free: they are evaluated over every
     printing of the card before `LIMIT 1` takes one, which is how a single
@@ -551,8 +512,8 @@ def priced_printing(holder: Any = None) -> Any:
     # `finish_unpriced` is read off, and the whole point of that warning is
     # that the row could not be given a number on the side the seller named —
     # a foil printing sitting at a null market is exactly that case, not an
-    # exemption from it. `items()` says the same thing with
-    # `priced_finishes`, and `tests/test_inventory_scale.py` holds them to it.
+    # exemption from it. `priced_finishes` is the same rule over a price map
+    # already in hand, which is what the import and queue paths hold.
     is_priced = cp.market.is_not(None)
     return (
         select(
@@ -573,7 +534,7 @@ def priced_printing(holder: Any = None) -> Any:
             # NULL sort key under DESC sorts first, which would hand every
             # undeclared row to whichever printing happened to be there.
             cp.sub_type.is_not_distinct_from(item.sub_type).desc(),
-            # Then a price, ahead of the foil line — `pick_printing` says why.
+            # Then a price, ahead of the foil line — the docstring says why.
             # A declared printing still outranks this, because that one is the
             # seller speaking and the rest of the ordering is only guessing.
             is_priced.desc(),
@@ -648,60 +609,81 @@ def position(session, user_id: int) -> dict[str, Any]:
     return {"count": int(row[0]), "market": float(row[1]), "needs_printing": int(row[2])}
 
 
-def index(
-    session, user_id: int, pricing: Pricing, status: str | None = None
+def _read(
+    session,
+    user_id: int,
+    pricing: Pricing,
+    status: str | None,
+    ids: Collection[int] | None,
+    detail: bool,
 ) -> list[dict[str, Any]]:
-    """One thin dict per copy: enough to count, filter, sort, total and group.
+    """Every copy this account owns, priced by the `priced_printing` lateral.
 
-    `items()` answers the same question in about twice as many keys, and every
-    one of the extra ones costs something — the printing list is a second query
-    and a list of dicts per row, the TCGplayer spellings are strings nothing on
-    the inventory screen reads. That is the right shape for a card page, an
-    edit panel or a marketplace export, all of which are bounded by a card, a
-    row or a selection. It is the wrong shape for the whole of a seller's
-    inventory, which is what the facet counts and the totals bar genuinely
-    need to see.
+    One implementation behind two names. `index` is the thin read the
+    inventory screen folds over; `items` is the wide one a card page, an edit
+    panel or a marketplace export needs. They differ in which keys get built —
+    never in how a row is found or which printing prices it.
 
-    So this is the whole-set read and `items()` is the detailed one. Measured
-    over 150,000 rows: `items()` takes about 3.8 seconds and peaks at 840 MB,
-    this takes about 1.1 seconds and 350 MB, and the inventory screen called
-    the first of them three times per render.
+    That is the point of this function existing. `items` used to fetch every
+    printing price into Python and choose one with `resolve_printing`, which
+    was a second expression of the rule the lateral already states in SQL: one
+    question answered twice, in two languages, with a test standing between
+    them to catch the day they disagreed. The split was never along a line
+    that meant anything, either — `/inventory`, `/listings` and the topbar on
+    every page read the SQL answer, so the Python copy served the narrower
+    half of the application while carrying the whole of the drift risk.
 
-    The keys it does carry are named identically, so `fold` and `totals` and
-    the facets work over either. What it deliberately omits is `printings` —
-    absent rather than empty, because an empty list is a claim that the
-    catalogue prices this card in nothing at all, and the card page draws its
-    printing chips off exactly that.
+    `detail` is the sixteen extra keys, and they are not free at size: six
+    more strings on every row is real memory across a hundred and fifty
+    thousand of them, on a screen that reads none of them. It is passed by
+    `items` and by nothing else, which is why this is private. A boolean a
+    caller has to get right is the shape this module keeps warning about, and
+    neither public name has one.
     """
     item, card = db.InventoryItem, db.Card
     priced = priced_printing()
+    # Labelled rather than unpacked positionally. Three names collide across
+    # the join — `sub_type` and `market` are on the item, the card *and* the
+    # lateral — and a tuple of thirty names silently re-reads the wrong one
+    # the moment a column is inserted anywhere but the end.
+    columns = [
+        item.id.label("item_id"),
+        item.card_id.label("card_id"),
+        item.condition.label("condition"),
+        item.finish.label("finish"),
+        item.sub_type.label("declared_sub"),
+        item.status.label("status"),
+        item.cost.label("cost"),
+        item.sold_price.label("sold_price"),
+        item.listed.label("listed"),
+        item.listed_channels.label("listed_channels"),
+        item.scan_id.label("scan_id"),
+        card.name.label("name"),
+        card.game.label("game"),
+        card.set_name.label("set_name"),
+        card.number.label("number"),
+        card.variant.label("variant"),
+        card.image_url.label("image_url"),
+        card.market.label("card_market"),
+        priced.c.sub_type.label("sub"),
+        priced.c.market.label("sub_market"),
+        priced.c.low.label("low"),
+        priced.c.n_printings.label("n_printings"),
+        priced.c.has_foil.label("has_foil"),
+        priced.c.has_plain.label("has_plain"),
+    ]
+    if detail:
+        columns += [
+            item.notes.label("notes"),
+            item.sold_at.label("sold_at"),
+            item.created_at.label("created_at"),
+            card.source.label("source"),
+            card.source_id.label("source_id"),
+            card.source_name.label("source_name"),
+        ]
+
     query = (
-        select(
-            item.id,
-            item.card_id,
-            item.condition,
-            item.finish,
-            item.sub_type,
-            item.status,
-            item.cost,
-            item.sold_price,
-            item.listed,
-            item.listed_channels,
-            item.scan_id,
-            card.name,
-            card.game,
-            card.set_name,
-            card.number,
-            card.variant,
-            card.image_url,
-            card.market,
-            priced.c.sub_type,
-            priced.c.market,
-            priced.c.low,
-            priced.c.n_printings,
-            priced.c.has_foil,
-            priced.c.has_plain,
-        )
+        select(*columns)
         .select_from(item)
         .join(card, card.id == item.card_id)
         .outerjoin(priced, true())
@@ -709,76 +691,174 @@ def index(
     )
     if status is not None:
         query = query.where(item.status == status)
+    if ids is not None:
+        # `db.id_in` rather than `in_`: a `sel=all` run may name every copy of
+        # a fifty-thousand-line result, which is well past what one `IN` list
+        # can bind. One statement also means the `ORDER BY` below is the whole
+        # answer's ordering — chunking made it each chunk's, and needed a
+        # re-sort afterwards to put that right.
+        query = query.where(db.id_in(item.id, ids))
 
     out: list[dict[str, Any]] = []
     for row in session.execute(query.order_by(item.id.desc())):
-        (
-            item_id,
-            card_id,
-            condition,
-            finish,
-            declared_sub,
-            item_status,
-            cost,
-            sold_price,
-            listed,
-            listed_channels,
-            scan_id,
-            name,
-            game,
-            set_name,
-            number,
-            variant,
-            image_url,
-            card_market,
-            sub,
-            sub_market,
-            low,
-            n_printings,
-            has_foil,
-            has_plain,
-        ) = row
-        # `resolve_printing` returns "did a person choose this", and the pick
-        # is ordered so that a declared printing the catalogue still carries
-        # wins outright. So the two agree exactly here, and one that the
-        # catalogue has dropped reads as the guess it fell back to.
-        declared = bool(declared_sub) and sub == declared_sub
-        market = sub_market if sub_market is not None else card_market
-        available = {side for side, on in (("foil", has_foil), ("nonfoil", has_plain)) if on}
-        out.append(
-            {
-                "id": item_id,
-                "card_id": card_id,
-                "name": name,
-                "game": game,
-                "set_name": set_name,
-                "number": number,
-                "variant": variant,
-                "image_url": image_url,
-                "condition": condition,
-                "finish": finish,
-                "finish_label": FINISH_LABEL.get(finish, finish),
-                "is_foil": finish == "foil",
-                "quantity": 1,
-                "status": item_status,
-                "sold": item_status == "sold",
-                "sold_price": sold_price,
-                "cost": cost,
-                "market": market,
-                "low": low,
-                "sub_type": sub,
-                "printing_declared": declared,
-                "printing_guessed": bool(sub) and not declared and (n_printings or 0) > 1,
-                "finishes_priced": sorted(available),
-                "finish_unpriced": bool(n_printings) and finish not in available,
-                "list_price": list_price(market, condition, pricing, low),
-                "scan_id": scan_id,
-                "listed": bool(listed),
-                "listed_channels": listed_channels or "",
-                "listed_label": listed_channels or "\u2014",
-            }
-        )
+        # The price of the printing the seller says they hold, not an average
+        # over printings. A foil priced at its non-foil market value is wrong
+        # by a multiple, and always wrong in the direction that loses money.
+        market = row.sub_market if row.sub_market is not None else row.card_market
+        # "Did a person choose this." The lateral orders a declared printing
+        # the catalogue still carries above everything else, so the two agree
+        # exactly here — and one the catalogue has dropped reads as the guess
+        # it fell back to rather than pricing the card at nothing.
+        declared = bool(row.declared_sub) and row.sub == row.declared_sub
+        # Which finishes the catalogue *prices* this card in, so the screens
+        # can mark the one it does not rather than offering both as if they
+        # were equally real. Priced, not merely catalogued: `has_foil` and
+        # `has_plain` are read off printings with a market price.
+        available = {
+            side for side, on in (("foil", row.has_foil), ("nonfoil", row.has_plain)) if on
+        }
+        price = list_price(market, row.condition, pricing, row.low)
+        copy = {
+            "id": row.item_id,
+            "card_id": row.card_id,
+            "name": row.name,
+            "game": row.game,
+            "set_name": row.set_name,
+            "number": row.number,
+            "variant": row.variant,
+            "image_url": row.image_url,
+            "condition": row.condition,
+            "finish": row.finish,
+            "finish_label": FINISH_LABEL.get(row.finish, row.finish),
+            "is_foil": row.finish == "foil",
+            # A copy is one card. Kept on the dict so an exporter mapping
+            # `quantity` still works when given a single copy rather than a
+            # grouped stock line.
+            "quantity": 1,
+            "status": row.status,
+            "sold": row.status == "sold",
+            "sold_price": row.sold_price,
+            "cost": row.cost,
+            "market": market,
+            "low": row.low,
+            "sub_type": row.sub,
+            "printing_declared": declared,
+            # A guess only matters when there was a choice. One printing is
+            # not an ambiguity, and flagging it would cry wolf on almost every
+            # card in the catalogue.
+            "printing_guessed": bool(row.sub) and not declared and (row.n_printings or 0) > 1,
+            "finishes_priced": sorted(available),
+            # The seller's finish has no printing behind it, so the price
+            # beside it came off the other side of the foil line. Not
+            # conditional on `printing_guessed`: that one stays quiet on a
+            # single-printing card, which is precisely the shape this is — one
+            # "Normal" row under a chip reading "Foil", with nothing on screen
+            # to say the number is the non-foil one.
+            "finish_unpriced": bool(row.n_printings) and row.finish not in available,
+            "list_price": price,
+            "scan_id": row.scan_id,
+            "listed": bool(row.listed),
+            "listed_channels": row.listed_channels or "",
+            "listed_label": row.listed_channels or "\u2014",
+        }
+        if detail:
+            cost = row.cost
+            copy.update(
+                {
+                    "sku": sku(row.item_id),
+                    "source": row.source,
+                    "source_ref": row.source_id.split(":", 1)[-1],
+                    # The same two facts as `condition` and `sub_type`,
+                    # spelled the way a TCGplayer upload spells them. Here
+                    # rather than in the exporter TOML because exporters are
+                    # data: a marketplace whose vocabulary differs from ours
+                    # needs a translation, and this is the only place one can
+                    # live.
+                    "tcg_condition": tcg_condition(row.condition, row.sub),
+                    "tcg_product_line": PRODUCT_LINES.get(row.game, row.game),
+                    # The raw spelling, and `name` where the catalogue
+                    # predates the column. Falling back is a real answer for
+                    # most cards and a wrong one for any card with punctuation
+                    # in it, which is why the matcher reports what it could not
+                    # find rather than quietly returning a shorter file.
+                    "tcg_name": row.source_name or row.name,
+                    "notes": row.notes or "",
+                    "sold_at": row.sold_at,
+                    "created_at": row.created_at,
+                    "margin": (
+                        round(price - cost, 2) if price is not None and cost is not None else None
+                    ),
+                    "margin_pct": (
+                        round(100 * (market - cost) / market)
+                        if cost is not None and market
+                        else None
+                    ),
+                    "ebay_title": " ".join(p for p in [row.name, row.set_name, row.number] if p)[
+                        :80
+                    ],
+                }
+            )
+        out.append(copy)
     return out
+
+
+def _attach_printings(session, rows: list[dict[str, Any]]) -> None:
+    """Every printing the catalogue prices these cards in, onto their rows.
+
+    The one key the picker cannot supply, because it is the question the
+    picker answered rather than its answer: the card page offers the printings
+    it did *not* choose, so it needs the whole map and a mark on the one that
+    is on.
+
+    One statement for the whole set rather than one per row — see `_prices_for`
+    — and the only reason `items` reads `card_prices` in Python at all.
+    """
+    prices = _prices_for(session, {row["card_id"] for row in rows})
+    for row in rows:
+        by_sub = prices.get(row["card_id"], {})
+        row["printings"] = [
+            {
+                "sub_type": name,
+                "market": by_sub[name].market,
+                "low": by_sub[name].low,
+                "on": name == row["sub_type"],
+            }
+            for name in sorted(by_sub)
+        ]
+
+
+def index(
+    session,
+    user_id: int,
+    pricing: Pricing,
+    status: str | None = None,
+    ids: Collection[int] | None = None,
+) -> list[dict[str, Any]]:
+    """One thin dict per copy: enough to count, filter, sort, total and group.
+
+    `items` answers the same question in sixteen more keys, and every one of
+    them costs something — the printing list is a second query and a list of
+    dicts per row, the TCGplayer spellings are strings nothing on the
+    inventory screen reads. That is the right shape for a card page, an edit
+    panel or a marketplace export, all of which are bounded by a card, a row
+    or a selection. It is the wrong shape for the whole of a seller's
+    inventory, which is what the facet counts and the totals bar genuinely
+    need to see.
+
+    So this is the whole-set read and `items` is the detailed one. Measured
+    over 150,000 rows before the two were collapsed onto `_read`: `items` took
+    about 3.8 seconds and peaked at 840 MB, this took about 1.1 seconds and
+    350 MB, and the inventory screen called the first of them three times per
+    render.
+
+    Every key it carries is named identically, so `fold` and `totals` and the
+    facets work over either — which is now true by construction rather than by
+    a test. What it deliberately omits is `printings`: absent rather than
+    empty, because an empty list is a claim that the catalogue prices this
+    card in nothing at all, and the card page draws its printing chips off
+    exactly that.
+    """
+    return _read(session, user_id, pricing, status, ids, detail=False)
 
 
 def items(
@@ -814,129 +894,15 @@ def items(
     to nothing must not read as "everything the account owns"; that is the
     hazard `Selection` exists to keep off `/listings` and it should not be
     reintroduced one layer down.
-    """
-    query = (
-        select(db.InventoryItem, db.Card)
-        .join(db.Card, db.Card.id == db.InventoryItem.card_id)
-        .where(db.InventoryItem.user_id == user_id)
-    )
-    if status is not None:
-        query = query.where(db.InventoryItem.status == status)
-    if ids is not None:
-        # `db.id_in` rather than `in_`: a `sel=all` run may name every copy of
-        # a fifty-thousand-line result, which is well past what one `IN` list
-        # can bind. One statement also means the `ORDER BY` below is the whole
-        # answer's ordering — chunking made it each chunk's, and needed a
-        # re-sort afterwards to put that right.
-        query = query.where(db.id_in(db.InventoryItem.id, ids))
-    rows = session.execute(query.order_by(db.InventoryItem.id.desc())).all()
-    prices = _prices_for(session, {card.id for _, card in rows})
 
-    out: list[dict[str, Any]] = []
-    for item, card in rows:
-        # The price of the printing the seller says they hold, not an average
-        # over printings. A foil priced at its non-foil market value is wrong
-        # by a multiple, and always wrong in the direction that loses money.
-        by_sub = prices.get(card.id, {})
-        sub, declared = resolve_printing(item.sub_type, item.finish, by_sub)
-        available = priced_finishes(by_sub)
-        row = by_sub.get(sub) if sub else None
-        market = row.market if row and row.market is not None else card.market
-        low = row.low if row else None
-        price = list_price(market, item.condition, pricing, low)
-        cost = item.cost
-        margin = None
-        if price is not None and cost is not None:
-            margin = round(price - cost, 2)
-        market_for_margin = market
-        out.append(
-            {
-                "id": item.id,
-                "card_id": card.id,
-                "sku": sku(item.id),
-                "source": card.source,
-                "source_ref": card.source_id.split(":", 1)[-1],
-                "name": card.name,
-                "game": card.game,
-                "set_name": card.set_name,
-                "number": card.number,
-                "variant": card.variant,
-                "condition": item.condition,
-                # The same two facts as `condition` and `sub_type`, spelled the
-                # way a TCGplayer upload spells them. Here rather than in the
-                # exporter TOML because exporters are data: a marketplace whose
-                # vocabulary differs from ours needs a translation, and this is
-                # the only place one can live.
-                "tcg_condition": tcg_condition(item.condition, sub),
-                "tcg_product_line": PRODUCT_LINES.get(card.game, card.game),
-                # The raw spelling, and `name` where the catalogue predates the
-                # column. Falling back is a real answer for most cards and a
-                # wrong one for any card with punctuation in it, which is why
-                # the matcher reports what it could not find rather than
-                # quietly returning a shorter file.
-                "tcg_name": card.source_name or card.name,
-                "finish": item.finish,
-                "finish_label": FINISH_LABEL.get(item.finish, item.finish),
-                "is_foil": item.finish == "foil",
-                # A copy is one card. Kept on the dict so an exporter mapping
-                # `quantity` still works when given a single copy rather than
-                # a grouped stock line.
-                "quantity": 1,
-                "notes": item.notes or "",
-                "status": item.status,
-                "sold": item.status == "sold",
-                "sold_price": item.sold_price,
-                "sold_at": item.sold_at,
-                "created_at": item.created_at,
-                "cost": cost,
-                "market": market,
-                "low": low,
-                "sub_type": sub,
-                "printing_declared": declared,
-                # A guess only matters when there was a choice. One printing is
-                # not an ambiguity, and flagging it would cry wolf on almost
-                # every card in the catalogue.
-                "printing_guessed": bool(sub) and not declared and len(by_sub) > 1,
-                # Which finishes the catalogue prices this card in, so the
-                # screens can mark the one it does not rather than offering
-                # both as if they were equally real.
-                "finishes_priced": sorted(available),
-                # The seller's finish has no printing behind it, so the price
-                # beside it came off the other side of the foil line. Not
-                # conditional on `printing_guessed`: that one stays quiet on a
-                # single-printing card, which is precisely the shape this is —
-                # one "Normal" row under a chip reading "Foil", with nothing
-                # on screen to say the number is the non-foil one.
-                "finish_unpriced": bool(by_sub) and item.finish not in available,
-                # Every printing we hold a price for, so the card page can offer
-                # them and say what it did not pick.
-                "printings": [
-                    {
-                        "sub_type": name,
-                        "market": by_sub[name].market,
-                        "low": by_sub[name].low,
-                        "on": name == sub,
-                    }
-                    for name in sorted(by_sub)
-                ],
-                "list_price": price,
-                "margin": margin,
-                "margin_pct": (
-                    round(100 * (market_for_margin - cost) / market_for_margin)
-                    if cost is not None and market_for_margin
-                    else None
-                ),
-                "scan_id": item.scan_id,
-                "image_url": card.image_url,
-                "listed": bool(item.listed),
-                "listed_channels": item.listed_channels or "",
-                "listed_label": item.listed_channels or "—",
-                "ebay_title": " ".join(p for p in [card.name, card.set_name, card.number] if p)[
-                    :80
-                ],
-            }
-        )
-    return out
+    `printings` comes with the wide read rather than on request. A flag would
+    save `export_rows` one query it does not read, and cost every future
+    caller a chance to get a boolean wrong on a key the card page renders
+    from — which is the trade this module makes the same way everywhere else.
+    """
+    rows = _read(session, user_id, pricing, status, ids, detail=True)
+    _attach_printings(session, rows)
+    return rows
 
 
 def merge_channels(labels: Iterable[str]) -> list[str]:
