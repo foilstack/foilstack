@@ -327,7 +327,7 @@ def _queue_rows(session, user_id: int, job_id: int | None) -> list[dict]:
                 # choice only the seller can make. Counted over the priced
                 # printings for the same reason `resolve_finish` reads those:
                 # a foil printing with no market price is not a second price
-                # to choose between, and `pick_printing` now sorts it below
+                # to choose between, and `priced_printing` sorts it below
                 # every printing that has one. Asking about it put a warning
                 # pill on a row with nothing to decide.
                 "ambiguous": card is not None

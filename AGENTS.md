@@ -444,13 +444,30 @@ Two habits worth keeping:
   fixes nothing while the server still folds the whole inventory before
   rendering the first one.
 
-  `position()` and the sort keys need a market price per row, which is
-  `resolve_printing` and `pick_printing` — so `priced_printing()` is those
-  rules a second time, in SQL. That duplication is the real cost here and it
-  is the quiet kind: a topbar disagreeing with the table beneath it by a few
-  dollars reads as rounding. `tests/test_inventory_scale.py` drives both
-  against the same rows, printing by printing, and `index` against `items` on
-  every key they share.
+  **`priced_printing()` is the only definition of which printing prices a
+  row.** `position()` and the sort keys need a market price per row without
+  materialising the inventory, so the rule has to exist as SQL. It existed as
+  Python too for a while — `resolve_printing` and `pick_printing`, for the
+  callers that already held a price map — and that duplication was the real
+  cost of the change above, of the quiet kind: a topbar disagreeing with the
+  table beneath it by a few dollars reads as rounding.
+
+  The Python copy is gone. What made it worth deleting rather than guarding
+  was that the split fell along no line that meant anything — `/inventory`,
+  `/listings` and the topbar on every page read the lateral, so the Python
+  half served the card page, the edit panel and the export while carrying the
+  whole of the drift risk. `index()` and `items()` are one `_read()` now,
+  differing only in whether the sixteen detail keys get built, so they agree
+  by construction rather than by a test.
+
+  The cost is that the rule can no longer be driven without a database. Its
+  cases moved from `tests/test_inventory.py`, where they were pure-function
+  tests against `pick_printing`, into `tests/test_inventory_scale.py`, which
+  skips when Postgres is unreachable — which is survivable only because the
+  pre-push hook fails on a skip. `finish_of` is the half that is still a
+  plain function and still tested as one. `position()` remains a third
+  expression of the rule as a grouped aggregate, and is still held to the
+  other two.
 
   Look at it with `--bulk`. A pager cannot be reviewed on one page of results,
   and the bugs paging introduces — a facet click that keeps the page number, a
@@ -674,14 +691,14 @@ Two habits worth keeping:
   corrected row against — is *derived* from it rather than filtering again
   beside it, so the third copy of the rule agrees by construction.
 
-  A price also outranks the foil line in `pick_printing`. An unpriced Holofoil
-  beside a priced Normal used to win on being the foil and then price off
-  `cards.market`, while `finish_unpriced` told the seller the row was "priced
-  off the other finish" — which was not what had happened. Only where nothing
-  at all is priced does the whole list come back, so a card with no money
-  behind it still names the printing it holds. Both decisions are made twice,
-  in Python and in the `priced_printing()` lateral, and
-  `tests/test_inventory_scale.py` is what stops them drifting.
+  A price also outranks the foil line in `priced_printing()`. An unpriced
+  Holofoil beside a priced Normal used to win on being the foil and then price
+  off `cards.market`, while `finish_unpriced` told the seller the row was
+  "priced off the other finish" — which was not what had happened. Only where
+  nothing at all is priced does the whole list come back, so a card with no
+  money behind it still names the printing it holds. That rule lives in the
+  lateral's `ORDER BY` and nowhere else; `tests/test_inventory_scale.py`
+  pins it, case by case, to the printing it must name.
 
 * **A scan has three answers, and they are three columns.** `candidates` is
   what the encoder saw in one image. `cohort_card_id` is what the rest of the
