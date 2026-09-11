@@ -38,6 +38,7 @@ src/foilstack/
     deps.py       the dependencies every route shares
     auth.py       accounts, sessions, the single-user escape hatch
     ratelimit.py  per-process counters on the routes strangers can reach
+    bodylimit.py  the byte ceiling on a request, before a parser writes it down
     joblog.py     a short in-memory "did that button do anything", per account
     proof.py      the two catalogue cards the landing page argues with
   migrations/     alembic. The schema lives here, not in create_all — and
@@ -383,6 +384,41 @@ Two habits worth keeping:
   rows on the stated grounds that an in-stock row is recoverable "because its
   scan is on disk", and that promise has to stay true. `foilstack purge` is
   where an operator asks for those.
+* **A route cannot limit a body it has already been handed.** `api_import`
+  counted every byte against the archive cap and the account's quota, and the
+  TCGplayer round trip against its own ceiling, and both counts ran after the
+  bytes were on disk. FastAPI resolves `File(...)` before it calls the route,
+  and Starlette spools each file part to a temporary file with no limit:
+  `max_part_size` is for ordinary fields and skips files by design. Measured,
+  a 20 MB body against a 1 KB cap was refused at 1 KB after 20 MB had been
+  written to a `/tmp` on the database's disk — by any signed-in account, or by
+  anybody at all in single-user mode.
+
+  `web/bodylimit.py` answers in front of the router: a declared
+  `Content-Length` past the ceiling is refused unread, and a body that
+  declares none is counted as it streams. The route checks stay and are still
+  the exact ones, because only a route knows whose quota is being spent. Two
+  ways the outer check goes wrong quietly: keyed by path, it goes stale when a
+  route is renamed, which is what `test_every_upload_ceiling_names_a_real_route`
+  is for; and without room for multipart framing — one part per loose image —
+  it breaks the size the import screen promises by arithmetic.
+
+* **`--forwarded-allow-ips '*'` trusts the visitor, not the proxy.** Under
+  `*`, uvicorn takes the *left-most* `X-Forwarded-For` entry, and Cloudflare
+  appends to a header the client already sent rather than replacing it — so a
+  request to the live site carrying `X-Forwarded-For: 203.0.113.9` was logged,
+  and rate-limited, as 203.0.113.9. Given a real list, uvicorn takes the
+  right-most address it does not trust, which is the one the proxy added.
+  `FORWARDED_ALLOW_IPS` defaults to Docker's container range and travels as an
+  environment variable, because a flag on the command line beats it.
+
+  It was hiding a second bug. The per-address registration budget was spent
+  only by failures, so a limit described as tight "because every success costs
+  a row" never counted a success, and one honest address could open accounts
+  indefinitely. Every attempt spends it now, and `_signups` bounds the
+  accounts created across every address — the one budget nobody can refresh
+  by arriving from somewhere new, whatever the proxy reports.
+
 * **A quota has to be enforced on what an upload becomes.** Both checks in
   `api_import` measure the archive as it arrives on the wire, and what fills a
   disk is what comes back out of the zip. `.tif` is in `IMAGE_SUFFIXES` and an
@@ -592,11 +628,13 @@ Two habits worth keeping:
   `web` service in `docker-compose.yml` passes it through, and `.env.example`
   documents it — and compose forwards only what that block lists, so a setting
   added to the first and the third but not the second is a knob that silently
-  does nothing on the one install path the README describes. The two settings
+  does nothing on the one install path the README describes. The settings
   that live outside `config.py` are easier still to miss: `MAX_IMAGES` in
   `importing.py` and `FOILSTACK_EMBED_CONCURRENCY` in `cli.py` are module
   constants read at import, and the first of them is printed on the import
-  screen as a promise to the seller.
+  screen as a promise to the seller. `FORWARDED_ALLOW_IPS` is read by uvicorn
+  itself, and `.env` names it `FOILSTACK_FORWARDED_ALLOW_IPS` so compose can
+  pass it through.
 * **Auto-accept is off unless the seller turns it on.** It is the one control
   on the import screen that puts a card into inventory with nobody having
   looked at it, and inventory is what gets priced, exported and sold against —

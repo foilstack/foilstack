@@ -100,7 +100,9 @@ def issue(request: Request, response: Response, settings: Settings, user_id: int
 
     Behind a TLS-terminating proxy the scheme is only correct if the proxy's
     `X-Forwarded-Proto` is honoured — uvicorn needs `--proxy-headers` for that,
-    which is set in the compose command.
+    which is set in the compose command, and the proxy's address in
+    `FORWARDED_ALLOW_IPS`. A proxy uvicorn does not trust has its scheme
+    ignored along with its address, and every cookie goes out without `Secure`.
     """
     token = _serializer(settings).dumps({"uid": user_id})
     response.set_cookie(

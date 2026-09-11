@@ -53,5 +53,23 @@ not a fresh budget against the seller being targeted. Ten failures in fifteen
 minutes by default (`FOILSTACK_LOGIN_ATTEMPTS`, `FOILSTACK_LOGIN_WINDOW_S`); a
 successful sign-in clears both.
 
+Sign-ups are limited per address, where every attempt counts — the ones that
+succeed included — and by `FOILSTACK_SIGNUPS_PER_WINDOW` across every address,
+twenty a window by default. The second is the budget a visitor cannot reset.
+When it runs out the form tells everybody the server is not taking accounts
+for a few minutes, which is the right answer to a flood and the wrong one on a
+launch day, so raise it for one.
+
 The counters live in the process, so adding uvicorn workers multiplies the
 effective limit.
+
+### Behind a proxy
+
+An address is only as good as the proxy reporting it. uvicorn believes
+`X-Forwarded-For` and `X-Forwarded-Proto` only from the addresses in
+`FOILSTACK_FORWARDED_ALLOW_IPS`, which defaults to Docker's own container range
+and so covers a proxy on the compose network or on the host. Trusted too
+little, every visitor shares the proxy's address and the session cookie loses
+`Secure`. Trusted too widely — `*`, which the compose file once shipped —
+uvicorn reads the left-most forwarded address, the one the visitor wrote, and
+every per-address budget is theirs to reset.

@@ -79,20 +79,27 @@ def client_ip(request) -> str:
     """The address to attribute an attempt to.
 
     uvicorn runs with `--proxy-headers`, so `request.client.host` is already
-    the address from `X-Forwarded-For` rather than the proxy's. That header is
-    only trustworthy because the app is not reachable except through the
-    tunnel; a deployment that publishes the port directly is one where a
-    client picks its own value here and the per-address limit means nothing.
+    the address from `X-Forwarded-For` rather than the proxy's — but only for
+    a connection from an address in `FORWARDED_ALLOW_IPS`, and then it is the
+    right-most address that uvicorn does not trust: the one the proxy appended.
 
-    Which is why the login route limits per *account* as well. Spoofing the
-    address gets you a fresh address budget, not a fresh budget against the
-    account you are trying to break into.
+    That second half is the whole of it. The compose file used to pass
+    `--forwarded-allow-ips '*'`, under which uvicorn takes the *left-most*
+    entry instead, which is the one the visitor wrote. Cloudflare appends to a
+    header a client already sent rather than replacing it, so through the
+    tunnel every budget keyed here was keyed on a string the visitor chose: a
+    request to the live site carrying `X-Forwarded-For: 203.0.113.9` was logged
+    as coming from 203.0.113.9.
+
+    Which is why nothing leans on the address alone. Login is limited per
+    *account* as well, and registration by a budget across every address, so
+    a fresh address buys a fresh address budget and nothing else.
     """
     client = getattr(request, "client", None)
     return getattr(client, "host", None) or "unknown"
 
 
-def wait_message(seconds: float) -> str:
+def wait_message(seconds: float, reason: str = "too many attempts") -> str:
     """How a refusal is worded.
 
     It names the wait rather than saying "blocked", because the person reading
@@ -100,4 +107,4 @@ def wait_message(seconds: float) -> str:
     attacker the limit is there for.
     """
     minutes = max(1, int(seconds // 60) + (1 if seconds % 60 else 0))
-    return f"too many attempts. try again in about {minutes} minute" + ("s" if minutes > 1 else "")
+    return f"{reason}. try again in about {minutes} minute" + ("s" if minutes > 1 else "")
