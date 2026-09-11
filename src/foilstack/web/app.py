@@ -30,6 +30,7 @@ from foilstack import __version__, db, importing
 from foilstack.config import Settings, get_settings
 from foilstack.plugins import export_plugins, supported_games
 from foilstack.web import auth, proof
+from foilstack.web.bodylimit import BodyLimit
 from foilstack.web.chrome import (
     BASE_DIR,
     _asset_version,
@@ -72,6 +73,9 @@ app.include_router(inventory_routes.router)
 app.include_router(listings.router)
 app.include_router(media.router)
 app.include_router(plugins.router)
+# Ahead of `_security_headers` below so a refusal still carries those headers:
+# middleware added later wraps whatever was added before it.
+app.add_middleware(BodyLimit)
 
 # Read once, at import, and used for exactly one thing: the size of the rate
 # limiter windows below, which are a property of the process rather than of a

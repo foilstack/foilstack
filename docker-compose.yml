@@ -84,6 +84,15 @@ services:
       FOILSTACK_MAX_ACCOUNT_MB: ${FOILSTACK_MAX_ACCOUNT_MB:-0}
       FOILSTACK_LOGIN_ATTEMPTS: ${FOILSTACK_LOGIN_ATTEMPTS:-10}
       FOILSTACK_LOGIN_WINDOW_S: ${FOILSTACK_LOGIN_WINDOW_S:-900}
+      FOILSTACK_SIGNUPS_PER_WINDOW: ${FOILSTACK_SIGNUPS_PER_WINDOW:-20}
+      # Read by uvicorn itself, not by config.py: the addresses whose
+      # X-Forwarded-For and X-Forwarded-Proto are believed. Docker gives
+      # containers addresses in 172.16.0.0/12, so a proxy on this compose
+      # network is trusted, and so is one on the host arriving through the
+      # published port's gateway; a visitor reaching the port directly is not.
+      # It was `*`, under which uvicorn believes the left-most forwarded
+      # address — the one the visitor wrote. See `ratelimit.client_ip`.
+      FORWARDED_ALLOW_IPS: "${FOILSTACK_FORWARDED_ALLOW_IPS:-127.0.0.1,172.16.0.0/12}"
     volumes:
       # Your scans. A bind mount rather than a named volume so you can see
       # them, back them up, and delete them. The database is a separate volume;
@@ -94,7 +103,10 @@ services:
     # cookie is issued without `Secure` behind HTTPS, and issued *with* it
     # would be worse: the browser would refuse to send it back over HTTP and
     # login would silently loop.
-    command: ["uvicorn", "foilstack.web.app:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+    #
+    # Which proxies are believed is `FORWARDED_ALLOW_IPS`, above, and not a
+    # flag here: a flag beats the environment, and this one used to say `*`.
+    command: ["uvicorn", "foilstack.web.app:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
     ports:
       - "${FOILSTACK_PORT:-8090}:8000"
     depends_on:

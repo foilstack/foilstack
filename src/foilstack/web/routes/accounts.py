@@ -42,6 +42,15 @@ _register_ip = ratelimit.Limiter(
     max(3, _boot_limits.login_attempts // 2), _boot_limits.login_window_s
 )
 
+# And one budget across every address, spent by each account created. The
+# address budget is only as honest as the address — whatever the proxy in front
+# reports, and for a while whatever the visitor wrote — so something has to
+# bound signups that cannot be refreshed by arriving from somewhere new.
+# Refusing everybody for a few minutes during a flood is the trade, and
+# `FOILSTACK_SIGNUPS_PER_WINDOW` is the dial for a launch day.
+_signups = ratelimit.Limiter(max(1, _boot_limits.signups_per_window), _boot_limits.login_window_s)
+_SIGNUPS = "all"
+
 
 def _auth_page(
     request: Request,
@@ -173,11 +182,30 @@ def do_register(
             email=email,
             status=429,
         )
+    paused = _signups.check(_SIGNUPS)
+    if paused > 0:
+        # Not "too many attempts": this visitor may not have made any. It is
+        # the server that has stopped taking accounts for a while, and saying
+        # so is the difference between waiting and giving up.
+        return _auth_page(
+            request,
+            "register",
+            settings,
+            error=ratelimit.wait_message(paused, "this server is not taking new accounts just now"),
+            email=email,
+            status=429,
+        )
+
+    # Every attempt spends the address budget, a success included. It was
+    # spent only by failures — a wrong invite code, a short password — so the
+    # budget kept tight because "every attempt that succeeds costs a row" never
+    # counted one that succeeded, and one address could open accounts for as
+    # long as it cared to.
+    _register_ip.record(ip)
 
     if settings.invite_code and not compare_digest(invite.strip(), settings.invite_code):
-        # Counts against the budget: without that, the code itself is
+        # Counted above, which is what keeps the code itself from being
         # guessable at whatever rate the network allows.
-        _register_ip.record(ip)
         return _auth_page(
             request,
             "register",
@@ -190,9 +218,9 @@ def do_register(
     try:
         user = auth.register(session, settings, email, password)
     except auth.AuthError as exc:
-        _register_ip.record(ip)
         return _auth_page(request, "register", settings, error=str(exc), email=email, status=400)
 
+    _signups.record(_SIGNUPS)
     response = RedirectResponse("/app", status_code=303)
     auth.issue(request, response, settings, user.id)
     return response

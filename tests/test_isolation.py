@@ -1389,6 +1389,64 @@ def test_an_invite_code_is_required_when_one_is_set(app_and_data, monkeypatch):
     accounts._register_ip.clear()
 
 
+def test_registration_counts_the_accounts_it_creates(app_and_data, monkeypatch):
+    """The address budget was spent only by failures, so an address that got
+    every field right could open accounts for as long as it liked — the one
+    kind of attempt the budget was described as existing for."""
+    from fastapi.testclient import TestClient
+
+    from foilstack.web import ratelimit
+    from foilstack.web.routes import accounts
+
+    app, _ = app_and_data
+    monkeypatch.setattr(accounts, "_register_ip", ratelimit.Limiter(3, 900))
+
+    with TestClient(app) as anon:
+        codes = [
+            anon.post(
+                "/register",
+                data={"email": f"bulk-{i}@example.com", "password": "a-long-enough-password"},
+                follow_redirects=False,
+            ).status_code
+            for i in range(5)
+        ]
+
+    assert codes == [303, 303, 303, 429, 429]
+
+
+def test_new_accounts_are_capped_across_every_address(app_and_data, monkeypatch):
+    """The address is whatever the proxy reports, and for a while it was
+    whatever the visitor wrote. A budget keyed on it alone is reset by
+    arriving from somewhere new, so one budget has to span every address."""
+    from fastapi.testclient import TestClient
+    from sqlalchemy import select
+
+    from foilstack import db
+    from foilstack.web import ratelimit
+    from foilstack.web.routes import accounts
+
+    app, _ = app_and_data
+    addresses = iter(f"198.51.100.{n}" for n in range(1, 100))
+    monkeypatch.setattr(ratelimit, "client_ip", lambda request: next(addresses))
+    monkeypatch.setattr(accounts, "_register_ip", ratelimit.Limiter(3, 900))
+    monkeypatch.setattr(accounts, "_signups", ratelimit.Limiter(2, 900))
+
+    with TestClient(app) as anon:
+        codes = [
+            anon.post(
+                "/register",
+                data={"email": f"flood-{i}@example.com", "password": "a-long-enough-password"},
+                follow_redirects=False,
+            ).status_code
+            for i in range(4)
+        ]
+
+    assert codes == [303, 303, 429, 429]
+    session = db.session()
+    assert session.scalar(select(db.User).where(db.User.email == "flood-2@example.com")) is None
+    session.close()
+
+
 def test_the_security_headers_are_on_every_response(app_and_data):
     from fastapi.testclient import TestClient
 

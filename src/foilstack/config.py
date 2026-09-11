@@ -50,6 +50,7 @@ class Settings:
     max_account_mb: int = 0
     login_attempts: int = 10
     login_window_s: int = 900
+    signups_per_window: int = 20
     git_sha: str = ""
     site_url: str = ""
 
@@ -148,6 +149,11 @@ def get_settings() -> Settings:
         # password they used and ruinous for a script working through a list.
         login_attempts=int(os.getenv("FOILSTACK_LOGIN_ATTEMPTS", "10")),
         login_window_s=int(os.getenv("FOILSTACK_LOGIN_WINDOW_S", "900")),
+        # Accounts that may be created in one of those windows, across every
+        # address. The per-address budget is only as honest as the address,
+        # which is whatever the proxy in front reports; this one cannot be
+        # refreshed by arriving from somewhere else. Raise it for a launch day.
+        signups_per_window=int(os.getenv("FOILSTACK_SIGNUPS_PER_WINDOW", "20")),
         # Which commit is running. Baked into the image at build time; read
         # from the checkout when running straight from a clone.
         git_sha=os.getenv("FOILSTACK_GIT_SHA") or _git_sha_from_checkout(),

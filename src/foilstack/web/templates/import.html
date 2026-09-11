@@ -410,6 +410,10 @@ function saveSettings() {
 
 const ZIP_RE = /\.zip$/i, IMAGE_RE = /\.(jpe?g|png|tiff?|webp)$/i;
 const MB = 1048576;
+// The server's own cap, checked here as well. The server refuses an upload
+// past it before reading the body, and a browser still sending when that answer
+// arrives tends to report a dropped connection rather than read the reason.
+const MAX_BYTES = {{ max_mb }} * MB;
 
 function show(el, on) { el.hidden = !on; }
 
@@ -421,16 +425,18 @@ function pick(files) {
   if (!all.length) return;
   const good = all.filter(f => ZIP_RE.test(f.name) || IMAGE_RE.test(f.name));
   const zips = good.filter(f => ZIP_RE.test(f.name));
+  const bytes = good.reduce((n, f) => n + f.size, 0);
   const problem =
     !good.length ? 'Card scans (jpg, png, tif, webp) or a .zip of them, please.'
     : zips.length > 1 ? 'One .zip at a time.'
     : zips.length && good.length > zips.length ? 'A .zip or loose images — not both at once.'
+    : bytes > MAX_BYTES ? 'That is ' + (bytes / MB).toFixed(1) + ' MB, and this site takes up to '
+      + '{{ max_mb }} MB per upload. Split it into smaller batches.'
     : null;
   if (problem) { fileInput.value = ''; alert(problem); return; }
   const skipped = all.length - good.length;
   if (skipped) alert(skipped + (skipped === 1 ? ' file' : ' files') + ' skipped — not card scans.');
   chosen = good;
-  const bytes = good.reduce((n, f) => n + f.size, 0);
   $('#fname').textContent = good.length === 1 ? good[0].name : good.length + ' images';
   $('#fmeta').textContent = (bytes / MB).toFixed(1) + ' MB';
   $('#stage').textContent = 'ready';
