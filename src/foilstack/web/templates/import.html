@@ -590,12 +590,12 @@ $('#go').addEventListener('click', async () => {
     fail(uploadError(xhr, 'upload failed'));
     return;
   }
-  $('#stage').textContent = STAGES.pending;
+  $('#stage').textContent = STAGES.queued;
   setBar(null);
   poll(JSON.parse(xhr.responseText).job_id);
 });
 
-const STAGES = { pending: 'unpacking scans', matching: 'matching against catalogue', grouping: 'holding the batch together', done: 'done', failed: 'failed' };
+const STAGES = { queued: 'waiting its turn', pending: 'unpacking scans',matching: 'matching against catalogue', grouping: 'holding the batch together', done: 'done', failed: 'failed' };
 async function poll(id) {
   const job = await (await fetch('/api/jobs/' + id)).json();
   // A `total` of zero is not zero scans, it is an archive nobody has opened

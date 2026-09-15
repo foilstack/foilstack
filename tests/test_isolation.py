@@ -2103,10 +2103,7 @@ def test_an_import_creates_its_scans_in_the_archives_order(app_and_data, tmp_pat
 
     # The encoder and the catalogue are not what is under test. Stubbed down to
     # nothing so every scan lands "unmatched", which still puts it in the queue.
-    async def _no_vector(url, blob):
-        return [0.0]
-
-    monkeypatch.setattr(importing, "embed_image", _no_vector)
+    monkeypatch.setattr(importing, "embed_image_sync", lambda url, blob: [0.0])
     monkeypatch.setattr(importing.search, "count", lambda *a, **k: 1)
     monkeypatch.setattr(importing.search, "search", lambda *a, **k: [])
     monkeypatch.setattr(importing.images, "make_display_copy", lambda *a, **k: None)
@@ -2201,6 +2198,156 @@ def test_an_over_quota_archive_fails_without_leaving_the_files(app_and_data, tmp
         session.delete(session.get(db.ImportJob, job_id))
         session.commit()
         session.close()
+
+
+def _stalled_imports(ids, tmp_path, monkeypatch, filenames):
+    """Queued jobs whose first extraction holds until the test lets it go.
+
+    Returns the job ids, one archive per job, and the two events that pace
+    them. Only the first call to `extract_archive` stalls, so a test can hold
+    one import in place and watch what everything else does meanwhile. What
+    the stall reports back is whether it was released or gave up waiting —
+    a stall that gave up is one nothing else could run during.
+    """
+    import threading
+    import zipfile as zf
+
+    from foilstack import db, importing
+
+    entered, release = threading.Event(), threading.Event()
+    released: list[bool] = []
+    real_extract = importing.extract_archive
+
+    def extract(*args, **kwargs):
+        if not entered.is_set():
+            entered.set()
+            released.append(release.wait(timeout=5))
+        return real_extract(*args, **kwargs)
+
+    monkeypatch.setattr(importing, "extract_archive", extract)
+    monkeypatch.setattr(importing, "embed_image_sync", lambda url, blob: [0.0])
+    monkeypatch.setattr(importing.search, "count", lambda *a, **k: 1)
+    monkeypatch.setattr(importing.search, "search", lambda *a, **k: [])
+    monkeypatch.setattr(importing.images, "make_display_copy", lambda *a, **k: None)
+
+    session = db.session()
+    owner_id = session.get(db.Scan, ids["scan"]).user_id
+    jobs, archives = [], []
+    for name in filenames:
+        # A directory each: `run_import` deletes its archive and then the
+        # directory it was staged in, as it does with the route's `mkdtemp`.
+        archive = tmp_path / name / f"{name}.zip"
+        archive.parent.mkdir()
+        with zf.ZipFile(archive, "w") as z:
+            z.writestr("card.jpg", b"pretend jpeg")
+        job = db.ImportJob(user_id=owner_id, filename=archive.name, status="queued")
+        session.add(job)
+        session.commit()
+        jobs.append(job.id)
+        archives.append(archive)
+    session.close()
+    return jobs, archives, entered, release, released
+
+
+def _drop_jobs(job_ids):
+    from foilstack import db
+
+    session = db.session()
+    for scan in session.scalars(select(db.Scan).where(db.id_in(db.Scan.job_id, job_ids))).all():
+        session.delete(scan)
+    session.commit()
+    for job_id in job_ids:
+        session.delete(session.get(db.ImportJob, job_id))
+    session.commit()
+    session.close()
+
+
+def _statuses(job_ids):
+    from foilstack import db
+
+    session = db.session()
+    try:
+        return [session.get(db.ImportJob, job_id).status for job_id in job_ids]
+    finally:
+        session.close()
+
+
+def test_an_import_does_not_stop_the_process_answering(app_and_data, tmp_path, monkeypatch):
+    """The web app is one process with one event loop, and an import used to run on it.
+
+    Everything but the encoder request was synchronous — unpacking the
+    archive, resizing each photograph, every search and commit — so while one
+    seller's archive was extracted, no other request on the install was
+    answered, `/healthz` included. Here the import is held inside extraction
+    and the test then needs the loop to let it go: if the import is on the
+    loop, the release never comes and the stall times out instead.
+    """
+    import asyncio
+
+    from foilstack import importing
+    from foilstack.config import get_settings
+
+    _app, ids = app_and_data
+    settings = get_settings()
+    (job_id,), (archive,), entered, release, released = _stalled_imports(
+        ids, tmp_path, monkeypatch, ["held"]
+    )
+
+    async def scenario():
+        running = asyncio.create_task(importing.run_import(job_id, archive, settings))
+        assert await asyncio.to_thread(entered.wait, 5), "the import never reached extraction"
+        release.set()
+        await running
+
+    try:
+        asyncio.run(scenario())
+        assert released == [True], "the event loop was blocked for the whole of extraction"
+        assert _statuses([job_id]) == ["done"]
+    finally:
+        _drop_jobs([job_id])
+
+
+def test_an_import_waiting_for_a_worker_says_so(app_and_data, tmp_path, monkeypatch):
+    """Imports beyond the worker count wait, and a waiting one must not claim to be working.
+
+    `pending` is what the import screen reads as "unpacking scans", so a job
+    left in it while it sat behind another would show a sweeping bar over an
+    archive nobody had opened. Narrowed to one worker so that two imports are
+    enough to make one of them wait.
+    """
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    from foilstack import importing
+    from foilstack.config import get_settings
+
+    _app, ids = app_and_data
+    settings = get_settings()
+    one = ThreadPoolExecutor(max_workers=1)
+    monkeypatch.setattr(importing, "_imports", one)
+    jobs, archives, entered, release, released = _stalled_imports(
+        ids, tmp_path, monkeypatch, ["first", "second"]
+    )
+
+    async def scenario():
+        first = asyncio.create_task(importing.run_import(jobs[0], archives[0], settings))
+        assert await asyncio.to_thread(entered.wait, 5), "the first import never started"
+        second = asyncio.create_task(importing.run_import(jobs[1], archives[1], settings))
+        # Long enough for a free worker to have picked the second one up. A
+        # wrong answer here can only pass by being slow, never fail by it.
+        await asyncio.sleep(0.2)
+        waiting = _statuses(jobs)
+        release.set()
+        await asyncio.gather(first, second)
+        return waiting
+
+    try:
+        assert asyncio.run(scenario()) == ["pending", "queued"]
+        assert released == [True]
+        assert _statuses(jobs) == ["done", "done"]
+    finally:
+        one.shutdown()
+        _drop_jobs(jobs)
 
 
 def test_the_queue_shows_one_upload_at_a_time(app_and_data):

@@ -28,6 +28,7 @@ import asyncio
 import logging
 import os
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple
@@ -36,7 +37,7 @@ from sqlalchemy import select
 
 from foilstack import db, images, inventory, search
 from foilstack.config import Settings
-from foilstack.embedding import EmbedderError, embed_image
+from foilstack.embedding import EmbedderError, embed_image, embed_image_sync
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +54,22 @@ MAX_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
 # the import screen rather than spelled out beside it: the screen's own copy
 # was missing `grouping`, so a job killed during the cohort pass disappeared
 # from it without a word while one killed during matching hung it forever —
-# two different wrong answers to the same event. One tuple, and a fourth
-# status cannot be taught to only half the readers.
-ACTIVE_STATUSES = ("pending", "matching", "grouping")
+# two different wrong answers to the same event. One tuple, and a new status
+# cannot be taught to only half the readers — which is what `queued` tested.
+ACTIVE_STATUSES = ("queued", "pending", "matching", "grouping")
+
+# How many imports run at once, across every account on the install. Each one
+# decodes and resizes full-resolution photographs — a large TIFF costs hundreds
+# of megabytes to decode — and all of them wait on the same encoder, so a
+# third import running beside two others finishes no sooner and costs the
+# process a third decode's memory. The rest wait as `queued`, which the import
+# screen says in words, rather than as `pending`, which it reads as unpacking.
+#
+# Its own pool rather than Starlette's, which is the forty threads every `def`
+# route runs in: an import holds a thread for minutes, and one waiting its turn
+# inside that pool would hold a thread doing nothing at all.
+IMPORT_WORKERS = 2
+_imports = ThreadPoolExecutor(max_workers=IMPORT_WORKERS, thread_name_prefix="foilstack-import")
 
 CANDIDATE_COUNT = 5
 # How deep the search goes when the batch has been declared one game or one
@@ -353,13 +367,33 @@ def extract_archive(archive_path: Path, dest: Path, ceiling: int = MAX_TOTAL_BYT
 
 
 async def run_import(job_id: int, archive_path: Path, settings: Settings) -> None:
-    """Process one archive. Runs in the background; never raises into the caller."""
+    """Process one archive, in a worker thread. Never raises into the caller.
+
+    Async only so the route's `BackgroundTasks` can await it; none of the work
+    happens on the event loop. It all did once — `extract_archive`, every
+    Pillow resize, every search and commit — while the one `await` in the loop
+    was the encoder request. The web app is a single process with a single
+    event loop, so for the whole of an archive's unpacking nothing else was
+    answered: not the other accounts on the install, not this import's own
+    progress poll, not `/healthz`. One seller's upload was everybody's outage.
+    """
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(_imports, _run_import, job_id, archive_path, settings)
+
+
+def _run_import(job_id: int, archive_path: Path, settings: Settings) -> None:
     session = db.session()
     job = session.get(db.ImportJob, job_id)
     if job is None:
         return
 
     try:
+        # Out of `queued` the moment a worker has it, so the screen stops
+        # saying the import is waiting its turn and starts saying it is
+        # unpacking.
+        job.status = "pending"
+        session.commit()
+
         scans_dir = settings.scans_dir / str(job_id)
         # Read here rather than at the door: an archive queued behind three
         # others is extracted against the room left when its turn comes, not
@@ -410,7 +444,7 @@ async def run_import(job_id: int, archive_path: Path, settings: Settings) -> Non
             session.add(scan)
             session.commit()
             try:
-                await _match_one(session, scan, settings, job, pool)
+                _match_one(session, scan, settings, job, pool)
             except EmbedderError as exc:
                 scan.status = "error"
                 scan.error = str(exc)
@@ -420,7 +454,6 @@ async def run_import(job_id: int, archive_path: Path, settings: Settings) -> Non
                 scan.error = f"{type(exc).__name__}: {exc}"
             job.processed += 1
             session.commit()
-            await asyncio.sleep(0)
 
         if pool is not None:
             # Its own status, because it is its own wait. On a large batch this
@@ -513,7 +546,7 @@ def _interrupted_message(job: db.ImportJob) -> str:
     return "interrupted by a restart before any scan was matched; upload it again"
 
 
-async def _match_one(
+def _match_one(
     session,
     scan,
     settings: Settings,
@@ -523,7 +556,7 @@ async def _match_one(
     path = scan_path(scan.stored_path, settings.scans_dir)
     if path is None:
         raise ImportError_(f"stored scan is missing: {scan.filename}")
-    vector = await embed_image(settings.embedder_url, path.read_bytes())
+    vector = embed_image_sync(settings.embedder_url, path.read_bytes())
     # After encoding, never before: the model gets the full-resolution original,
     # and the browser gets something it can actually load.
     images.make_display_copy(path, settings.display_dir, scan.stored_path)
