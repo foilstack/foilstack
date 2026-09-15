@@ -297,6 +297,30 @@ Two habits worth keeping:
   silence. Two different wrong answers to the same event, from one list
   written twice.
 
+* **An `async def` that does synchronous work stops the whole process.** The
+  web app is one uvicorn process with one event loop, and `run_import` used to
+  do all of its work on it: `extract_archive`, every Pillow resize, every
+  search and commit, with the encoder request the only `await` in the loop.
+  While one seller's archive unpacked, nothing else on the install was
+  answered — other accounts, that import's own progress poll, `/healthz`.
+  Nothing failed, so nothing said so; it reads as a slow site.
+
+  `run_import` is still a coroutine, because `BackgroundTasks` awaits it, but
+  all it does is hand `_run_import` to a pool of `IMPORT_WORKERS` threads. Its
+  own pool and not Starlette's: an import holds a thread for minutes, and one
+  waiting its turn in the forty-thread pool the `def` routes share would hold
+  a thread doing nothing. A job waits as `queued`, which the screen says in
+  words, because `pending` is what it reads as "unpacking scans".
+  `test_an_import_does_not_stop_the_process_answering` holds an import inside
+  extraction and needs the loop to release it, so a regression times out
+  there rather than passing.
+
+  Three routes still have the shape and were left alone: `api_commit`,
+  `api_discard_all` and bulk delete are `async def` doing their database work
+  inline, and `api_discard_all` unlinks every discarded image as well. Each is
+  bounded by what one request names rather than by an archive, which is what
+  made imports the one to move first — not a reason the others are fine.
+
 * **A floor is the seller's number, not the software's.** `list_price` used to
   clamp at a module constant, which is one answer for every account on the
   install — right for a dealer clearing boxes at pennies and wrong for a shop

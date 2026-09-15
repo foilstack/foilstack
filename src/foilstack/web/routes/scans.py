@@ -651,7 +651,9 @@ async def api_import(
     job = db.ImportJob(
         user_id=user.id,
         filename=filename,
-        status="pending",
+        # Not `pending`: that is the word for an archive being unpacked, and
+        # this one may wait behind other imports before anything touches it.
+        status="queued",
         auto_accept=auto_accept,
         default_condition=default_condition,
         default_finish=default_finish,
