@@ -866,6 +866,91 @@ def test_export_emits_one_line_per_stock_line_with_a_real_quantity(app_and_data)
     assert ",3," in rows[0], f"quantity must be 3: {rows[0]}"
 
 
+def test_a_card_page_names_every_import_its_copies_came_from(app_and_data):
+    """The batch headings survive reading only this card's scans.
+
+    The page used to load every `Scan` and every `ImportJob` on the account
+    into dicts to look up the handful of filenames it prints, which is the
+    most expensive thing on the screen and the least of what it says. It reads
+    the scans behind these copies now, and the imports behind those scans — so
+    what has to hold is that no copy lost its archive on the way. A scan
+    missed by the narrowing does not raise: it renders as "added without an
+    import", which reads like a card somebody typed in by hand.
+    """
+    from sqlalchemy import select as sa_select
+
+    from foilstack import db
+
+    app, _ = app_and_data
+    line = _fresh_line("t:batches", "Batched Me", ["NM", "NM"])
+
+    session = db.session()
+    owner = session.scalars(sa_select(db.User).where(db.User.email == "owner@example.com")).one()
+
+    # Padding, so the two id spaces cannot line up. Written first because
+    # without it this test passed against a narrowing that looked scans up by
+    # *job* id: on a small database both sequences sit in the low single
+    # digits, so the wrong column matched the right rows by coincidence and
+    # the test proved nothing.
+    for n in range(8):
+        session.add(db.ImportJob(user_id=owner.id, filename=f"padding-{n}.zip", status="done"))
+    session.commit()
+
+    # One job per copy, plus a decoy the account owns that this card has
+    # nothing to do with — a read narrowed to the wrong thing would either
+    # drop the two or bring the third along.
+    jobs = []
+    for name in ("first-box.zip", "second-box.zip", "unrelated-box.zip"):
+        job = db.ImportJob(user_id=owner.id, filename=name, status="done")
+        session.add(job)
+        jobs.append(job)
+    session.commit()
+
+    carried = []
+    for item_id, job, shot in zip(line["item_ids"], jobs, ("front.jpg", "back.jpg"), strict=False):
+        scan = db.Scan(
+            job_id=job.id,
+            user_id=owner.id,
+            filename=shot,
+            stored_path=f"{job.id}/{shot}",
+            status="confirmed",
+        )
+        session.add(scan)
+        session.flush()
+        session.get(db.InventoryItem, item_id).scan_id = scan.id
+        carried.append(scan)
+    decoy = db.Scan(
+        job_id=jobs[2].id,
+        user_id=owner.id,
+        filename="nothing-to-do-with-this-card.jpg",
+        stored_path=f"{jobs[2].id}/nothing.jpg",
+        status="confirmed",
+    )
+    session.add(decoy)
+    session.commit()
+
+    mine = {sc.id for sc in (*carried, decoy)}
+    theirs = {job.id for job in jobs}
+    session.close()
+    assert mine.isdisjoint(theirs), (
+        f"this card's scan ids {sorted(mine)} overlap its job ids "
+        f"{sorted(theirs)}, so a narrowing that confused the two would match "
+        "by coincidence and every assertion below would pass on nothing — "
+        "add more padding jobs above"
+    )
+
+    page = _signed_in(app).get(f"/inventory/{line['card_id']}").text
+
+    assert "first-box.zip" in page, "a copy lost the archive it arrived in"
+    assert "second-box.zip" in page
+    assert "front.jpg" in page and "back.jpg" in page
+    assert "added without an import" not in page, "a scan the narrowing missed"
+    assert "across 2 imports" in page
+
+    assert "unrelated-box.zip" not in page, "an import no copy on this page came from"
+    assert "nothing-to-do-with-this-card.jpg" not in page
+
+
 def test_stranger_cannot_open_someone_elses_card_page(stranger, app_and_data):
     _, ids = app_and_data
     assert stranger.get(f"/inventory/{ids['card']}").status_code == 404
