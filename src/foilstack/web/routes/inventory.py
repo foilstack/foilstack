@@ -372,18 +372,37 @@ def page_card(
     scans make it up, which archive each arrived in, what each cost and whether
     it has sold. Consolidated on the list, itemised here.
     """
-    line = next(
-        (g for g in inventory.groups(session, user.id, pricing) if g["card_id"] == card_id),
-        None,
-    )
+    # Narrowed to this card in the query. It used to fold every line the
+    # account owned and keep the one whose `card_id` matched, which is the
+    # shape `items(ids=...)` exists to stop — the wide read, the printing
+    # query and a dictionary per copy, over a whole inventory, to render one
+    # card.
+    lines = inventory.groups(session, user.id, pricing, card_ids=[card_id])
+    line = lines[0] if lines else None
     if line is None:
         raise HTTPException(404, "nothing in your inventory for that card")
 
+    # The scans behind these copies, and the imports behind those scans — not
+    # every scan and every import on the account. This page names a handful of
+    # filenames and read both tables whole to find them, which on a seller who
+    # has imported a shelf is the most expensive thing on the screen and the
+    # least of what it says.
+    scan_ids = {c["scan_id"] for c in line["copies"] if c["scan_id"]}
+    scans = {
+        sc.id: sc
+        for sc in session.scalars(
+            select(db.Scan).where(db.Scan.user_id == user.id, db.id_in(db.Scan.id, scan_ids))
+        )
+    }
+    job_ids = {sc.job_id for sc in scans.values() if sc.job_id}
     jobs = {
         j.id: j
-        for j in session.scalars(select(db.ImportJob).where(db.ImportJob.user_id == user.id))
+        for j in session.scalars(
+            select(db.ImportJob).where(
+                db.ImportJob.user_id == user.id, db.id_in(db.ImportJob.id, job_ids)
+            )
+        )
     }
-    scans = {sc.id: sc for sc in session.scalars(select(db.Scan).where(db.Scan.user_id == user.id))}
 
     # Grouped by the archive they arrived in, because "where did these come
     # from" is the question the quantity raises.
@@ -509,8 +528,11 @@ def api_inventory_panel(
     item = session.get(db.InventoryItem, item_id)
     if item is None or item.user_id != user.id:
         raise HTTPException(404, "no such row")
-    rows = inventory.items(session, user.id, pricing)
-    row = next((r for r in rows if r["id"] == item_id), None)
+    # `ids=` rather than a scan of everything the account owns for one id.
+    # The row was already fetched and scoped above; this is the priced,
+    # printing-bearing shape the panel's chips render from.
+    rows = inventory.items(session, user.id, pricing, ids=[item_id])
+    row = rows[0] if rows else None
     if row is None:
         raise HTTPException(404, "no such row")
     return templates.TemplateResponse(

@@ -521,6 +521,54 @@ def test_scoped_items_match_the_unscoped_read(priced_inventory):
         assert inventory.items(session, user_id, inventory.Pricing(), ids={-1}) == []
 
 
+def test_card_scoped_items_match_the_unscoped_read(priced_inventory):
+    """`card_ids` is the same promise as `ids`, one level up.
+
+    The card page is reached by card id and cannot name its copies in advance,
+    so it narrowed afterwards: every line the account owned, folded, all but
+    one thrown away. Narrowing in the query may change what it costs and must
+    not change what it says.
+    """
+    from foilstack import db, inventory
+
+    _, user_id = priced_inventory
+    with db.session() as session:
+        every = inventory.items(session, user_id, inventory.Pricing())
+        wanted = {every[0]["card_id"]}
+        assert len({r["card_id"] for r in every}) > 1, (
+            "a catalogue of one card proves nothing about narrowing"
+        )
+
+        scoped = inventory.items(session, user_id, inventory.Pricing(), card_ids=wanted)
+        assert scoped == [r for r in every if r["card_id"] in wanted]
+
+        # The shape the card page actually uses: one folded line, not the
+        # whole inventory with one line picked out of it.
+        lines = inventory.groups(session, user_id, inventory.Pricing(), card_ids=list(wanted))
+        assert [line["card_id"] for line in lines] == list(wanted)
+        assert lines == [
+            g
+            for g in inventory.groups(session, user_id, inventory.Pricing())
+            if g["card_id"] in wanted
+        ]
+
+        # Same two edges as `ids`: empty is not missing, and a card belonging
+        # to nobody here is absent rather than widening the read.
+        assert inventory.items(session, user_id, inventory.Pricing(), card_ids=set()) == []
+        assert inventory.items(session, user_id, inventory.Pricing(), card_ids=None) == every
+        assert inventory.items(session, user_id, inventory.Pricing(), card_ids={-1}) == []
+
+        # And the two narrowings compose rather than replacing one another: an
+        # id from one card under another card's id must answer nothing.
+        other = next(r for r in every if r["card_id"] not in wanted)
+        assert (
+            inventory.items(
+                session, user_id, inventory.Pricing(), ids=[other["id"]], card_ids=wanted
+            )
+            == []
+        )
+
+
 def test_scoped_items_survive_more_ids_than_one_statement_binds(priced_inventory):
     """The real ceiling, driven rather than simulated.
 

@@ -615,6 +615,7 @@ def _read(
     pricing: Pricing,
     status: str | None,
     ids: Collection[int] | None,
+    card_ids: Collection[int] | None,
     detail: bool,
 ) -> list[dict[str, Any]]:
     """Every copy this account owns, priced by the `priced_printing` lateral.
@@ -698,6 +699,8 @@ def _read(
         # answer's ordering — chunking made it each chunk's, and needed a
         # re-sort afterwards to put that right.
         query = query.where(db.id_in(item.id, ids))
+    if card_ids is not None:
+        query = query.where(db.id_in(item.card_id, card_ids))
 
     out: list[dict[str, Any]] = []
     for row in session.execute(query.order_by(item.id.desc())):
@@ -833,6 +836,7 @@ def index(
     pricing: Pricing,
     status: str | None = None,
     ids: Collection[int] | None = None,
+    card_ids: Collection[int] | None = None,
 ) -> list[dict[str, Any]]:
     """One thin dict per copy: enough to count, filter, sort, total and group.
 
@@ -858,7 +862,7 @@ def index(
     card in nothing at all, and the card page draws its printing chips off
     exactly that.
     """
-    return _read(session, user_id, pricing, status, ids, detail=False)
+    return _read(session, user_id, pricing, status, ids, card_ids, detail=False)
 
 
 def items(
@@ -867,6 +871,7 @@ def items(
     pricing: Pricing,
     status: str | None = None,
     ids: Collection[int] | None = None,
+    card_ids: Collection[int] | None = None,
 ) -> list[dict[str, Any]]:
     """Every row this account owns, optionally only those in one state.
 
@@ -895,12 +900,21 @@ def items(
     hazard `Selection` exists to keep off `/listings` and it should not be
     reintroduced one layer down.
 
+    `card_ids` is the same narrowing one level up, on the card rather than the
+    copy, and exists because the card page could not use `ids`: it is reached
+    by card id and does not know which copies it is about until it has read
+    them. Without it that page took the shape `export_rows` used to have —
+    every row the account owns, folded into lines, all but one discarded —
+    and paid for the printing query on all of them. Both narrowings apply
+    together where both are given; neither has a default, for the reason
+    above.
+
     `printings` comes with the wide read rather than on request. A flag would
     save `export_rows` one query it does not read, and cost every future
     caller a chance to get a boolean wrong on a key the card page renders
     from — which is the trade this module makes the same way everywhere else.
     """
-    rows = _read(session, user_id, pricing, status, ids, detail=True)
+    rows = _read(session, user_id, pricing, status, ids, card_ids, detail=True)
     _attach_printings(session, rows)
     return rows
 
@@ -932,7 +946,11 @@ def _summarise(values: list[str], labels: dict[str, str] | None = None) -> str:
 
 
 def groups(
-    session, user_id: int, pricing: Pricing, status: str | None = None
+    session,
+    user_id: int,
+    pricing: Pricing,
+    status: str | None = None,
+    card_ids: Collection[int] | None = None,
 ) -> list[dict[str, Any]]:
     """Inventory as one line per card, holding every copy of it.
 
@@ -950,7 +968,7 @@ def groups(
     card, which is what a scan is evidence of and what carries its own cost,
     notes and sale.
     """
-    return fold(items(session, user_id, pricing, status))
+    return fold(items(session, user_id, pricing, status, card_ids=card_ids))
 
 
 def fold(copies: list[dict[str, Any]]) -> list[dict[str, Any]]:
