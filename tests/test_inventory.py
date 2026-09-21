@@ -407,26 +407,6 @@ def test_an_unpriced_card_does_not_clear_a_threshold():
     assert counts_towards_value(_row(market=None), 0.0)
 
 
-def test_zero_threshold_counts_every_card():
-    from foilstack.inventory import split_by_value
-
-    rows = [_row(market=0.01), _row(market=None), _row(market=500.0)]
-    counted, excluded = split_by_value(rows, 0.0)
-    assert len(counted) == 3
-    assert excluded == []
-
-
-def test_split_keeps_every_row_on_exactly_one_side():
-    """The 'left out' figure explains the total, so the two must partition."""
-    from foilstack.inventory import split_by_value
-
-    rows = [_row(market=m) for m in (0.10, 0.10, 1.00, 12.5, None)]
-    counted, excluded = split_by_value(rows, 1.00)
-    assert len(counted) + len(excluded) == len(rows)
-    assert sum(r["market"] or 0 for r in counted) == 13.5
-    assert len(excluded) == 3
-
-
 class _FakeUser:
     def __init__(self, value_threshold):
         self.value_threshold = value_threshold

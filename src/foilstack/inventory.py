@@ -9,6 +9,7 @@ inventing its own arithmetic.
 
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, replace
 from itertools import takewhile
@@ -178,10 +179,11 @@ def threshold_for(user: db.User, asked: float | str | None = None) -> float:
 def counts_towards_value(row: Mapping[str, Any], threshold: float) -> bool:
     """Whether one copy clears the threshold for inventory value.
 
-    One function because the rule is asked three times on the analytics screen
-    — the tiles, the by-game bars, and the sentence naming what was left out —
-    and a "left out" figure computed from a slightly different rule than the
-    total it explains is worse than no sentence at all.
+    One function because the rule is asked for three figures on the analytics
+    screen — the tiles, the by-game bars, and the sentence naming what was left
+    out — and a "left out" figure computed from a slightly different rule than
+    the total it explains is worse than no sentence at all. `analytics` asks it
+    once per priced group and sends the group to one side or the other.
 
     A copy with no catalogue price at all does not clear a threshold above
     zero. It cannot be *shown* to be worth a dollar, and it contributes zero
@@ -189,17 +191,6 @@ def counts_towards_value(row: Mapping[str, Any], threshold: float) -> bool:
     screen counts it as excluded and says so — which is the honest side.
     """
     return (row["market"] or 0.0) >= threshold
-
-
-def split_by_value(
-    rows: Iterable[Mapping[str, Any]], threshold: float
-) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
-    """Stock rows divided into what counts at this threshold and what does not."""
-    counted: list[Mapping[str, Any]] = []
-    below: list[Mapping[str, Any]] = []
-    for row in rows:
-        (counted if counts_towards_value(row, threshold) else below).append(row)
-    return counted, below
 
 
 @dataclass(frozen=True)
@@ -607,6 +598,146 @@ def position(session, user_id: int) -> dict[str, Any]:
         .outerjoin(priced, true())
     ).one()
     return {"count": int(row[0]), "market": float(row[1]), "needs_printing": int(row[2])}
+
+
+def analytics(
+    session, user_id: int, pricing: Pricing, threshold: float, now: dt.datetime | None = None
+) -> dict[str, Any]:
+    """The analytics screen's figures, without materialising the inventory.
+
+    It used to be `items()` — every row the account owns, sixteen detail keys
+    and all — folded in the route, which at thirty thousand copies is the
+    seventeen seconds the card page cost before it was narrowed. Unlike the
+    card page this screen genuinely reads everything, because every figure on
+    it is a sum; so it gets `position`'s treatment rather than a narrowing.
+
+    Stock is grouped by what decides a price — card, finish, declared printing
+    and condition — and priced once per group through `priced_printing`. The
+    list price is then `list_price`, in Python, per group: stating the pricing
+    rules a second time in SQL would be the drift this module keeps deleting.
+    `listed` rides in the key because the listed/unlisted split needs it and
+    costs almost nothing in group count.
+
+    Sold rows need no price at all, so they are plain aggregates. Days held is
+    floored the way `timedelta.days` floors, which is what the screen reported
+    when it subtracted datetimes in Python.
+    """
+    item, card = db.InventoryItem, db.Card
+    now = now or dt.datetime.now(dt.UTC)
+    horizon = now - dt.timedelta(days=30)
+
+    stock, sold = item.status == "stock", item.status == "sold"
+    recent = sold & (item.sold_at >= horizon)
+    held = func.floor(func.extract("epoch", item.sold_at - item.created_at) / 86400)
+    agg = session.execute(
+        select(
+            func.count().filter(stock),
+            func.count(func.distinct(item.card_id)).filter(stock),
+            func.coalesce(func.sum(item.cost).filter(stock), 0.0),
+            func.count().filter(sold),
+            func.coalesce(func.sum(item.sold_price).filter(sold), 0.0),
+            func.coalesce(func.sum(item.cost).filter(sold), 0.0),
+            func.count(item.cost).filter(sold),
+            func.count().filter(recent),
+            func.coalesce(func.sum(item.sold_price).filter(recent), 0.0),
+            func.avg(held).filter(sold, item.sold_at.is_not(None)),
+        ).where(item.user_id == user_id)
+    ).one()
+    (count, distinct, cost, n_sold, realised, sold_cost, costed, n_recent, gross_30d, avg_held) = (
+        agg
+    )
+
+    groups = (
+        select(
+            item.card_id.label("card_id"),
+            item.finish.label("finish"),
+            item.sub_type.label("sub_type"),
+            item.condition.label("condition"),
+            item.listed.label("listed"),
+            func.count().label("n"),
+        )
+        .where(item.user_id == user_id, stock)
+        .group_by(item.card_id, item.finish, item.sub_type, item.condition, item.listed)
+        .subquery()
+    )
+    priced = priced_printing(groups.c)
+    by_game: dict[str, float] = {}
+    sides: dict[bool, dict[str, Any]] = {
+        side: {"count": 0, "cards": set(), "market": 0.0, "listed": 0.0} for side in (True, False)
+    }
+    listed_value = 0.0
+    for g in session.execute(
+        select(
+            groups.c.card_id,
+            groups.c.condition,
+            groups.c.listed,
+            groups.c.n,
+            card.game,
+            card.market.label("card_market"),
+            priced.c.market.label("sub_market"),
+            priced.c.low,
+        )
+        .select_from(groups)
+        .join(card, card.id == groups.c.card_id)
+        .outerjoin(priced, true())
+    ):
+        market = g.sub_market if g.sub_market is not None else g.card_market
+        counted = counts_towards_value({"market": market}, threshold)
+        side = sides[counted]
+        side["count"] += g.n
+        side["cards"].add(g.card_id)
+        side["market"] += (market or 0) * g.n
+        side["listed"] += (list_price(market, g.condition, pricing, g.low) or 0) * g.n
+        if counted:
+            by_game[g.game] = by_game.get(g.game, 0.0) + (market or 0) * g.n
+            if g.listed:
+                listed_value += (market or 0) * g.n
+
+    counted_side, below = sides[True], sides[False]
+    counted_market = round(counted_side["market"], 2)
+    cost = round(float(cost), 2)
+    realised, sold_cost = round(float(realised), 2), round(float(sold_cost), 2)
+    return {
+        "totals": {
+            "count": count,
+            "distinct": distinct,
+            "cost": cost,
+            "realised": realised,
+            "realised_profit": round(realised - sold_cost, 2) if sold_cost else None,
+        },
+        # What the screen reports as the position, at this threshold. Held
+        # apart from `totals` rather than replacing its keys: the cost basis
+        # and sell-through are about every card on the shelf, not only the
+        # ones worth counting.
+        "position": {
+            "count": counted_side["count"],
+            "distinct": len(counted_side["cards"]),
+            "market": counted_market,
+            "listed": round(counted_side["listed"], 2),
+            # Counted value against the cost of everything held. Deliberately
+            # mixed, and said so on screen: the cards left out cost real
+            # money, so netting them out of both sides would report a gain on
+            # a position the seller did not pay for.
+            "gain": round(counted_market - cost, 2) if cost else None,
+        },
+        "left_out": {
+            "count": below["count"],
+            "distinct": len(below["cards"]),
+            "market": round(below["market"], 2),
+        },
+        "by_game": sorted(by_game.items(), key=lambda kv: -kv[1]),
+        "listed_value": listed_value,
+        "sales": {
+            "sold_30d": n_recent,
+            "gross_30d": float(gross_30d),
+            "sold_all": n_sold,
+            "gross_all": realised,
+            "profit_all": round(realised - sold_cost, 2) if sold_cost else None,
+            "sell_through": round(100 * n_sold / (n_sold + count)) if (n_sold + count) else None,
+            "avg_days": round(float(avg_held), 1) if avg_held is not None else None,
+            "costed": costed,
+        },
+    }
 
 
 def _read(

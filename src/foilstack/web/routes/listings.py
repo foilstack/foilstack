@@ -27,7 +27,7 @@ from foilstack import db, inventory, tcgplayer
 from foilstack.config import Settings
 from foilstack.plugins import export_plugins
 from foilstack.web import joblog
-from foilstack.web.chrome import CHANNELS, _aware, _chrome, templates
+from foilstack.web.chrome import CHANNELS, _chrome, templates
 from foilstack.web.deps import (
     Selection,
     api_owner,
@@ -436,87 +436,30 @@ def page_analytics(
     all — a common that sold for a dime earned a real dime.
     """
     threshold = inventory.threshold_for(user, min_value)
-    rows = inventory.items(session, user.id, pricing)
-    totals = inventory.totals(rows)
-
-    # Stock only, on both sides. `by_game` used to fold every row including
-    # sold ones, so a panel headed "Inventory value by game" disagreed with
-    # the "Inventory value" tile directly above it by whatever had been sold
-    # — the same fault the `listed_value` comment below describes, one panel
-    # over.
-    stock = [r for r in rows if not r["sold"]]
-    counted, excluded = inventory.split_by_value(stock, threshold)
-
-    by_game: dict[str, float] = {}
-    for r in counted:
-        by_game[r["game"]] = by_game.get(r["game"], 0.0) + (r["market"] or 0) * r["quantity"]
-    top = sorted(by_game.items(), key=lambda kv: -kv[1])[:5]
+    # Summed in SQL rather than folded here. This read every row the account
+    # owns through `items()`, which is what the card page cost at size before
+    # it was narrowed — and this screen cannot be narrowed, because every
+    # figure on it is a sum. `inventory.analytics` says how it stays in step.
+    #
+    # Stock only on both sides of the threshold, and the by-game bars and the
+    # listed value with them. Each of those once counted sold rows, so a panel
+    # headed "Inventory value by game" disagreed with the tile above it by
+    # whatever had been sold.
+    figures = inventory.analytics(session, user.id, pricing, threshold)
+    top = figures["by_game"][:5]
     peak = max((v for _, v in top), default=0.0) or 1.0
-    # Stock only, to match `totals["market"]` — a sold row counted here made
-    # "listed value" include cards that are no longer on the shelf, and the
-    # "not yet listed" figure beside it is that total minus this one, so one
-    # sold-and-listed card overstated the first and understated the second.
-    listed_value = sum(r["market"] or 0 for r in counted if r["listed"])
-
-    # What the screen reports as the position, at this threshold. Held apart
-    # from `totals` rather than replacing its keys: `totals` is what the
-    # account owns and several figures still need that — the cost basis, and
-    # sell-through, whose denominator is every card on the shelf and not just
-    # the ones worth counting.
-    counted_market = round(sum(r["market"] or 0 for r in counted), 2)
-    position = {
-        "count": len(counted),
-        "distinct": len({r["card_id"] for r in counted}),
-        "market": counted_market,
-        "listed": round(sum(r["list_price"] or 0 for r in counted), 2),
-        # Counted value against the cost of everything held. Deliberately
-        # mixed, and said so on screen: the cards left out cost real money, so
-        # netting them out of both sides would report a gain on a position the
-        # seller did not pay for.
-        "gain": round(counted_market - totals["cost"], 2) if totals["cost"] else None,
-    }
-    left_out = {
-        "count": len(excluded),
-        "distinct": len({r["card_id"] for r in excluded}),
-        "market": round(sum(r["market"] or 0 for r in excluded), 2),
-    }
-
-    # Real sales, now that they are recorded. Sell-through and days-to-sell are
-    # computable from what we hold; fees and shipping are not, and are not
-    # invented here — they are named as missing on the screen instead.
-    sold = [r for r in rows if r["sold"]]
-    horizon = dt.datetime.now(dt.UTC) - dt.timedelta(days=30)
-    recent = [r for r in sold if r["sold_at"] and _aware(r["sold_at"]) >= horizon]
-    held_days = [
-        (_aware(r["sold_at"]) - _aware(r["created_at"])).days
-        for r in sold
-        if r["sold_at"] and r.get("created_at")
-    ]
-    sale_stats = {
-        "sold_30d": len(recent),
-        "gross_30d": sum(r["sold_price"] or 0 for r in recent),
-        "sold_all": len(sold),
-        "gross_all": totals["realised"],
-        "profit_all": totals["realised_profit"],
-        "sell_through": (
-            round(100 * len(sold) / (len(sold) + totals["count"]))
-            if (len(sold) + totals["count"])
-            else None
-        ),
-        "avg_days": round(sum(held_days) / len(held_days), 1) if held_days else None,
-        "costed": sum(1 for r in sold if r["cost"] is not None),
-    }
+    counted_market = figures["position"]["market"]
+    listed_value = figures["listed_value"]
 
     return templates.TemplateResponse(
         request,
         "analytics.html",
         {
             "nav": "analytics",
-            "rows": rows,
-            "totals": totals,
-            "position": position,
-            "left_out": left_out,
-            "sales": sale_stats,
+            "totals": figures["totals"],
+            "position": figures["position"],
+            "left_out": figures["left_out"],
+            "sales": figures["sales"],
             "by_game": [{"label": g, "value": v, "pct": f"{100 * v / peak:.0f}%"} for g, v in top],
             "listed_value": listed_value,
             "unlisted_value": round(counted_market - listed_value, 2),
