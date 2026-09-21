@@ -676,3 +676,172 @@ def test_export_rows_scopes_to_the_selection(priced_inventory):
         # inherited from the unscoped read would export cards the seller did
         # not select.
         assert sum(r["quantity"] for r in scoped) == len(wanted)
+
+
+def _analytics_by_rows(rows, threshold, now):
+    """The analytics screen as it was computed before, one copy at a time.
+
+    Kept as the reference `inventory.analytics` is held to, because it is the
+    obvious reading of every figure: filter the copies, sum them. The grouped
+    version is only allowed to be faster.
+    """
+    import datetime as dt
+
+    from foilstack import inventory
+
+    stock = [r for r in rows if not r["sold"]]
+    sold = [r for r in rows if r["sold"]]
+    counted = [r for r in stock if inventory.counts_towards_value(r, threshold)]
+    below = [r for r in stock if not inventory.counts_towards_value(r, threshold)]
+    by_game: dict[str, float] = {}
+    for r in counted:
+        by_game[r["game"]] = by_game.get(r["game"], 0.0) + (r["market"] or 0)
+    cost = round(sum(r["cost"] or 0 for r in stock), 2)
+    realised = round(sum(r["sold_price"] or 0 for r in sold), 2)
+    sold_cost = round(sum(r["cost"] or 0 for r in sold), 2)
+    horizon = now - dt.timedelta(days=30)
+    recent = [r for r in sold if r["sold_at"] and r["sold_at"] >= horizon]
+    held = [(r["sold_at"] - r["created_at"]).days for r in sold if r["sold_at"]]
+    market = round(sum(r["market"] or 0 for r in counted), 2)
+    return {
+        "totals": {
+            "count": len(stock),
+            "distinct": len({r["card_id"] for r in stock}),
+            "cost": cost,
+            "realised": realised,
+            "realised_profit": round(realised - sold_cost, 2) if sold_cost else None,
+        },
+        "position": {
+            "count": len(counted),
+            "distinct": len({r["card_id"] for r in counted}),
+            "market": market,
+            "listed": round(sum(r["list_price"] or 0 for r in counted), 2),
+            "gain": round(market - cost, 2) if cost else None,
+        },
+        "left_out": {
+            "count": len(below),
+            "distinct": len({r["card_id"] for r in below}),
+            "market": round(sum(r["market"] or 0 for r in below), 2),
+        },
+        "by_game": by_game,
+        "listed_value": sum(r["market"] or 0 for r in counted if r["listed"]),
+        "sales": {
+            "sold_30d": len(recent),
+            "gross_30d": sum(r["sold_price"] or 0 for r in recent),
+            "sold_all": len(sold),
+            "gross_all": realised,
+            "profit_all": round(realised - sold_cost, 2) if sold_cost else None,
+            "sell_through": (
+                round(100 * len(sold) / (len(sold) + len(stock))) if sold or stock else None
+            ),
+            "avg_days": round(sum(held) / len(held), 1) if held else None,
+            "costed": sum(1 for r in sold if r["cost"] is not None),
+        },
+    }
+
+
+@pytest.fixture(scope="module")
+def analytics_account(priced_inventory):
+    """A second seller, whose rows vary in everything the analytics screen splits on.
+
+    Its own account rather than more rows on the shared one, because the
+    picker cases pin that one's rows exactly and several of them would need a
+    case each. Repeated copies are the point: the grouped read multiplies a
+    price by a count, and a single copy per group would pass with the count
+    ignored. One card in a second game gives the by-game bars two bars.
+    """
+    import datetime as dt
+
+    from sqlalchemy import select
+
+    from foilstack import db
+
+    now = dt.datetime(2026, 9, 20, 12, tzinfo=dt.UTC)
+    with db.session() as session:
+        user = db.User(email="analytics@example.com", password_hash="x")
+        other = db.Card(
+            source="t", source_id="t:pkm", name="Other Game", game="pokemon", market=2.50
+        )
+        session.add_all([user, other])
+        session.flush()
+        cards = {c.name: c.id for c in session.scalars(select(db.Card))}
+        # (card, finish, condition, copies, listed, cost, status, sold days ago, held days)
+        spec = [
+            ("Both Sides", "foil", "NM", 3, 1, 5.0, "stock", None, None),
+            ("Both Sides", "foil", "NM", 2, 0, None, "stock", None, None),
+            ("Both Sides", "nonfoil", "LP", 4, 0, 1.0, "stock", None, None),
+            ("Three Foils", "foil", "NM", 1, 1, 900.0, "stock", None, None),
+            ("Plain Only", "nonfoil", "MP", 5, 0, 0.5, "stock", None, None),
+            ("Unpriced", "nonfoil", "NM", 2, 1, None, "stock", None, None),
+            ("Null Market", "nonfoil", "NM", 1, 0, 2.0, "stock", None, None),
+            ("Other Game", "nonfoil", "NM", 6, 1, 1.0, "stock", None, None),
+            ("Both Sides", "foil", "NM", 2, 1, 5.0, "sold", 3, 10),
+            ("Plain Only", "nonfoil", "NM", 1, 0, None, "sold", 45, 2),
+            # Held a fraction of a day past a whole number, so a rounding
+            # rather than a flooring of the interval would show up.
+            ("Other Game", "nonfoil", "NM", 1, 0, 1.0, "sold", 29, 4.6),
+        ]
+        for name, finish, cond, copies, listed, cost, status, ago, held in spec:
+            for _ in range(copies):
+                sold_at = now - dt.timedelta(days=ago) if ago is not None else None
+                session.add(
+                    db.InventoryItem(
+                        user_id=user.id,
+                        card_id=cards[name],
+                        finish=finish,
+                        condition=cond,
+                        listed=listed,
+                        cost=cost,
+                        status=status,
+                        sold_price=12.0 if status == "sold" else None,
+                        sold_at=sold_at,
+                        created_at=(
+                            sold_at - dt.timedelta(days=held)
+                            if sold_at
+                            else now - dt.timedelta(days=60)
+                        ),
+                    )
+                )
+        session.commit()
+        return user.id, now
+
+
+@pytest.mark.parametrize("threshold", [0.0, 2.5, 10.0, 1000.0])
+@pytest.mark.parametrize("rule, floor", [("market", 0.35), ("lowplus", 1.0), ("premium", 0.0)])
+def test_analytics_matches_summing_items(analytics_account, threshold, rule, floor):
+    """The grouped read against the per-copy fold it replaced, figure by figure."""
+    from foilstack import db, inventory
+
+    user_id, now = analytics_account
+    pricing = inventory.Pricing(rule=rule, floor=floor)
+    with db.session() as session:
+        rows = inventory.items(session, user_id, pricing)
+        expected = _analytics_by_rows(rows, threshold, now)
+        got = inventory.analytics(session, user_id, pricing, threshold, now=now)
+
+    assert got["totals"] == expected["totals"]
+    assert got["position"] == expected["position"]
+    assert got["left_out"] == expected["left_out"]
+    assert dict(got["by_game"]) == pytest.approx(expected["by_game"])
+    assert got["listed_value"] == pytest.approx(expected["listed_value"])
+    assert got["sales"] == pytest.approx(expected["sales"])
+    # Every copy in stock lands on exactly one side of the threshold, since
+    # the "left out" sentence explains the total beside it.
+    assert got["position"]["count"] + got["left_out"]["count"] == got["totals"]["count"]
+
+
+def test_analytics_fixture_exercises_every_figure(analytics_account):
+    """A comparison that agrees because both sides answer zero proves nothing."""
+    from foilstack import db, inventory
+
+    user_id, now = analytics_account
+    with db.session() as session:
+        got = inventory.analytics(session, user_id, inventory.Pricing(), 2.5, now=now)
+
+    assert got["position"]["count"] and got["left_out"]["count"]
+    assert len(got["by_game"]) == 2
+    assert 0 < got["listed_value"] < got["position"]["market"]
+    sales = got["sales"]
+    assert 0 < sales["sold_30d"] < sales["sold_all"]
+    assert 0 < sales["costed"] < sales["sold_all"]
+    assert sales["avg_days"] is not None
