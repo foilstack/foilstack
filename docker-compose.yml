@@ -107,8 +107,16 @@ services:
     # Which proxies are believed is `FORWARDED_ALLOW_IPS`, above, and not a
     # flag here: a flag beats the environment, and this one used to say `*`.
     command: ["uvicorn", "foilstack.web.app:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+    # Loopback by default, like Postgres above. Single-user mode has no login,
+    # so a port published on every interface is the whole application handed
+    # to anyone on the network — and Docker writes its own iptables rules for
+    # published ports, so a host firewall like ufw does not stand in front of
+    # it. A proxy on this compose network reaches `web:8000` and never uses
+    # this port. Loopback also keeps docker-proxy traffic, which arrives from
+    # the gateway inside FORWARDED_ALLOW_IPS, from writing its own
+    # X-Forwarded-For.
     ports:
-      - "${FOILSTACK_PORT:-8090}:8000"
+      - "${FOILSTACK_BIND:-127.0.0.1}:${FOILSTACK_PORT:-8090}:8000"
     depends_on:
       postgres:
         condition: service_healthy

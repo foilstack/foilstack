@@ -10,6 +10,13 @@ self-hoster running it for themselves can stop after the first section.
 job and inventory row, and you never create a password for a tool only you can
 reach.
 
+"Only you can reach" is what the compose file arranges, not something the app
+checks: the web port is published on `127.0.0.1`, so it answers this machine and
+nothing else. To reach it from another device, put it behind something that
+authenticates, or set `FOILSTACK_BIND=0.0.0.0` knowing that anyone on the network
+can then import, edit and delete your stock. Docker writes its own firewall rules
+for a published port, so `ufw` and friends do not cover it.
+
 ## Turning it on
 
 ```bash

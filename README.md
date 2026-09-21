@@ -84,7 +84,8 @@ answer with a card that is in the catalogue, so scanning Magic against a
 Pokemon-only catalogue returns Pokemon. `foilstack plugins` lists the games a
 source can fetch.
 
-Open <http://localhost:8090>.
+Open <http://localhost:8090>. It answers on this machine only; see
+[docs/accounts.md](docs/accounts.md) before opening it to anything else.
 
 ## Running it for other people
 
