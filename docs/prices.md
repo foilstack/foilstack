@@ -29,6 +29,32 @@ For Magic, and only Magic, there is one exception — see below. Do not let it
 change how you treat a broken sync: it recovers ninety days, from one game, for
 printings TCGplayer sells. It is a repair, not a backup.
 
+## Knowing it has stopped
+
+Two signals, because they catch different failures:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' https://your-host/healthz/prices
+ls data/PRICES_FAILING
+```
+
+`/healthz/prices` answers `200` while every ingested game has synced recently,
+and `503` naming the games that have not — including a game ingested and never
+synced at all. "Recently" is twice `FOILSTACK_SYNC_CHECK_EVERY` plus an hour,
+13 hours at the default: one missed check is forgiven, a dead loop is not, and
+the alarm fires with most of a day left before a day of history is gone. Point
+an uptime checker at it. It is deliberately not part of `/healthz`, which says
+whether `web` is up — a watcher that restarts `web` on a 503 would never fix a
+stalled sidecar.
+
+`PRICES_FAILING` appears in the data directory when a pass of the `prices`
+service fails and goes away after a clean one, the way `BACKUP_FAILING` does for
+backups. It is written by the loop, so it cannot report the loop having stopped
+— the endpoint is the one that sees that.
+
+One game failing no longer takes the rest with it: a `--game all` run logs the
+failure, carries on through the other games, and exits non-zero at the end.
+
 ## Backfilling Magic
 
 [MTGJSON](https://mtgjson.com) publishes a rolling ninety days of daily prices.

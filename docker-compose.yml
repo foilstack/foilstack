@@ -74,6 +74,9 @@ services:
       FOILSTACK_SECRET_KEY: ${FOILSTACK_SECRET_KEY:-dev-insecure-change-me}
       FOILSTACK_SUPPORT_URL: ${FOILSTACK_SUPPORT_URL:-https://buymeacoffee.com/foilstack}
       FOILSTACK_SITE_URL: ${FOILSTACK_SITE_URL:-}
+      # The `prices` service's interval, read here only by `/healthz/prices`
+      # to decide when a quiet sync has become a dead one.
+      FOILSTACK_SYNC_CHECK_EVERY: ${FOILSTACK_SYNC_CHECK_EVERY:-21600}
       # Everything the application reads has to be named here. Compose passes
       # only what this block lists, so a setting added to config.py and to
       # .env but not to this list is one that silently does nothing — and the
@@ -342,10 +345,23 @@ services:
       - |
         echo "price sync: checking every $${SYNC_CHECK_EVERY}s for $${SYNC_GAMES}"
         while true; do
+          failed=""
           for game in $${SYNC_GAMES}; do
-            python -m foilstack.cli sync-prices --game "$${game}" || \
+            python -m foilstack.cli sync-prices --game "$${game}" || {
               echo "price sync FAILED for $${game}"
+              failed="$${failed} $${game}"
+            }
           done
+          # The file to monitor, as BACKUP_FAILING is for backups: present
+          # means the last pass failed, and a clean pass removes it. A failure
+          # used to be one line in this log and nothing else, for the one job
+          # whose missed days cannot be recovered. It cannot notice this loop
+          # having stopped altogether — `/healthz/prices` is what does that.
+          if [ -n "$${failed}" ]; then
+            echo "$$(date -Iseconds) sync failed for$${failed}" >> /data/PRICES_FAILING
+          else
+            rm -f /data/PRICES_FAILING
+          fi
           sleep "$${SYNC_CHECK_EVERY}"
         done
 
