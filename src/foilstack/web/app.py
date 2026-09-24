@@ -11,6 +11,7 @@ through stays on screen while you decide about one card.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import mimetypes
 from contextlib import asynccontextmanager
@@ -26,13 +27,14 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 
-from foilstack import __version__, db, importing
+from foilstack import __version__, db, importing, prices
 from foilstack.config import Settings, get_settings
 from foilstack.plugins import export_plugins, supported_games
 from foilstack.web import auth, proof
 from foilstack.web.bodylimit import BodyLimit
 from foilstack.web.chrome import (
     BASE_DIR,
+    _ago,
     _asset_version,
     site_origin,
     templates,
@@ -315,3 +317,33 @@ def healthz(settings: Settings = Depends(settings_dep)) -> str:
     """
     build = settings.git_sha or "unknown"
     return f"ok\nfoilstack {__version__} ({build})\n"
+
+
+@app.get("/healthz/prices", response_class=PlainTextResponse)
+def healthz_prices(
+    session=Depends(db_session), settings: Settings = Depends(settings_dep)
+) -> PlainTextResponse:
+    """503 when any ingested game's prices have stopped syncing.
+
+    Separate from `/healthz` rather than folded into it. That one answers "is
+    the process up", and a restart is the right response to it failing; a
+    stalled price sidecar is not fixed by restarting `web`, and a watcher that
+    restarts on 503 would loop.
+
+    This exists because the sync was the one job whose failure cannot be
+    undone and the only one nothing watched. Upstream mirrors the current day
+    only, so every day the sidecar is down is history gone for good — and what
+    it did on failure was print a line into a log and try again in six hours.
+    The footer names the stalest game, but only to someone reading a page.
+    """
+    synced = prices.last_synced(session)
+    if not synced:
+        # Nothing ingested means nothing to go stale. An install that cannot
+        # identify a card yet is not failing at pricing one.
+        return PlainTextResponse("ok\nno catalogue ingested\n")
+    late = prices.stale(
+        synced, dt.datetime.now(dt.UTC), prices.stale_after(settings.sync_check_every)
+    )
+    lines = [f"{game}: synced {_ago(at)}" for game, at in synced.items()]
+    head = f"stale: {', '.join(late)}" if late else "ok"
+    return PlainTextResponse("\n".join([head, *lines]) + "\n", status_code=503 if late else 200)

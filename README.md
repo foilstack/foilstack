@@ -117,7 +117,8 @@ Base Set Charizard is 1st Edition Holofoil at \$10,000, Unlimited Holofoil at
 
 Price history is the one thing here that cannot be rebuilt: upstream mirrors
 only the current day, so a day the sync does not run is a day of history gone
-for good.
+for good. So it is watched like the backups: `/healthz/prices` answers 503 when a
+game falls behind, and a failed run drops a `PRICES_FAILING` file.
 
 **[docs/prices.md](docs/prices.md)** — the sync protocol, how history is stored,
 naming a printing.

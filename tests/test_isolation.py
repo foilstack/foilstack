@@ -2916,6 +2916,52 @@ def test_the_footer_reports_the_oldest_run_once_one_has_happened(app_and_data):
     assert "synced 2 hr ago" not in body
 
 
+def test_healthz_prices_names_the_games_that_have_stopped_syncing(app_and_data):
+    """The alarm for the one job whose missed days cannot be bought back.
+
+    Asked anonymously, because what calls it is an uptime checker with no
+    account. It has to name a game that has never synced at all as well as one
+    that fell behind — the first is the case the footer once reported as fine —
+    and must not name a game that is keeping up.
+    """
+    import datetime as dt
+
+    from fastapi.testclient import TestClient
+
+    app, _ = app_and_data
+    now = dt.datetime.now(dt.UTC)
+    with (
+        _catalogue_game("keepingup", prices={"source": "tcgcsv", "last_run_at": now}),
+        _catalogue_game(
+            "fellbehind",
+            prices={"source": "tcgcsv", "last_run_at": now - dt.timedelta(days=2)},
+        ),
+        _catalogue_game("neverpriced"),
+    ):
+        answer = TestClient(app).get("/healthz/prices")
+
+    assert answer.status_code == 503
+    head, *lines = answer.text.splitlines()
+    late = head.removeprefix("stale: ").split(", ")
+    assert "fellbehind" in late and "neverpriced" in late
+    assert "keepingup" not in late, "a game syncing on time is not an alarm"
+    assert "neverpriced: synced never" in lines
+    assert "keepingup: synced just now" in lines
+
+
+def test_healthz_is_unchanged_by_the_price_check(app_and_data):
+    """Anything already watching `/healthz` restarts `web` when it fails, and a
+    stalled price sidecar is not fixed by restarting `web`."""
+    from fastapi.testclient import TestClient
+
+    app, _ = app_and_data
+    with _catalogue_game("neverpricedeither"):
+        answer = TestClient(app).get("/healthz")
+
+    assert answer.status_code == 200
+    assert answer.text.splitlines()[0] == "ok"
+
+
 def _pricing_export(*rows: str) -> bytes:
     from foilstack import tcgplayer
 

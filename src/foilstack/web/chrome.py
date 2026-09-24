@@ -18,7 +18,7 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 from sqlalchemy import func, select
 
-from foilstack import __version__, db, inventory, search
+from foilstack import __version__, db, inventory, prices, search
 from foilstack.config import Settings
 
 # `foilstack.web` has no __init__.py, so this cannot be shared through the
@@ -201,17 +201,12 @@ def _chrome(session, request: Request, user: db.User, settings: Settings) -> dic
     #
     # `min` answers the question the line is actually making a claim about:
     # everything you can see a price for is at least this fresh.
-    ingested = set(session.scalars(select(db.Card.game).distinct()).all())
-    runs = {
-        kind.split(":", 1)[-1]: at
-        for kind, at in session.execute(
-            select(db.SyncState.kind, db.SyncState.last_run_at).where(
-                db.SyncState.kind.like("prices:%")
-            )
-        ).all()
-    }
-    unsynced = sorted(g for g in ingested if g not in runs)
-    covered = [at for g, at in runs.items() if g in ingested and at is not None]
+    #
+    # `prices.last_synced` is shared with `/healthz/prices`, so the footer and
+    # the alarm cannot disagree about which games are behind.
+    last_synced = prices.last_synced(session)
+    unsynced = [g for g, at in last_synced.items() if at is None]
+    covered = [at for at in last_synced.values() if at is not None]
     # No fallback to `max(cards.updated_at)`. That column moves on ingest, so
     # an install that had never run a price sync in its life reported "synced
     # just now" — the freshness of the catalogue quoted as the freshness of its

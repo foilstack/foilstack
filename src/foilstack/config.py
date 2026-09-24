@@ -53,6 +53,7 @@ class Settings:
     signups_per_window: int = 20
     git_sha: str = ""
     site_url: str = ""
+    sync_check_every: int = 21600
 
     @property
     def scans_dir(self) -> Path:
@@ -164,6 +165,11 @@ def get_settings() -> Settings:
         # which is right for a self-hoster who has no idea this setting
         # exists and wrong behind a proxy that rewrites the Host header.
         site_url=os.getenv("FOILSTACK_SITE_URL", "").rstrip("/"),
+        # How often the `prices` service checks upstream. The web process reads
+        # it too, and only to decide when a silent sync counts as a broken one:
+        # an alarm with its own threshold beside the loop's interval is two
+        # numbers to keep in step, and the one that drifts is the alarm.
+        sync_check_every=int(os.getenv("FOILSTACK_SYNC_CHECK_EVERY", "21600")),
     )
 
 

@@ -73,6 +73,49 @@ def test_compose_price_sync_calls_a_command_that_exists():
     assert default and default.group(1).strip() == "all"
 
 
+def test_one_game_failing_does_not_cost_the_others_their_day():
+    """The sidecar runs `--game all`, so this loop is the whole daily sync.
+
+    An exception escaping one game used to end the command, and every game
+    after it lost that day's history — which upstream will not sell back — for
+    a timeout that was not theirs. The run still has to end non-zero, or the
+    sidecar has nothing to put in `PRICES_FAILING`.
+    """
+    import asyncio
+
+    ran: list[str] = []
+
+    async def one(session, plugin, game, stamp, args):
+        ran.append(game)
+        if game == "magic":
+            raise RuntimeError("upstream timed out")
+        return 0
+
+    session = mock.Mock()
+    games = ["lorcana", "magic", "pokemon"]
+    with mock.patch.object(cli, "_sync_one_game", one):
+        code = asyncio.run(cli._sync_games(session, None, games, None, None))
+
+    assert ran == games
+    assert code != 0
+    session.rollback.assert_called_once()
+
+
+def test_the_price_sidecar_raises_and_clears_its_own_alarm():
+    """A failed pass used to be one log line; now it is a file, like a failed backup.
+
+    Read from the shipped compose file because the loop is shell inside YAML and
+    nothing else runs it. The web service has to be handed the same interval,
+    or `/healthz/prices` judges the loop against a number it is not running at.
+    """
+    compose = (ROOT / "docker-compose.yml").read_text()
+    assert ">> /data/PRICES_FAILING" in compose
+    assert "rm -f /data/PRICES_FAILING" in compose
+
+    web = compose.split("\n  web:", 1)[1].split("\n  prices:", 1)[0]
+    assert "FOILSTACK_SYNC_CHECK_EVERY: ${FOILSTACK_SYNC_CHECK_EVERY:-21600}" in web
+
+
 # ---------------------------------------------------------------------------
 # Which upstream answers are permanent, and which are worth another go.
 # ---------------------------------------------------------------------------

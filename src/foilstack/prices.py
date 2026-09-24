@@ -160,3 +160,53 @@ def spark(points: list[Point], width: int = 320, height: int = 56, pad: int = 6)
         "lo": lo,
         "hi": hi,
     }
+
+
+def last_synced(session) -> dict[str, dt.datetime | None]:
+    """When each ingested game's prices last synced, `None` for never.
+
+    Keyed by every game in the catalogue rather than every row in `sync_state`,
+    because a game nobody ever synced has no row, and a question asked only of
+    the rows present cannot notice one missing. That is how a footer reading
+    the newest run once reported "synced 4 hr ago" over a whole catalogue
+    frozen at its ingest-day prices.
+
+    `last_run_at` moves only when a run *finishes*, including a run that
+    correctly found upstream unchanged and did nothing — so it measures "is the
+    sync alive", not "did a price move".
+    """
+    games = session.scalars(select(db.Card.game).distinct()).all()
+    runs = {
+        kind.split(":", 1)[-1]: at
+        for kind, at in session.execute(
+            select(db.SyncState.kind, db.SyncState.last_run_at).where(
+                db.SyncState.kind.like("prices:%")
+            )
+        ).all()
+    }
+    return {game: runs.get(game) for game in sorted(games)}
+
+
+def stale_after(check_every_s: int) -> dt.timedelta:
+    """How long a game may go unsynced before that counts as broken.
+
+    One missed check is forgiven — a blip upstream, a restart — and the hour is
+    room for a full pull across every game to finish once a new build lands.
+    Beyond that the loop is not running, and it matters before the day is out:
+    upstream mirrors one day at a time, so a sync dead for a day has already
+    cost a day of history that nothing can buy back.
+    """
+    return dt.timedelta(seconds=2 * check_every_s + 3600)
+
+
+def stale(
+    synced: dict[str, dt.datetime | None], now: dt.datetime, after: dt.timedelta
+) -> list[str]:
+    """The games whose prices have gone too long without a sync, or never had one."""
+    late = []
+    for game, at in synced.items():
+        if at is not None and at.tzinfo is None:
+            at = at.replace(tzinfo=dt.UTC)
+        if at is None or now - at > after:
+            late.append(game)
+    return late

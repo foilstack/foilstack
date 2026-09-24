@@ -422,9 +422,27 @@ async def cmd_sync_prices(args) -> int:
         except Exception as exc:  # noqa: BLE001 - a missing stamp is not fatal
             log.warning("could not read upstream timestamp (%s)", type(exc).__name__)
 
+    return await _sync_games(session, plugin, games, stamp, args)
+
+
+async def _sync_games(session, plugin, games: list[str], stamp: str | None, args) -> int:
+    """Every game in turn, and one failing does not stop the rest.
+
+    The sidecar runs `--game all`, so this loop is the whole daily sync. An
+    exception escaping it — one timeout on one group of one game — used to end
+    the command there, and every game after it in the alphabet lost that day's
+    history for a fault that was not theirs.
+    """
     worst = 0
     for game in games:
-        code = await _sync_one_game(session, plugin, game, stamp, args)
+        try:
+            code = await _sync_one_game(session, plugin, game, stamp, args)
+        except Exception:
+            # Its partial commits stand — each is a real reading — but the
+            # stamp is written only on success, so the next pass pulls it again.
+            session.rollback()
+            log.exception("%s: price sync failed; carrying on with the rest", game)
+            code = 1
         worst = max(worst, code)
     return worst
 
