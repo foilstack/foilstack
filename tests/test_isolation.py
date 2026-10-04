@@ -1440,6 +1440,33 @@ def test_registration_can_be_closed(app_and_data, monkeypatch):
     session.close()
 
 
+def test_signing_up_counts_as_signing_in(app_and_data):
+    """Registering starts a session, so it is a sign-in. Recording only the
+    ones made through /login left every account that worked through its first
+    session showing no sign-in at all."""
+    from fastapi.testclient import TestClient
+
+    from foilstack import db
+    from foilstack.web.routes import accounts
+
+    app, _ = app_and_data
+    accounts._register_ip.clear()
+    email = f"fresh-{uuid.uuid4().hex[:8]}@example.com"
+    with TestClient(app) as anon:
+        created = anon.post(
+            "/register",
+            data={"email": email, "password": "a-long-enough-password"},
+            follow_redirects=False,
+        )
+        assert created.status_code == 303
+    accounts._register_ip.clear()
+
+    session = db.session()
+    user = session.scalar(select(db.User).where(db.User.email == email))
+    assert user.last_login_at is not None
+    session.close()
+
+
 def test_an_invite_code_is_required_when_one_is_set(app_and_data, monkeypatch):
     from fastapi.testclient import TestClient
 
