@@ -52,6 +52,24 @@ the wrong attention — it leaves everybody already using the site alone, which
 taking the site down does not. The quota is off by default (`0`), because a
 self-hoster should not have to configure a limit against themselves.
 
+`FOILSTACK_MAX_ACCOUNT_MB` is the default for every account. One account can
+be given its own number, or no limit at all:
+
+```bash
+foilstack quota seller@example.com            # used, and the limit in force
+foilstack quota seller@example.com 10240      # 10 GB for this account
+foilstack quota seller@example.com unlimited  # no limit for this account
+foilstack quota seller@example.com default    # back to FOILSTACK_MAX_ACCOUNT_MB
+```
+
+In compose, run it as `docker compose exec web foilstack quota ...`.
+
+A seller who reaches their limit is told that discarding scans from the
+review queue frees space — but confirmed cards keep their photographs, so for
+an account whose space is mostly inventory the real answer is asking you.
+`FOILSTACK_CONTACT_EMAIL` is the address the message gives them; without it,
+the message says to ask whoever runs the server.
+
 ## Rate limiting
 
 Sign-ins are limited per account **and** per address, both of which must allow

@@ -120,6 +120,13 @@ def test_an_unsafe_entry_also_cleans_up(tmp_path):
 class _QuotaSettings:
     max_account_mb = 10
     max_archive_mb = 2
+    contact_email = ""
+
+
+def _account(max_account_mb=None):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(id=1, max_account_mb=max_account_mb)
 
 
 def test_the_ceiling_is_the_room_left_plus_one_archive(monkeypatch):
@@ -132,7 +139,7 @@ def test_the_ceiling_is_the_room_left_plus_one_archive(monkeypatch):
     import foilstack.importing as imp
 
     monkeypatch.setattr(imp, "usage_bytes", lambda session, user_id: 6 * 1024 * 1024)
-    ceiling = imp.extraction_ceiling(None, _QuotaSettings(), 1)
+    ceiling = imp.extraction_ceiling(None, _QuotaSettings(), _account())
 
     assert ceiling == (4 * 1024 * 1024) + (2 * 1024 * 1024)
 
@@ -144,7 +151,7 @@ def test_an_account_already_over_gets_one_archive_and_no_more(monkeypatch):
 
     monkeypatch.setattr(imp, "usage_bytes", lambda session, user_id: 50 * 1024 * 1024)
 
-    assert imp.extraction_ceiling(None, _QuotaSettings(), 1) == 2 * 1024 * 1024
+    assert imp.extraction_ceiling(None, _QuotaSettings(), _account()) == 2 * 1024 * 1024
 
 
 def test_no_quota_leaves_the_global_ceiling_alone():
@@ -154,7 +161,36 @@ def test_no_quota_leaves_the_global_ceiling_alone():
         max_account_mb = 0
         max_archive_mb = 512
 
-    assert extraction_ceiling(None, _NoQuota(), 1) == MAX_TOTAL_BYTES
+    assert extraction_ceiling(None, _NoQuota(), _account()) == MAX_TOTAL_BYTES
+
+
+def test_an_account_limit_outranks_the_install_default():
+    """NULL follows the install; a number, zero included, is the account's own."""
+    import foilstack.importing as imp
+
+    assert imp.quota_mb(_QuotaSettings(), _account()) == 10
+    assert imp.quota_mb(_QuotaSettings(), _account(500)) == 500
+    assert imp.quota_mb(_QuotaSettings(), _account(0)) == 0
+
+
+def test_an_unlimited_account_gets_the_global_ceiling(monkeypatch):
+    """Lifting one account's limit has to reach extraction too, or the door
+    lets an archive through that unpacking then refuses."""
+    import foilstack.importing as imp
+
+    monkeypatch.setattr(imp, "usage_bytes", lambda session, user_id: 50 * 1024 * 1024)
+
+    assert imp.extraction_ceiling(None, _QuotaSettings(), _account(0)) == MAX_TOTAL_BYTES
+
+
+def test_the_advice_names_the_contact_when_there_is_one():
+    import foilstack.importing as imp
+
+    class _WithContact(_QuotaSettings):
+        contact_email = "help@example.com"
+
+    assert "email help@example.com" in imp.quota_advice(_WithContact())
+    assert "whoever runs this server" in imp.quota_advice(_QuotaSettings())
 
 
 def test_duplicate_filenames_do_not_overwrite(tmp_path):

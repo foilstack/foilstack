@@ -123,6 +123,15 @@ class User(Base):
     value_threshold: Mapped[float] = mapped_column(
         Float, nullable=False, default=DEFAULT_VALUE_THRESHOLD
     )
+    # This account's storage ceiling in MB, set by the operator with
+    # `foilstack quota`. NULL follows `FOILSTACK_MAX_ACCOUNT_MB`; 0 is no
+    # ceiling, the same meaning zero has in that setting.
+    #
+    # Nullable on purpose, where the two numbers above are not. Those are the
+    # seller's own policy and must not move under them; this is the operator's
+    # policy, and an operator who raises the install-wide default means it to
+    # reach every account they never singled out.
+    max_account_mb: Mapped[int | None] = mapped_column(Integer)
 
 
 class Card(Base):

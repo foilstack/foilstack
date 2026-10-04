@@ -588,31 +588,42 @@ async def api_import(
     # by its size once expanded, which for an uncompressed TIFF is a thousand
     # times more. This comment claimed the second check for a long time before
     # anything performed it.
-    if settings.max_account_mb:
+    quota = importing.quota_mb(settings, user)
+    archive_cap = settings.max_archive_mb * 1024 * 1024
+    limit = archive_cap
+    if quota:
         used = importing.usage_bytes(session, user.id)
-        ceiling = settings.max_account_mb * 1024 * 1024
+        ceiling = quota * 1024 * 1024
         if used >= ceiling:
             raise HTTPException(
                 413,
-                f"this account is using {used / 1048576:.0f} MB of its "
-                f"{settings.max_account_mb} MB limit. discard some scans first",
+                f"This account is using {used / 1048576:,.0f} MB of its {quota:,} MB "
+                f"limit. {importing.quota_advice(settings)}",
             )
+        limit = min(limit, ceiling - used)
 
     tmp = Path(tempfile.mkdtemp(prefix="foilstack-")) / "upload.zip"
-    limit = settings.max_archive_mb * 1024 * 1024
-    if settings.max_account_mb:
-        limit = min(limit, ceiling - used)
 
     async def drain(upload: UploadFile, write, size: int) -> int:
         """Copy one upload through `write`, counting every byte against `limit`."""
         while chunk := await upload.read(1024 * 1024):
             size += len(chunk)
             if size > limit:
-                raise HTTPException(
-                    413,
-                    f"upload exceeds {limit / 1048576:.0f} MB "
-                    "(the per-upload cap, or what is left of this account's quota)",
-                )
+                # Say which of the two ran out. Only the quota is something a
+                # seller can ask to have raised; the per-upload cap is answered
+                # by splitting the archive, and naming both at once left them
+                # to guess which one they had hit.
+                if limit < archive_cap:
+                    detail = (
+                        f"This upload is larger than the {limit / 1048576:,.0f} MB left "
+                        f"of this account's {quota:,} MB limit. {importing.quota_advice(settings)}"
+                    )
+                else:
+                    detail = (
+                        f"This upload is larger than the {settings.max_archive_mb:,} MB "
+                        "one upload may be. Split it into smaller archives."
+                    )
+                raise HTTPException(413, detail)
             write(chunk)
         return size
 

@@ -355,7 +355,7 @@ def test_purge_survives_more_scans_than_one_statement_binds(app_and_data):
 def test_a_full_account_can_upload_after_discarding(client, app_and_data, monkeypatch):
     """The whole point of the fix, stated the way the 413 states it.
 
-    The quota message tells a full account to discard some scans first. This
+    The quota message tells a full account that discarding scans frees space. This
     is that instruction, followed — and before the fix the second upload was
     refused exactly like the first, because nothing about discarding moved the
     number the check reads.
@@ -371,7 +371,7 @@ def test_a_full_account_can_upload_after_discarding(client, app_and_data, monkey
         archive = {"archive": ("a.zip", b"PK\x03\x04not-a-real-zip", "application/zip")}
         blocked = client.post("/api/import", files=archive)
         assert blocked.status_code == 413
-        assert "discard some scans first" in blocked.text
+        assert "Discarding scans" in blocked.text
 
         assert client.post(f"/api/scans/{scan_id}/discard").status_code == 200
 
