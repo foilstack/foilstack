@@ -48,6 +48,7 @@ class Settings:
     allow_registration: bool = True
     invite_code: str = ""
     max_account_mb: int = 0
+    contact_email: str = ""
     login_attempts: int = 10
     login_window_s: int = 900
     signups_per_window: int = 20
@@ -145,6 +146,11 @@ def get_settings() -> Settings:
         # can register on wants a number here, because otherwise the amount of
         # disk one account may consume is decided by that account.
         max_account_mb=int(os.getenv("FOILSTACK_MAX_ACCOUNT_MB", "0")),
+        # Who a seller at that ceiling should write to. A setting rather than
+        # "whoever signed up first": on a fresh public install that is whoever
+        # found the site first, and this address is shown to every account
+        # that fills up. Empty means the message says to ask the operator.
+        contact_email=os.getenv("FOILSTACK_CONTACT_EMAIL", "").strip(),
         # Failed sign-ins allowed per account and per address before the form
         # starts refusing. Ten is generous for a human who has forgotten which
         # password they used and ruinous for a script working through a list.

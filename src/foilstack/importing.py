@@ -168,7 +168,34 @@ def usage_bytes(session, user_id: int) -> int:
     return int(total or 0)
 
 
-def extraction_ceiling(session, settings: Settings, user_id: int) -> int:
+def quota_mb(settings: Settings, user: db.User) -> int:
+    """This account's storage ceiling in MB, with 0 meaning none.
+
+    The one place that knows an account's own number outranks the install's.
+    The door check and the extraction ceiling both read it, and a second copy
+    of the rule is how one of them would end up refusing an account the
+    operator had already let through.
+    """
+    if user.max_account_mb is not None:
+        return user.max_account_mb
+    return settings.max_account_mb
+
+
+def quota_advice(settings: Settings) -> str:
+    """What a seller at their ceiling can do about it, as a sentence.
+
+    Discarding is offered first because it is the only thing they can do
+    alone — but it only reaches the review queue. A confirmed card's photograph
+    is what its inventory row is recovered from, so for a seller whose space
+    is mostly inventory, asking is the real answer and has to be on screen.
+    """
+    who = "ask whoever runs this server"
+    if settings.contact_email:
+        who = f"email {settings.contact_email}"
+    return f"Discarding scans from the review queue frees space; to raise the limit, {who}."
+
+
+def extraction_ceiling(session, settings: Settings, user: db.User) -> int:
     """How many bytes this account's next archive may expand into.
 
     The quota is checked twice at the door, and both times against the upload
@@ -188,12 +215,14 @@ def extraction_ceiling(session, settings: Settings, user_id: int) -> int:
     the import screen as a promise — so the overshoot stays proportional to
     configured policy instead of to a constant nobody set.
 
-    Returns the global ceiling untouched when no quota is configured, which is
-    the self-hosted default: one person, their own disk.
+    Returns the global ceiling untouched when the account has no quota, which
+    is the self-hosted default — one person, their own disk — and what an
+    operator gets by lifting one account's limit.
     """
-    if not settings.max_account_mb:
+    quota = quota_mb(settings, user)
+    if not quota:
         return MAX_TOTAL_BYTES
-    room = settings.max_account_mb * 1024 * 1024 - usage_bytes(session, user_id)
+    room = quota * 1024 * 1024 - usage_bytes(session, user.id)
     slack = settings.max_archive_mb * 1024 * 1024
     return min(MAX_TOTAL_BYTES, max(0, room) + slack)
 
@@ -398,9 +427,8 @@ def _run_import(job_id: int, archive_path: Path, settings: Settings) -> None:
         # Read here rather than at the door: an archive queued behind three
         # others is extracted against the room left when its turn comes, not
         # the room there was when it was accepted.
-        files = extract_archive(
-            archive_path, scans_dir, extraction_ceiling(session, settings, job.user_id)
-        )
+        ceiling = extraction_ceiling(session, settings, session.get(db.User, job.user_id))
+        files = extract_archive(archive_path, scans_dir, ceiling)
         job.total = len(files)
         job.status = "matching"
         session.commit()

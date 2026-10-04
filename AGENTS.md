@@ -17,7 +17,7 @@ Inventory becomes a CSV the seller uploads to a marketplace themselves.
 ```
 src/foilstack/
   cli.py          ingest, embed, sets, rematch, sync-prices, enrich, purge,
-                  migrate, plugins
+                  quota, migrate, plugins
   config.py       nearly every setting, read once from the environment
   db.py           the schema. One row in `inventory` is one physical card
   search.py       nearest-neighbour over card_embeddings (cosine, HNSW)

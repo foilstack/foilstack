@@ -733,6 +733,46 @@ def cmd_purge(args) -> int:
     return 0
 
 
+def cmd_quota(args) -> int:
+    """Show one account's storage, or give it a limit of its own.
+
+    `MB` sets a number, `unlimited` lifts the limit, and `default` puts the
+    account back on FOILSTACK_MAX_ACCOUNT_MB. A command rather than a screen,
+    because the person deciding is whoever runs the server, and the
+    application has no notion of who that is.
+    """
+    settings = get_settings()
+    db.init(settings.database_url)
+    session = db.session()
+
+    from foilstack.importing import quota_mb, usage_bytes
+
+    user = session.scalar(select(db.User).where(db.User.email == args.email.strip().lower()))
+    if user is None:
+        log.error("no account with email %s", args.email)
+        return 2
+
+    if args.limit is not None:
+        value = args.limit.strip().lower()
+        if value == "default":
+            user.max_account_mb = None
+        elif value == "unlimited":
+            user.max_account_mb = 0
+        elif value.isdigit():
+            user.max_account_mb = int(value)
+        else:
+            log.error("limit must be a number of MB, 'unlimited' or 'default', not %r", args.limit)
+            return 2
+        session.commit()
+
+    quota = quota_mb(settings, user)
+    used = usage_bytes(session, user.id) / 1048576
+    limit = f"of {quota:,} MB" if quota else "with no limit"
+    source = "install default" if user.max_account_mb is None else "this account's own"
+    print(f"{user.email}: {used:,.0f} MB used {limit} ({source})")
+    return 0
+
+
 def cmd_plugins(_args) -> int:
     sources = source_plugins()
     exports = export_plugins()
@@ -795,6 +835,19 @@ def main(argv: list[str] | None = None) -> int:
         help="actually delete (without this it only reports what it would free)",
     )
     p_purge.set_defaults(fn=cmd_purge, is_async=False)
+
+    p_quota = sub.add_parser(
+        "quota",
+        help="show an account's storage, or set its own limit",
+    )
+    p_quota.add_argument("email")
+    p_quota.add_argument(
+        "limit",
+        nargs="?",
+        default=None,
+        help="MB, 'unlimited', or 'default' to follow FOILSTACK_MAX_ACCOUNT_MB",
+    )
+    p_quota.set_defaults(fn=cmd_quota, is_async=False)
 
     p_sets = sub.add_parser("sets", help="list the sets a source can fetch")
     p_sets.add_argument("--source", default="tcgcsv")

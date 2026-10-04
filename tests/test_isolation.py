@@ -1585,6 +1585,57 @@ def test_an_account_over_its_quota_cannot_upload_more(app_and_data, monkeypatch)
     session.close()
 
 
+def test_an_account_limit_of_its_own_outranks_the_install(app_and_data, monkeypatch):
+    """The install says 1 MB and this account is over it; the operator lifted
+    the limit for this one account, so the upload goes through. Put back on the
+    default, it is refused again — and the refusal says who to write to."""
+    import io
+    import zipfile
+
+    from foilstack import db
+    from foilstack.web import app as web
+
+    app, ids = app_and_data
+    _with_setting(monkeypatch, web, max_account_mb=1, contact_email="help@example.com")
+
+    session = db.session()
+    scan = session.get(db.Scan, ids["scan"])
+    user = session.get(db.User, scan.user_id)
+    before = scan.size_bytes
+    scan.size_bytes = 2 * 1024 * 1024
+    user.max_account_mb = 0
+    session.commit()
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("card.jpg", b"x" * 128)
+    client = _signed_in(app)
+
+    def upload():
+        return client.post(
+            "/api/import",
+            files={"archive": ("cards.zip", buf.getvalue(), "application/zip")},
+            data={"default_condition": "NM", "default_finish": "nonfoil"},
+        )
+
+    try:
+        lifted = upload()
+        assert lifted.status_code == 200, lifted.text
+
+        user.max_account_mb = None
+        session.commit()
+        refused = upload()
+        assert refused.status_code == 413
+        assert "help@example.com" in refused.json()["detail"]
+    finally:
+        session.rollback()
+        scan = session.get(db.Scan, ids["scan"])
+        scan.size_bytes = before
+        session.get(db.User, scan.user_id).max_account_mb = None
+        session.commit()
+        session.close()
+
+
 def test_the_quota_is_off_by_default(app_and_data):
     """A self-hosted install is one person and their own disk; making them
     configure a limit against themselves would be a worse default."""
