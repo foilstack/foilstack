@@ -221,6 +221,9 @@ def do_register(
         return _auth_page(request, "register", settings, error=str(exc), email=email, status=400)
 
     _signups.record(_SIGNUPS)
+    # Signing up is signing in. Without this, every account that registered
+    # and worked through that one session read as never having logged in.
+    auth.touch_login(session, user)
     response = RedirectResponse("/app", status_code=303)
     auth.issue(request, response, settings, user.id)
     return response
