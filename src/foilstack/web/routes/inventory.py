@@ -15,7 +15,7 @@ import math
 from typing import Any
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 
@@ -463,8 +463,8 @@ def page_card(
 
 
 @router.post("/api/inventory/delete")
-async def api_inventory_bulk_delete(
-    request: Request,
+def api_inventory_bulk_delete(
+    payload: dict[str, Any] = Body(...),
     session=Depends(db_session),
     user: db.User = Depends(api_owner),
 ):
@@ -480,7 +480,6 @@ async def api_inventory_bulk_delete(
     So bulk delete does the recoverable thing in bulk and leaves the
     irreversible one as a deliberate, single-row act.
     """
-    payload = await request.json()
     ids = [int(i) for i in (payload.get("ids") or [])]
     if not ids:
         raise HTTPException(400, "nothing selected")
@@ -549,9 +548,9 @@ def api_inventory_panel(
 
 
 @router.post("/api/inventory/{item_id}")
-async def api_inventory_update(
+def api_inventory_update(
     item_id: int,
-    request: Request,
+    payload: dict[str, Any] = Body(...),
     session=Depends(db_session),
     user: db.User = Depends(api_owner),
 ):
@@ -559,7 +558,6 @@ async def api_inventory_update(
     item = session.get(db.InventoryItem, item_id)
     if item is None or item.user_id != user.id:
         raise HTTPException(404, "no such row")
-    payload = await request.json()
 
     if "card_id" in payload:
         # The row is pointing at the wrong card. Until this existed the only

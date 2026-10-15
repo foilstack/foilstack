@@ -16,10 +16,12 @@ import tempfile
 import warnings
 import zipfile
 from pathlib import Path
+from typing import Any
 
 from fastapi import (
     APIRouter,
     BackgroundTasks,
+    Body,
     Depends,
     File,
     Form,
@@ -545,7 +547,7 @@ def page_matches():
 
 
 @router.post("/api/import")
-async def api_import(
+def api_import(
     background: BackgroundTasks,
     archive: list[UploadFile] = File(...),
     auto_accept: float = Form(None),
@@ -604,9 +606,12 @@ async def api_import(
 
     tmp = Path(tempfile.mkdtemp(prefix="foilstack-")) / "upload.zip"
 
-    async def drain(upload: UploadFile, write, size: int) -> int:
+    def drain(upload: UploadFile, write, size: int) -> int:
         """Copy one upload through `write`, counting every byte against `limit`."""
-        while chunk := await upload.read(1024 * 1024):
+        # `.file`, not `await .read()`: the parts are already spooled, and this
+        # route is a `def` so that copying them — and the quota sum and the
+        # job insert around it — happens in the threadpool, not on the loop.
+        while chunk := upload.file.read(1024 * 1024):
             size += len(chunk)
             if size > limit:
                 # Say which of the two ran out. Only the quota is something a
@@ -630,7 +635,7 @@ async def api_import(
     try:
         if single_archive:
             with open(tmp, "wb") as out:
-                size = await drain(uploads[0], out.write, 0)
+                size = drain(uploads[0], out.write, 0)
         else:
             # Loose images are packed into an archive at the door, so that one
             # code path serves both. The traversal checks, the expansion
@@ -647,7 +652,7 @@ async def api_import(
                 for n, upload in enumerate(uploads, 1):
                     name = Path(upload.filename or f"scan-{n}").name
                     with zf.open(name, "w") as entry:
-                        size = await drain(upload, entry.write, size)
+                        size = drain(upload, entry.write, size)
     except HTTPException:
         shutil.rmtree(tmp.parent, ignore_errors=True)
         raise
@@ -894,8 +899,8 @@ def api_confirm(
 
 
 @router.post("/api/scans/commit")
-async def api_commit(
-    request: Request,
+def api_commit(
+    payload: dict[str, Any] = Body(...),
     session=Depends(db_session),
     user: db.User = Depends(api_owner),
 ):
@@ -905,7 +910,6 @@ async def api_commit(
     committing a queue with low-confidence rows in it is a decision the seller
     is allowed to make, but not one they should make without being told.
     """
-    payload = await request.json()
     rows = payload.get("rows") or []
     if not rows:
         raise HTTPException(400, "nothing to commit")
@@ -966,13 +970,12 @@ def api_discard(
 
 
 @router.post("/api/scans/discard-all")
-async def api_discard_all(
-    request: Request,
+def api_discard_all(
+    payload: dict[str, Any] = Body(...),
     session=Depends(db_session),
     user: db.User = Depends(api_owner),
     settings: Settings = Depends(settings_dep),
 ):
-    payload = await request.json()
     ids = [int(i) for i in (payload.get("scan_ids") or [])]
     if not ids:
         raise HTTPException(400, "nothing to discard")

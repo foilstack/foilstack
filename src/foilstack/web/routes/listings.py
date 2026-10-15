@@ -18,8 +18,17 @@ from collections.abc import Iterator
 from typing import Any
 from urllib.parse import quote_plus
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
-from fastapi.concurrency import run_in_threadpool
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import HTMLResponse
 from sqlalchemy import func, select
 
@@ -548,8 +557,8 @@ def _mark_counts(rows: list[dict[str, Any]], picked: set[str]) -> tuple[int, int
 
 
 @router.post("/api/listings/mark")
-async def api_mark_listed(
-    request: Request,
+def api_mark_listed(
+    payload: dict[str, Any] = Body(...),
     pricing: inventory.Pricing = Depends(api_pricing_dep),
     sel: Selection = Depends(selection_dep),
     session=Depends(db_session),
@@ -561,7 +570,7 @@ async def api_mark_listed(
     button that calls it does not claim to: you export the CSV, you upload it,
     and this is how you tell foilstack you did.
     """
-    channels = _marking_channels(await request.json())
+    channels = _marking_channels(payload)
     items = _marking_targets(session, user.id, pricing, sel, channels)
     now = dt.datetime.now(dt.UTC)
     changed = 0
@@ -589,8 +598,8 @@ async def api_mark_listed(
 
 
 @router.post("/api/listings/unmark")
-async def api_unmark_listed(
-    request: Request,
+def api_unmark_listed(
+    payload: dict[str, Any] = Body(...),
     pricing: inventory.Pricing = Depends(api_pricing_dep),
     sel: Selection = Depends(selection_dep),
     session=Depends(db_session),
@@ -603,7 +612,7 @@ async def api_unmark_listed(
     ends an auction tells foilstack here, and the card returns to the run so
     the next export contains it again.
     """
-    channels = _marking_channels(await request.json())
+    channels = _marking_channels(payload)
     items = _marking_targets(session, user.id, pricing, sel, channels)
     dropped = set(channels)
     changed = 0
@@ -653,7 +662,7 @@ def _require_selection(sel: Selection, chosen: set[int]) -> None:
 # same shape as the one that has already broken here once, and keeping the
 # specific route first costs nothing.
 @router.post("/export/tcgplayer/match")
-async def export_tcgplayer_match(
+def export_tcgplayer_match(
     file: UploadFile = File(...),
     pricing: inventory.Pricing = Depends(pricing_dep),
     sel: Selection = Depends(selection_dep),
@@ -676,7 +685,7 @@ async def export_tcgplayer_match(
         raise HTTPException(400, "nothing in stock to list")
 
     try:
-        body, report = await run_in_threadpool(tcgplayer.fill, _chunks(file), rows)
+        body, report = tcgplayer.fill(_chunks(file), rows)
     except tcgplayer.NotAPricingExport as exc:
         joblog.add(user.id, f"tcgplayer match rejected · {exc}")
         raise HTTPException(400, str(exc)) from exc

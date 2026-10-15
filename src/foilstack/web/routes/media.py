@@ -14,6 +14,7 @@ import logging
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 
 from foilstack import db, images
@@ -121,6 +122,28 @@ def _cache_key(url: str) -> str:
     return hashlib.sha256(url.encode()).hexdigest()
 
 
+def _reference_url(request: Request, card_id: int, session, settings) -> str | None:
+    """The upstream image a visitor may see for this card, if any."""
+    viewer = auth.current_user(request, session, settings)
+    if viewer is None and not proof.is_proof_card(session, card_id):
+        raise HTTPException(404, "no reference image")
+    card = session.get(db.Card, card_id)
+    url = card.image_url if card else None
+
+    # Everything the database is needed for has now happened, so give the
+    # connection back before going anywhere near the network.
+    #
+    # This took the site down. The fetch can take twenty seconds per
+    # candidate, and holding a pooled connection across it means fifteen
+    # concurrent thumbnails exhaust a pool of five plus ten overflow — after
+    # which every route, `/healthz` included, blocks for thirty seconds and
+    # times out. It survived a small catalogue because misses were rare; it
+    # stopped surviving at thirty thousand cards, where a good number of the
+    # promo entries have no image behind them at all.
+    session.close()
+    return url
+
+
 @router.get("/card/{card_id}/image")
 async def card_image(
     request: Request,
@@ -144,24 +167,11 @@ async def card_image(
     visitor has to be able to see. Two known ids is not an open proxy.
     """
     settings = get_settings()
-    viewer = auth.current_user(request, session, settings)
-    if viewer is None and not proof.is_proof_card(session, card_id):
-        raise HTTPException(404, "no reference image")
-    card = session.get(db.Card, card_id)
-    url = card.image_url if card else None
-
-    # Everything the database is needed for has now happened, so give the
-    # connection back before going anywhere near the network.
-    #
-    # This took the site down. The fetch below can take twenty seconds per
-    # candidate, and holding a pooled connection across it means fifteen
-    # concurrent thumbnails exhaust a pool of five plus ten overflow — after
-    # which every route, `/healthz` included, blocks for thirty seconds and
-    # times out. It survived a small catalogue because misses were rare; it
-    # stopped surviving at thirty thousand cards, where a good number of the
-    # promo entries have no image behind them at all.
-    session.close()
-
+    # In the threadpool, not on the loop. This route is `async` for the fetch
+    # below and nothing else; a query on the loop waits on the pool like any
+    # other, and a pool that is empty holds it for thirty seconds — every
+    # request in the process with it, not just this one.
+    url = await run_in_threadpool(_reference_url, request, card_id, session, settings)
     if not url:
         raise HTTPException(404, "no reference image")
 

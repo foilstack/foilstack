@@ -315,11 +315,23 @@ Two habits worth keeping:
   extraction and needs the loop to release it, so a regression times out
   there rather than passing.
 
-  Three routes still have the shape and were left alone: `api_commit`,
-  `api_discard_all` and bulk delete are `async def` doing their database work
-  inline, and `api_discard_all` unlinks every discarded image as well. Each is
-  bounded by what one request names rather than by an archive, which is what
-  made imports the one to move first — not a reason the others are fine.
+  This paragraph used to end on three routes "left alone" with the same
+  shape. By the time anyone went to fix them there were six, plus the
+  TCGplayer round trip resolving a whole selection in SQL on the loop and
+  `/api/import` itself still `async` around its quota sum and job insert. The
+  list in this file was the only thing tracking them, and new routes never
+  got added to it. The six awaited nothing but `request.json()`, which is no
+  reason to be `async`. They are `def` now and take the body as
+  `payload: dict[str, Any] = Body(...)`, and the other two read their
+  already-spooled uploads through `.file` from the threadpool.
+
+  `tests/test_routes_off_loop.py` is the rule now: it walks the route table
+  and fails on any `async def` endpoint not in `ASYNC_ROUTES`, which names the
+  I/O each exception actually waits on. Two are left — the reference-image
+  proxy and `/plugins`, both waiting on another server — and both hand their
+  queries to `run_in_threadpool`. An `async` route waiting on an empty
+  connection pool holds the loop for the pool's whole thirty-second timeout,
+  so a point lookup on the loop is not small, however cheap the query.
 
 * **A floor is the seller's number, not the software's.** `list_price` used to
   clamp at a module constant, which is one answer for every account on the

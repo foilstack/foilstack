@@ -23,6 +23,7 @@ a page that takes two seconds to say "yes, it ran" is one nobody opens.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse
 from sqlalchemy import func, select
 
@@ -161,6 +162,13 @@ async def page_plugins(
     settings: Settings = Depends(settings_dep),
 ):
     health = await encoder_health(settings.embedder_url)
+    # `async` for the encoder check alone. The catalogue counts below are
+    # aggregates over every card on the install, and run on the loop they
+    # stall every other request while they add up.
+    return await run_in_threadpool(_render_plugins, request, session, user, settings, health)
+
+
+def _render_plugins(request: Request, session, user: db.User, settings: Settings, health):
     labels = _game_labels()
     runs = _sync_runs(session)
 
