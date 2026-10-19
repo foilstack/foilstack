@@ -4,7 +4,7 @@
    once because the two have to be the same line: a heading that changed shape
    on opening would make the batch you are working look like a different kind
    of thing from the batches you are not. #}
-<span class="qgroup-file" title="{{ j.filename }}">{{ j.filename }}</span>
+<span class="qgroup-file" title="{{ j.filename }}">{{ j.name }}</span>
 <span class="qgroup-meta">
   {# Two uploads can carry the same name — "3 images" is what any loose batch
      is called — so the heading needs the time to tell them apart. #}
@@ -49,7 +49,7 @@
       <div class="filechip-row">
         <div class="cardfan cardfan-sm" aria-hidden="true"><i></i></div>
         <div class="filechip-body">
-          <div class="filechip-name" id="fname">{{ active.filename if active }}</div>
+          <div class="filechip-name" id="fname">{{ active.display_name if active }}</div>
           <div class="filechip-meta" id="fmeta">{{ 'matching…' if active }}</div>
         </div>
         <button class="btn-quiet" type="button" id="clear">remove</button>
@@ -60,6 +60,17 @@
         <span id="pct">0%</span>
       </div>
     </div>
+
+    {# Offered as the archive's name because that is what sellers were naming
+       a zip after already: the box it was photographed from. Shown only once a
+       file is chosen and gone once it is sent — the label belongs to this
+       upload, and the panel below is the part that carries over. #}
+    <label class="field label-field" id="labelfield" hidden>
+      <span class="field-label">Location</span>
+      <input class="input" id="label" name="label" maxlength="{{ max_label }}"
+             autocomplete="off" placeholder="Box 3, binder A, shelf 2…">
+      <span class="field-hint">where these cards are kept · shown in inventory, and searchable there</span>
+    </label>
 
     {# Two of these counted something other than what they were called.
        "matched" was `job.processed`, which increments for every scan the
@@ -188,7 +199,7 @@
       <div class="sec-label">Recent imports</div>
       <table class="dtable compact">
         <thead>
-          <tr><th>WHEN</th><th>FILE</th><th>STATUS</th><th class="r">SCANS</th></tr>
+          <tr><th>WHEN</th><th>BATCH</th><th>STATUS</th><th class="r">SCANS</th></tr>
         </thead>
         <tbody>
           {% for job in jobs %}
@@ -199,7 +210,7 @@
                fixed width, so where the name has to give way is a question the
                layout can answer and the template cannot. The full name stays
                reachable on hover. #}
-            <td class="ell" title="{{ job.filename }}">{{ job.filename }}</td>
+            <td class="ell" title="{{ job.filename }}">{{ job.display_name }}</td>
             <td class="{{ 'pos' if job.status == 'done' else 'neg' if job.status == 'failed' else 'muted' }}"
                 {%- if job.message %} title="{{ job.message }}"{% endif %}>{{ job.status }}</td>
             <td class="r muted">
@@ -439,6 +450,9 @@ function pick(files) {
   chosen = good;
   $('#fname').textContent = good.length === 1 ? good[0].name : good.length + ' images';
   $('#fmeta').textContent = (bytes / MB).toFixed(1) + ' MB';
+  // Loose images have no name worth offering — "37 images" is not a place.
+  $('#label').value = zips.length ? zips[0].name.replace(ZIP_RE, '') : '';
+  show($('#labelfield'), true);
   $('#stage').textContent = 'ready';
   setBar(0);
   $('#t-scans').textContent = '—';
@@ -451,6 +465,7 @@ function reset() {
   // repainting the page for nothing.
   setBar(0);
   show(chip, false); show($('#stats'), false); show($('#actions'), false); show(drop, true);
+  show($('#labelfield'), false);
 }
 $('#choose').addEventListener('click', e => { e.stopPropagation(); fileInput.click(); });
 drop.addEventListener('click', () => fileInput.click());
@@ -552,6 +567,8 @@ function fail(why) {
   $('#pct').textContent = '';
   $('#go').disabled = false;
   $('#go').textContent = 'Start import';
+  // Back for the retry the re-enabled button offers, with what was typed.
+  show($('#labelfield'), !!chosen);
 }
 
 function uploadError(xhr, fallback) {
@@ -575,6 +592,8 @@ $('#go').addEventListener('click', async () => {
   body.append('default_finish', settings.finish);
   body.append('same_game', settings.sameGame);
   body.append('same_set', settings.sameSet);
+  body.append('label', $('#label').value);
+  show($('#labelfield'), false);
 
   $('#stage').textContent = 'uploading';
   setBar(0);

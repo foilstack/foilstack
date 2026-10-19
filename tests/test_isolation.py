@@ -1721,6 +1721,45 @@ def test_loose_images_import_without_being_zipped_first(app_and_data):
     session.close()
 
 
+def test_an_upload_keeps_the_label_it_was_given(app_and_data):
+    """The label typed on the import screen is the batch's, tidied; a cleared
+    field is no label rather than the archive's name coming back."""
+    from foilstack import db
+
+    app, _ = app_and_data
+    client = _signed_in(app)
+
+    def upload(label):
+        return client.post(
+            "/api/import",
+            files=[("archive", ("box-3.zip", _one_image_zip(), "application/zip"))],
+            data={"default_condition": "NM", "default_finish": "nonfoil", "label": label},
+        )
+
+    named, cleared = upload("  Box   3 "), upload("")
+    assert named.status_code == 200, named.text
+    assert cleared.status_code == 200, cleared.text
+
+    session = db.session()
+    try:
+        job = session.get(db.ImportJob, named.json()["job_id"])
+        assert (job.label, job.display_name) == ("Box 3", "Box 3")
+        job = session.get(db.ImportJob, cleared.json()["job_id"])
+        assert (job.label, job.display_name) == (None, "box-3.zip")
+    finally:
+        session.close()
+
+
+def _one_image_zip():
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("card.jpg", b"x" * 64)
+    return buf.getvalue()
+
+
 def test_one_loose_image_is_named_after_itself(app_and_data):
     """A single scan should say what it is, not "1 images"."""
     app, _ = app_and_data

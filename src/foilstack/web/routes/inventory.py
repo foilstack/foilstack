@@ -418,6 +418,9 @@ def page_card(
             batch = batches[job_id] = {
                 "job_id": job_id,
                 "filename": job.filename if job else "added without an import",
+                # The batch is the box, so its heading is where a copy is kept
+                # when the seller said, and what it arrived as when they did not.
+                "name": job.display_name if job else "added without an import",
                 "created_at": job.created_at if job else None,
                 "copies": [],
             }

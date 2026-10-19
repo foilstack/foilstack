@@ -329,6 +329,17 @@ class ImportJob(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     filename: Mapped[str] = mapped_column(Text, nullable=False)
+    # Where the seller says this batch's cards are kept — "Box 3", "binder A".
+    # Set on the import screen, which offers the archive's name because sellers
+    # were already naming a zip after the box it was photographed from. Its own
+    # column rather than a rewritten `filename`: the name is what arrived and
+    # the label is a claim about a shelf, and only the second may change.
+    #
+    # On the job rather than on each inventory row because a batch is a box,
+    # and a box is relabelled once rather than two hundred times. A card moved
+    # out of it on its own is the case this does not cover, deliberately, until
+    # anyone needs it to.
+    label: Mapped[str | None] = mapped_column(Text)
     total: Mapped[int] = mapped_column(Integer, default=0)
     processed: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(32), default="pending")
@@ -353,6 +364,11 @@ class ImportJob(Base):
     )
 
     scans: Mapped[list[Scan]] = relationship(back_populates="job")
+
+    @property
+    def display_name(self) -> str:
+        """The label where the seller gave one, the uploaded name where not."""
+        return self.label or self.filename
 
 
 class Scan(Base):

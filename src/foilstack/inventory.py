@@ -772,7 +772,7 @@ def _read(
     caller has to get right is the shape this module keeps warning about, and
     neither public name has one.
     """
-    item, card = db.InventoryItem, db.Card
+    item, card, scan, job = db.InventoryItem, db.Card, db.Scan, db.ImportJob
     priced = priced_printing()
     # Labelled rather than unpacked positionally. Three names collide across
     # the join — `sub_type` and `market` are on the item, the card *and* the
@@ -790,6 +790,7 @@ def _read(
         item.listed.label("listed"),
         item.listed_channels.label("listed_channels"),
         item.scan_id.label("scan_id"),
+        job.label.label("location"),
         card.name.label("name"),
         card.game.label("game"),
         card.set_name.label("set_name"),
@@ -818,6 +819,11 @@ def _read(
         select(*columns)
         .select_from(item)
         .join(card, card.id == item.card_id)
+        # Where a copy is kept is a fact about the batch it came in with, so
+        # it is read through the scan rather than copied onto every row. Outer,
+        # because a row whose scan was deleted has nowhere to read it from.
+        .outerjoin(scan, scan.id == item.scan_id)
+        .outerjoin(job, job.id == scan.job_id)
         .outerjoin(priced, true())
         .where(item.user_id == user_id)
     )
@@ -891,6 +897,7 @@ def _read(
             "finish_unpriced": bool(row.n_printings) and row.finish not in available,
             "list_price": price,
             "scan_id": row.scan_id,
+            "location": row.location or "",
             "listed": bool(row.listed),
             "listed_channels": row.listed_channels or "",
             "listed_label": row.listed_channels or "\u2014",
@@ -1171,6 +1178,11 @@ def fold(copies: list[dict[str, Any]]) -> list[dict[str, Any]]:
         line["listed"] = any(c["listed"] for c in copies)
         line["sold"] = not in_stock
         line["scan_count"] = sum(1 for c in copies if c["scan_id"])
+        # Every place a copy of this card is, rather than a count per place:
+        # "2 Box 3, 1 Box 7" reads as two boxes numbered oddly. Which copy is
+        # where is the card page's to say.
+        line["locations"] = sorted({c["location"] for c in copies if c["location"]})
+        line["location_label"] = ", ".join(line["locations"])
         out.append(line)
 
     out.sort(key=lambda line: line["name"].lower())
@@ -1475,6 +1487,10 @@ def narrow(
                     # find the card is the search this screen most owes them.
                     # Every copy on the line, since a line is several of them.
                     *(sku(i) for i in r["ids"]),
+                    # So "box 3" lists what is in Box 3. Here and nowhere
+                    # else, for the reason the SKUs are: `/listings` resolves
+                    # a filter selection through this same function.
+                    *r["locations"],
                 )
             ).lower()
         ]

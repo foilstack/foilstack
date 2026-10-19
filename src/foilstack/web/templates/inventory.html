@@ -27,7 +27,7 @@
       </svg>
       <input class="search" type="search" name="q" value="{{ q }}" autocomplete="off"
              aria-label="Search inventory"
-             placeholder="Search cards, sets, conditions, numbers, SKUs…">
+             placeholder="Search cards, sets, locations, numbers, SKUs…">
       {# Only where there is something to clear. A permanent Clear is a button
          that does nothing on the screen it is most often looked at. #}
       {% if q %}<a class="searchbox-clear" href="{{ clear_q_href }}">Clear</a>{% endif %}
@@ -216,6 +216,12 @@
             <a class="rowname" href="/inventory/{{ r.card_id }}">{{ r.name }}</a>
             {% if r.sold %}<span class="pill">sold</span>
             {% elif r.sold_quantity %}<span class="pill">{{ r.sold_quantity }} sold</span>{% endif %}
+            {# Under the name rather than in a column of its own: a column made
+               the row wider than 1440 and pushed LISTED off the screen, and
+               making the set name give way instead cut it to "SV02: …" at
+               1280. The row is as tall as its thumbnail either way, so this
+               line costs nothing. #}
+            {% if r.location_label %}<div class="sub loc" title="{{ r.location_label }}">{{ r.location_label }}</div>{% endif %}
           </td>
           <td class="muted">{{ r.game }}{% if r.set_name %} / {{ r.set_name }}{% endif %}</td>
           <td class="r {{ 'strong' if r.quantity > 1 }}">{{ r.quantity }}</td>

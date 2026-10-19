@@ -116,6 +116,7 @@ def _waiting_jobs(session, user_id: int) -> list[dict]:
         {
             "job_id": job.id,
             "filename": job.filename,
+            "name": job.display_name,
             "at": job.created_at,
             # What the batch was held to, on the heading of the batch it was
             # held to. A rule applied to every row in a section is a property
@@ -514,6 +515,7 @@ def page_import(
             "match": _match_prefs(request, user.id, settings, thresholds),
             "max_images": importing.MAX_IMAGES,
             "max_mb": settings.max_archive_mb,
+            "max_label": importing.MAX_LABEL,
             "conditions": inventory.CONDITIONS,
             **_chrome(session, request, user, settings),
         },
@@ -555,6 +557,10 @@ def api_import(
     default_finish: str = Form("nonfoil"),
     same_game: bool = Form(False),
     same_set: bool = Form(False),
+    # No default derived from the archive's name here, though the screen offers
+    # one: FastAPI reads an empty form field as a missing one, so a default
+    # here would put back a label the seller had just cleared.
+    label: str | None = Form(None),
     session=Depends(db_session),
     user: db.User = Depends(api_owner),
     settings: Settings = Depends(settings_dep),
@@ -667,6 +673,7 @@ def api_import(
     job = db.ImportJob(
         user_id=user.id,
         filename=filename,
+        label=importing.clean_label(label),
         # Not `pending`: that is the word for an archive being unpacked, and
         # this one may wait behind other imports before anything touches it.
         status="queued",

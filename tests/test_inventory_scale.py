@@ -31,7 +31,7 @@ import os
 import uuid
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, delete, select, text
 
 ADMIN_URL = os.getenv(
     "FOILSTACK_TEST_DATABASE_URL",
@@ -845,3 +845,58 @@ def test_analytics_fixture_exercises_every_figure(analytics_account):
     assert 0 < sales["sold_30d"] < sales["sold_all"]
     assert 0 < sales["costed"] < sales["sold_all"]
     assert sales["avg_days"] is not None
+
+
+def test_a_copy_is_kept_where_its_batch_says(priced_inventory):
+    """The location is the label on the upload a copy arrived in.
+
+    A seller of its own, so the rows the other tests count are untouched: two
+    copies of one card from two labelled boxes, one from a box with no label,
+    and one that arrived without any scan at all.
+    """
+    from foilstack import db, inventory
+
+    with db.session() as session:
+        user = db.User(email=f"boxes-{uuid.uuid4().hex[:6]}@example.com", password_hash="x")
+        session.add(user)
+        session.flush()
+        card_ids = session.scalars(select(db.Card.id).order_by(db.Card.id).limit(2)).all()
+
+        def copy(card_id, label):
+            scan = None
+            if label is not False:
+                job = db.ImportJob(user_id=user.id, filename="x.zip", label=label, status="done")
+                session.add(job)
+                session.flush()
+                scan = db.Scan(job_id=job.id, user_id=user.id, filename="a.jpg", stored_path="a")
+                session.add(scan)
+                session.flush()
+            session.add(
+                db.InventoryItem(
+                    user_id=user.id, card_id=card_id, scan_id=scan.id if scan else None
+                )
+            )
+
+        copy(card_ids[0], "Box 3")
+        copy(card_ids[0], "Box 7")
+        copy(card_ids[1], None)
+        copy(card_ids[1], False)
+        session.commit()
+        user_id = user.id
+
+        try:
+            copies = inventory.index(session, user_id, inventory.Pricing())
+            lines = {line["card_id"]: line for line in inventory.fold(copies)}
+            found = inventory.narrow(copies, show="all", q="box 7")
+        finally:
+            session.execute(delete(db.InventoryItem).where(db.InventoryItem.user_id == user_id))
+            session.execute(delete(db.Scan).where(db.Scan.user_id == user_id))
+            session.execute(delete(db.ImportJob).where(db.ImportJob.user_id == user_id))
+            session.execute(delete(db.User).where(db.User.id == user_id))
+            session.commit()
+
+    assert lines[card_ids[0]]["locations"] == ["Box 3", "Box 7"]
+    # Unlabelled and scanless read the same: nowhere the seller has named.
+    assert lines[card_ids[1]]["locations"] == []
+    assert sorted(c["location"] for c in copies) == ["", "", "Box 3", "Box 7"]
+    assert [line["card_id"] for line in found.rows] == [card_ids[0]]

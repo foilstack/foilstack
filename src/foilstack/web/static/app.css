@@ -955,6 +955,9 @@ a.qgroup-head { color: inherit; text-decoration: none; }
    an auto table gives a cell its content's width unless told otherwise, and
    `overflow: hidden` on something already wide enough never clips. */
 .dtable .ell { max-width: 0; width: 100%; overflow: hidden; text-overflow: ellipsis; }
+/* Capped so a card held in four boxes widens nothing: the line sits in the
+   name cell, which sizes to its content. The whole list stays on hover. */
+.dtable .sub.loc { max-width: 220px; }
 
 /* Same table in a sidebar: tighter, flush to the column edges, and with the
    sticky header switched off — .pane-import scrolls, so a header that stuck
@@ -1447,6 +1450,7 @@ body.auth {
   background: var(--surface); font-size: 13px; color: var(--ink);
 }
 .input:focus { outline: none; border-color: var(--green); }
+.label-field { margin: 10px 0 0; }
 .field-hint {
   display: block; margin-top: 4px;
   font-family: var(--mono); font-size: 10px; color: var(--faint);

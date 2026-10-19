@@ -526,23 +526,42 @@ def _seed(source_url: str, preview_url: str, data_dir: Path) -> None:
     # one of them open, and a preview seeded from a single job renders that as
     # an ordinary list of cards — it proves nothing about the screen, the same
     # way seeding one candidate per scan used to hide the runner-up row.
+    #
+    # A third upload, already cleared, so the inventory's location column
+    # names more than one place — every committed card coming from one archive
+    # photographs a column reading the same word all the way down.
+    def boxed(i: int) -> bool:
+        return i >= PENDING and i % 2 == 1
+
+    in_box = sum(1 for i in range(len(cards)) if boxed(i))
+    stored = db.ImportJob(
+        user_id=user.id,
+        filename="box-3.zip",
+        label="Box 3",
+        status="done",
+        total=in_box,
+        processed=in_box,
+        created_at=dt.datetime.now(dt.UTC) - dt.timedelta(days=5),
+    )
     older = db.ImportJob(
         user_id=user.id,
         filename="binder-a.zip",
+        label="Binder A",
         status="done",
-        total=len(cards) - RECENT,
-        processed=len(cards) - RECENT,
+        total=len(cards) - RECENT - in_box,
+        processed=len(cards) - RECENT - in_box,
         created_at=dt.datetime.now(dt.UTC) - dt.timedelta(days=2),
     )
     newer = db.ImportJob(
         user_id=user.id,
         filename="singles-box.zip",
+        label="singles-box",
         status="done",
         total=RECENT,
         processed=RECENT,
         created_at=dt.datetime.now(dt.UTC) - dt.timedelta(minutes=20),
     )
-    session.add_all([older, newer])
+    session.add_all([stored, older, newer])
     session.commit()
 
     # Two scans left in the queue so the import screen has something to show,
@@ -554,7 +573,7 @@ def _seed(source_url: str, preview_url: str, data_dir: Path) -> None:
             # opens on. Everything else — the tail of the queue and all the
             # committed cards — belongs to the older archive that is still
             # being worked through.
-            job_id=newer.id if i < RECENT else older.id,
+            job_id=newer.id if i < RECENT else stored.id if boxed(i) else older.id,
             user_id=user.id,
             filename=card["filename"],
             stored_path=card["stored_path"],
@@ -885,6 +904,7 @@ def _backlog(preview_url: str, uploads: int) -> None:
             job = db.ImportJob(
                 user_id=user_id,
                 filename=f"box-{n + 1:02d}.zip",
+                label=f"box-{n + 1:02d}",
                 status="done",
                 total=50,
                 processed=50,

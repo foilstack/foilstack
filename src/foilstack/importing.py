@@ -49,6 +49,20 @@ MAX_ENTRY_BYTES = 40 * 1024 * 1024
 # from the laptop it is running on.
 MAX_IMAGES = int(os.getenv("FOILSTACK_MAX_IMAGES", "5000"))
 MAX_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
+# Long enough for "Shelf 2 / Box 14 / rares", short enough that it fits in an
+# inventory column without the column becoming the table.
+MAX_LABEL = 80
+
+
+def clean_label(raw: str | None) -> str | None:
+    """A batch label as stored: whitespace collapsed, capped, blank as NULL.
+
+    Blank is NULL rather than "" so there is one way to say "no label", and
+    every screen that falls back to the uploaded name only has to ask once.
+    """
+    label = " ".join((raw or "").split())[:MAX_LABEL].strip()
+    return label or None
+
 
 # The statuses a job is in while something is still working on it. Shared with
 # the import screen rather than spelled out beside it: the screen's own copy

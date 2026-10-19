@@ -5,8 +5,10 @@ import zipfile
 import pytest
 
 from foilstack.importing import (
+    MAX_LABEL,
     MAX_TOTAL_BYTES,
     ImportError_,
+    clean_label,
     extract_archive,
     extraction_ceiling,
 )
@@ -389,3 +391,12 @@ def test_scan_path_is_none_when_the_file_is_gone(tmp_path):
     scans = tmp_path / "scans"
     scans.mkdir()
     assert scan_path("1/missing.jpg", scans) is None
+
+
+def test_a_label_is_stored_tidy_or_not_at_all():
+    """One way to say "no label", so every fallback only has to ask once."""
+    assert clean_label("  Box   3 \n") == "Box 3"
+    assert clean_label("") is None
+    assert clean_label("   ") is None
+    assert clean_label(None) is None
+    assert len(clean_label("x" * 500)) == MAX_LABEL
